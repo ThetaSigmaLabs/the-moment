@@ -44,6 +44,7 @@ type SpoolmanSpool struct {
 	LastUsed        string                 `json:"last_used"`
 	Archived        bool                   `json:"archived"`
 	LocationID      *int                   `json:"location_id"` // Reference to Spoolman Location entity
+	Price           *float64               `json:"price"`        // Price per kg (set in Spoolman)
 	Extra           map[string]interface{} `json:"extra"`
 
 	// Computed fields for easier access

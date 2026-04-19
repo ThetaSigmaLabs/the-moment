@@ -41,6 +41,14 @@ const (
 	ConfigKeySpoolmanPassword                = "spoolman_password"
 	ConfigKeyAutoAssignPreviousSpoolEnabled  = "auto_assign_previous_spool_enabled"
 	ConfigKeyAutoAssignPreviousSpoolLocation = "auto_assign_previous_spool_location"
+
+	// Cost calculation config keys
+	ConfigKeyCostElectricityRate = "cost_electricity_rate" // $/kWh
+	ConfigKeyCostPrinterWattage  = "cost_printer_wattage"  // Watts
+	ConfigKeyCostMaintenanceRate = "cost_maintenance_rate" // $/hour
+	ConfigKeyCostDepreciationRate= "cost_depreciation_rate"// $/hour (printer depreciation)
+	ConfigKeyCostMarginPercent   = "cost_margin_percent"   // % markup over cost
+	ConfigKeyCostCurrency        = "cost_currency"         // e.g. "USD", "CAD"
 )
 
 // HTTP timeouts

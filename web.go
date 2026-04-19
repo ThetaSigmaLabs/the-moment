@@ -175,6 +175,11 @@ func (ws *WebServer) setupRoutes() {
 		// Virtual printer export / import
 		api.GET("/printers/:id/export", ws.exportVirtualPrinterHandler)
 		api.POST("/printers/import", ws.importVirtualPrinterHandler)
+
+		// Cost settings and calculation
+		api.GET("/cost-settings", ws.getCostSettingsHandler)
+		api.POST("/cost-settings", ws.setCostSettingsHandler)
+		api.POST("/cost/calculate", ws.calculateCostHandler)
 		api.GET("/print-errors", ws.getPrintErrorsHandler)
 		api.POST("/print-errors/:id/acknowledge", ws.acknowledgePrintErrorHandler)
 		api.GET("/nfc/assign", ws.nfcAssignHandler)
@@ -1586,6 +1591,62 @@ func (ws *WebServer) importVirtualPrinterHandler(c *gin.Context) {
 		"files_skipped":  filesSkipped,
 		"spool_mappings_note": "Spool IDs from the export have been restored. Verify they exist in your Spoolman instance.",
 	})
+}
+
+// ─── Cost Settings & Calculation Handlers ────────────────────────────────────
+
+// getCostSettingsHandler returns current cost settings.
+// GET /api/cost-settings
+func (ws *WebServer) getCostSettingsHandler(c *gin.Context) {
+	s, err := ws.bridge.GetCostSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, s)
+}
+
+// setCostSettingsHandler saves cost settings.
+// POST /api/cost-settings
+func (ws *WebServer) setCostSettingsHandler(c *gin.Context) {
+	var s CostSettings
+	if err := c.ShouldBindJSON(&s); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if s.Currency == "" {
+		s.Currency = "USD"
+	}
+	if err := ws.bridge.SetCostSettings(&s); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Cost settings saved"})
+}
+
+// calculateCostHandler computes a cost breakdown without persisting it.
+// POST /api/cost/calculate
+// Body: { filament_grams, print_time_min, spool_id }
+func (ws *WebServer) calculateCostHandler(c *gin.Context) {
+	var req struct {
+		FilamentGrams float64 `json:"filament_grams"`
+		PrintTimeMin  float64 `json:"print_time_min"`
+		SpoolID       int     `json:"spool_id"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.FilamentGrams < 0 || req.PrintTimeMin < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "filament_grams and print_time_min must be non-negative"})
+		return
+	}
+	bd, err := ws.bridge.CalculatePrintCost(req.FilamentGrams, req.PrintTimeMin, req.SpoolID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, bd)
 }
 
 // getPrintErrorsHandler returns all unacknowledged print errors

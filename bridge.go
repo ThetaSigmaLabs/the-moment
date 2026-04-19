@@ -580,15 +580,32 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	return nil
 }
 
-// DeletePrinterConfig deletes a printer configuration
+// DeletePrinterConfig deletes a printer and all its associated data:
+// toolhead_mappings (frees spools for re-assignment) and toolhead_names.
 func (b *FilamentBridge) DeletePrinterConfig(printerID string) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	_, err := b.db.Exec("DELETE FROM printer_configs WHERE printer_id = ?", printerID)
+	// Look up the printer name before deleting — mappings are keyed by name
+	var printerName string
+	err := b.db.QueryRow("SELECT name FROM printer_configs WHERE printer_id = ?", printerID).Scan(&printerName)
+	if err != nil {
+		return fmt.Errorf("printer %s not found: %w", printerID, err)
+	}
+
+	// Remove toolhead spool assignments so those spools become assignable again
+	_, _ = b.db.Exec("DELETE FROM toolhead_mappings WHERE printer_name = ?", printerName)
+
+	// Remove toolhead display names
+	_, _ = b.db.Exec("DELETE FROM toolhead_names WHERE printer_id = ?", printerID)
+
+	// Delete the printer itself (ON DELETE CASCADE removes virtual_printer_files)
+	_, err = b.db.Exec("DELETE FROM printer_configs WHERE printer_id = ?", printerID)
 	if err != nil {
 		return fmt.Errorf("failed to delete printer config: %w", err)
 	}
+
+	log.Printf("🗑️  Deleted printer %s (%s) and freed all toolhead spool assignments", printerName, printerID)
 	return nil
 }
 

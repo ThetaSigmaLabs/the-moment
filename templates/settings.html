@@ -10,6 +10,7 @@
         <button class="settings-tab active" onclick="switchSettingsTab('getting-started', this)">📚 Getting Started</button>
         <button class="settings-tab" onclick="switchSettingsTab('basic-config', this)">🔧 Basic Configuration</button>
         <button class="settings-tab" onclick="switchSettingsTab('printers', this)">🖨️ Printers</button>
+        <button class="settings-tab" onclick="switchSettingsTab('cost', this)">💰 Cost Settings</button>
         <button class="settings-tab" onclick="switchSettingsTab('advanced', this)">⚙️ Advanced Settings</button>
     </div>
     
@@ -51,6 +52,97 @@
         </div>
     </div>
     
+    <!-- Cost Settings Tab -->
+    <div id="cost-tab" class="settings-tab-content">
+        <div class="config-section">
+            <h3>💰 Cost Settings</h3>
+            <div class="help-text">
+                These settings are used when calculating the cost of a print job.
+                Filament cost per kg comes automatically from Spoolman.
+                Print time is read from the G-code file metadata.
+            </div>
+
+            <div class="form-group" style="margin-top:20px;">
+                <label for="cost-currency">Currency</label>
+                <input type="text" id="cost-currency" maxlength="3" placeholder="USD"
+                       style="width:80px;text-transform:uppercase;">
+                <small>3-letter ISO code — USD, CAD, EUR, GBP, etc.</small>
+            </div>
+
+            <h4 style="margin:24px 0 12px;">Running Costs (per hour of print time)</h4>
+
+            <div class="form-group">
+                <label for="cost-electricity-rate">Electricity Rate (per kWh)</label>
+                <input type="number" id="cost-electricity-rate" min="0" step="0.001" placeholder="0.12">
+                <small>Check your electricity bill — typically $0.10–$0.30/kWh</small>
+            </div>
+            <div class="form-group">
+                <label for="cost-wattage">Printer Power Draw (Watts)</label>
+                <input type="number" id="cost-wattage" min="0" step="1" placeholder="150">
+                <small>Average draw including heated bed. Prusa Core One L: ~120–180W typical.</small>
+            </div>
+            <div class="form-group">
+                <label for="cost-maintenance">Maintenance Rate (per hour)</label>
+                <input type="number" id="cost-maintenance" min="0" step="0.01" placeholder="0.10">
+                <small>Nozzle wear, lubricant, belts, etc. spread across expected print hours.</small>
+            </div>
+            <div class="form-group">
+                <label for="cost-depreciation">Depreciation Rate (per hour)</label>
+                <input type="number" id="cost-depreciation" min="0" step="0.01" placeholder="0.05">
+                <small>Printer purchase price ÷ expected lifetime hours.
+                    Example: $1,000 printer over 5,000h = $0.20/h</small>
+            </div>
+
+            <h4 style="margin:24px 0 12px;">Margin</h4>
+            <div class="form-group">
+                <label for="cost-margin">Profit Margin (%)</label>
+                <input type="number" id="cost-margin" min="0" max="500" step="1" placeholder="0">
+                <small>Applied as a percentage markup on top of all costs.
+                    0% = cost recovery only.</small>
+            </div>
+
+            <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,0.04);
+                        border-radius:8px;border:1px solid #333;">
+                <strong>Quick cost calculator</strong>
+                <p style="color:#aaa;font-size:0.85em;margin:8px 0 16px;">
+                    Test your settings without printing. Enter filament and time to see the breakdown.
+                </p>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                    <div>
+                        <label style="font-size:0.85em;color:#aaa;">Filament (g)</label>
+                        <input type="number" id="calc-grams" min="0" step="0.1" placeholder="72.6"
+                               style="display:block;width:100px;margin-top:4px;padding:6px;
+                                      border-radius:4px;border:1px solid #555;
+                                      background:rgba(255,255,255,0.05);color:#fff;">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:#aaa;">Print time (min)</label>
+                        <input type="number" id="calc-minutes" min="0" step="1" placeholder="337"
+                               style="display:block;width:100px;margin-top:4px;padding:6px;
+                                      border-radius:4px;border:1px solid #555;
+                                      background:rgba(255,255,255,0.05);color:#fff;">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:#aaa;">Filament cost/kg</label>
+                        <input type="number" id="calc-price-kg" min="0" step="0.01" placeholder="24.99"
+                               style="display:block;width:100px;margin-top:4px;padding:6px;
+                                      border-radius:4px;border:1px solid #555;
+                                      background:rgba(255,255,255,0.05);color:#fff;">
+                    </div>
+                    <div style="display:flex;align-items:flex-end;">
+                        <button class="btn btn-small" onclick="runQuickCalc()">Calculate</button>
+                    </div>
+                </div>
+                <div id="quick-calc-result" style="display:none;"></div>
+            </div>
+
+            <div style="margin-top:20px;">
+                <button class="btn" onclick="saveCostSettings()">💾 Save Cost Settings</button>
+                <button class="btn btn-secondary" onclick="loadCostSettings()" style="margin-left:8px;">↺ Reset</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Advanced Settings Tab -->
     <div id="advanced-tab" class="settings-tab-content">
         <div class="config-section">

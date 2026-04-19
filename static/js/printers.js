@@ -341,6 +341,21 @@ function showProcessResult(filename, data, errorMsg) {
                 'padding:10px;color:#a5d6a7;font-size:0.85em;">' +
                 'Spoolman has been updated. Spool remaining weights reflect this print.</div>');
     }
+    // Wire cost calculator — pass total grams and first mapped spool ID
+    if (!errorMsg && data) {
+        var firstSpoolId = 0;
+        // Try to get spool ID from the stored last-process context
+        if (window._lastProcessSpoolId) firstSpoolId = window._lastProcessSpoolId;
+        if (typeof afterProcessSuccess === 'function') {
+            afterProcessSuccess(data.total_g || 0, firstSpoolId);
+        }
+    } else {
+        // Hide cost section on error
+        var cs = document.getElementById('processCostSection');
+        if (cs) cs.style.display = 'none';
+        var cb = document.getElementById('costToggleBtn');
+        if (cb) cb.style.display = 'none';
+    }
     modal.style.display = 'block';
 }
 
