@@ -1,0 +1,598 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// The Moment — derived from FilaBridge (https://github.com/needo37/filabridge)
+// Copyright (C) 2025 needo37 / Copyright (C) 2026 maudy2u
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function escapeHtmlAttribute(value) {
+    if (value == null) return '';
+    const div = document.createElement('div');
+    div.textContent = value;
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function escapeHtml(value) {
+    if (value == null) return '';
+    const div = document.createElement('div');
+    div.textContent = String(value);
+    return div.innerHTML;
+}
+
+function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+// ─── Printer List ─────────────────────────────────────────────────────────────
+
+function loadPrinters() {
+    fetch('/api/printers')
+        .then(response => response.json())
+        .then(data => {
+            const printerList = document.getElementById('printer-list');
+            printerList.innerHTML = '';
+
+            if (data.printers && Object.keys(data.printers).length > 0) {
+                for (const [printerId, printer] of Object.entries(data.printers)) {
+                    if (printerId === 'no_printers') continue;
+                    const card = document.createElement('div');
+                    card.className = 'printer-card';
+                    card.id = 'printer-card-' + printerId;
+                    card.innerHTML = printer.is_virtual
+                        ? buildVirtualPrinterCard(printerId, printer)
+                        : buildRealPrinterCard(printerId, printer);
+                    printerList.appendChild(card);
+                }
+            } else {
+                printerList.innerHTML =
+                    '<div class="printer-card"><p>No printers configured yet.</p>' +
+                    '<p style="color:#aaa;font-size:0.9em;">Click <strong>Add Printer</strong> for real hardware or ' +
+                    '<strong>Add Virtual Test Printer</strong> to test without a printer.</p></div>';
+            }
+        })
+        .catch(error => {
+            console.error('Error loading printers:', error);
+            document.getElementById('printer-list').innerHTML =
+                '<div class="printer-card"><p>Error loading printers. Please refresh.</p></div>';
+        });
+}
+
+// ─── Real Printer Card ────────────────────────────────────────────────────────
+
+function buildRealPrinterCard(printerId, printer) {
+    const toolheadNames = printer.toolhead_names || {};
+    let thHTML = '';
+    for (let i = 0; i < (printer.toolheads || 1); i++) {
+        const n = escapeHtmlAttribute(toolheadNames[i] || 'Toolhead ' + i);
+        thHTML += '<div class="form-row" style="margin-bottom:10px;">' +
+            '<label style="min-width:120px;">Toolhead ' + i + ':</label>' +
+            '<input type="text" id="toolhead-name-' + printerId + '-' + i + '" value="' + n + '" ' +
+            'class="toolhead-name-input" data-printer-id="' + printerId + '" data-toolhead-id="' + i + '" ' +
+            'style="flex:1;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;"></div>';
+    }
+    return '<h3>' + escapeHtml(printer.name || 'Unknown') + '</h3>' +
+        '<div class="printer-info">' +
+        '<div><strong>Model:</strong> ' + escapeHtml(printer.model || 'Unknown') +
+        ' (' + (printer.toolheads || 1) + ' toolhead' + (printer.toolheads > 1 ? 's' : '') + ')</div>' +
+        '<div><strong>Address:</strong> ' + escapeHtml(printer.ip_address || 'Not configured') + '</div>' +
+        '<div><strong>API Key:</strong> ' + (printer.api_key ? '••••••••' : 'Not configured') + '</div>' +
+        '</div>' +
+        '<div class="printer-actions">' +
+        '<button class="btn btn-small" onclick="editPrinter(\'' + printerId + '\')">✏️ Edit</button>' +
+        '<button class="btn btn-small" onclick="toggleToolheadNames(\'' + printerId + '\')">🔤 Rename Toolheads</button>' +
+        '<button class="btn btn-small btn-danger" onclick="deletePrinter(\'' + printerId + '\')">🗑️ Delete</button>' +
+        '</div>' +
+        '<div id="toolhead-names-' + printerId + '" class="toolhead-names-section" style="display:none;margin-top:15px;padding:15px;background:rgba(255,255,255,0.05);border-radius:5px;">' +
+        '<h4 style="margin-top:0;margin-bottom:15px;">Toolhead Names</h4>' + thHTML +
+        '<div style="margin-top:15px;text-align:right;">' +
+        '<button class="btn btn-small" onclick="saveToolheadNames(\'' + printerId + '\')">💾 Save Names</button>' +
+        '<button class="btn btn-small btn-secondary" onclick="cancelToolheadNames(\'' + printerId + '\')">❌ Cancel</button>' +
+        '</div></div>';
+}
+
+// ─── Virtual Printer Card ─────────────────────────────────────────────────────
+
+function buildVirtualPrinterCard(printerId, printer) {
+    const files = printer.files || [];
+    const toolheadNames = printer.toolhead_names || {};
+
+    let thHTML = '';
+    for (let i = 0; i < (printer.toolheads || 1); i++) {
+        const n = escapeHtmlAttribute(toolheadNames[i] || 'Toolhead ' + i);
+        thHTML += '<div class="form-row" style="margin-bottom:10px;">' +
+            '<label style="min-width:120px;">Toolhead ' + i + ':</label>' +
+            '<input type="text" id="toolhead-name-' + printerId + '-' + i + '" value="' + n + '" ' +
+            'class="toolhead-name-input" data-printer-id="' + printerId + '" data-toolhead-id="' + i + '" ' +
+            'style="flex:1;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;"></div>';
+    }
+
+    const fileRows = files.length > 0
+        ? files.map(f => buildFileRow(printerId, f)).join('')
+        : '<tr><td colspan="4" style="text-align:center;color:#888;padding:16px;">No files yet — upload a .gcode or .bgcode file.</td></tr>';
+
+    return '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">' +
+        '<h3 style="margin:0;">' + escapeHtml(printer.name || 'Virtual Printer') + '</h3>' +
+        '<span style="background:#4a3f6b;color:#c8b8ff;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;">🧪 VIRTUAL</span>' +
+        '</div>' +
+        '<div class="printer-info" style="margin-bottom:12px;">' +
+        '<div><strong>Toolheads:</strong> ' + (printer.toolheads || 1) + '</div>' +
+        '<div style="color:#aaa;font-size:0.85em;">Map spools on the Dashboard, then upload and process a G-code file here.</div>' +
+        '</div>' +
+        '<table style="width:100%;border-collapse:collapse;font-size:0.9em;margin-bottom:12px;">' +
+        '<thead><tr style="border-bottom:1px solid #444;color:#aaa;">' +
+        '<th style="text-align:left;padding:6px 8px;">File</th>' +
+        '<th style="text-align:right;padding:6px 8px;">Size</th>' +
+        '<th style="text-align:left;padding:6px 8px;">Uploaded</th>' +
+        '<th style="text-align:right;padding:6px 8px;">Actions</th>' +
+        '</tr></thead>' +
+        '<tbody id="files-body-' + printerId + '">' + fileRows + '</tbody>' +
+        '</table>' +
+        '<div id="upload-area-' + printerId + '" ' +
+        'style="border:2px dashed #555;border-radius:8px;padding:16px;text-align:center;cursor:pointer;transition:border-color 0.2s;" ' +
+        'onclick="document.getElementById(\'file-input-' + printerId + '\').click()" ' +
+        'ondragover="handleDragOver(event,\'' + printerId + '\')" ' +
+        'ondragleave="handleDragLeave(event,\'' + printerId + '\')" ' +
+        'ondrop="handleDrop(event,\'' + printerId + '\')">' +
+        '<div style="font-size:1.5em;margin-bottom:4px;">📂</div>' +
+        '<div style="color:#aaa;font-size:0.85em;">Click to upload or drag &amp; drop<br>' +
+        '<span style="color:#777;font-size:0.9em;">.gcode or .bgcode</span></div>' +
+        '<input type="file" id="file-input-' + printerId + '" accept=".gcode,.bgcode" style="display:none" ' +
+        'onchange="handleFileSelected(event,\'' + printerId + '\')"></div>' +
+        '<div id="upload-progress-' + printerId + '" style="display:none;margin-top:8px;">' +
+        '<div style="background:#333;border-radius:4px;height:6px;overflow:hidden;">' +
+        '<div id="upload-bar-' + printerId + '" style="background:#7c5cfc;height:100%;width:0%;transition:width 0.3s;"></div></div>' +
+        '<div id="upload-status-' + printerId + '" style="color:#aaa;font-size:0.8em;margin-top:4px;text-align:center;">Uploading…</div>' +
+        '</div>' +
+        '<div class="printer-actions" style="margin-top:14px;">' +
+        '<button class="btn btn-small" onclick="toggleToolheadNames(\'' + printerId + '\')">🔤 Rename Toolheads</button>' +
+        '<button class="btn btn-small btn-danger" onclick="deleteVirtualPrinter(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name) + '\')">🗑️ Delete Printer</button>' +
+        '</div>' +
+        '<div id="toolhead-names-' + printerId + '" class="toolhead-names-section" style="display:none;margin-top:15px;padding:15px;background:rgba(255,255,255,0.05);border-radius:5px;">' +
+        '<h4 style="margin-top:0;margin-bottom:15px;">Toolhead Names</h4>' + thHTML +
+        '<div style="margin-top:15px;text-align:right;">' +
+        '<button class="btn btn-small" onclick="saveToolheadNames(\'' + printerId + '\')">💾 Save Names</button>' +
+        '<button class="btn btn-small btn-secondary" onclick="cancelToolheadNames(\'' + printerId + '\')">❌ Cancel</button>' +
+        '</div></div>';
+}
+
+function buildFileRow(printerId, f) {
+    const uploaded = new Date(f.uploaded_at).toLocaleDateString();
+    const safeName = escapeHtml(f.display_name || f.filename);
+    const safeAttr = escapeHtmlAttribute(f.display_name || f.filename);
+    return '<tr id="file-row-' + f.id + '" style="border-bottom:1px solid #333;">' +
+        '<td style="padding:8px;word-break:break-all;" title="' + safeAttr + '">' + safeName + '</td>' +
+        '<td style="padding:8px;text-align:right;color:#aaa;white-space:nowrap;">' + formatBytes(f.file_size || 0) + '</td>' +
+        '<td style="padding:8px;color:#aaa;white-space:nowrap;">' + uploaded + '</td>' +
+        '<td style="padding:8px;text-align:right;white-space:nowrap;">' +
+        '<button class="btn btn-small" onclick="processFile(\'' + printerId + '\',' + f.id + ',\'' + safeAttr + '\')" title="Parse and update Spoolman">▶ Process</button> ' +
+        '<button class="btn btn-small btn-secondary" onclick="downloadFile(\'' + printerId + '\',' + f.id + ',\'' + safeAttr + '\')" title="Download">⬇</button> ' +
+        '<button class="btn btn-small btn-danger" onclick="deleteFile(\'' + printerId + '\',' + f.id + ',\'' + safeAttr + '\')" title="Delete">🗑</button>' +
+        '</td></tr>';
+}
+
+// ─── Drag and Drop ────────────────────────────────────────────────────────────
+
+function handleDragOver(event, printerId) {
+    event.preventDefault();
+    var a = document.getElementById('upload-area-' + printerId);
+    if (a) a.style.borderColor = '#7c5cfc';
+}
+
+function handleDragLeave(event, printerId) {
+    var a = document.getElementById('upload-area-' + printerId);
+    if (a) a.style.borderColor = '#555';
+}
+
+function handleDrop(event, printerId) {
+    event.preventDefault();
+    var a = document.getElementById('upload-area-' + printerId);
+    if (a) a.style.borderColor = '#555';
+    var files = event.dataTransfer.files;
+    if (files.length > 0) uploadFileForPrinter(printerId, files[0]);
+}
+
+function handleFileSelected(event, printerId) {
+    var file = event.target.files[0];
+    if (file) {
+        uploadFileForPrinter(printerId, file);
+        event.target.value = '';
+    }
+}
+
+// ─── File Upload ──────────────────────────────────────────────────────────────
+
+function uploadFileForPrinter(printerId, file) {
+    var name = file.name.toLowerCase();
+    if (!name.endsWith('.gcode') && !name.endsWith('.bgcode')) {
+        alert('Only .gcode and .bgcode files are supported.');
+        return;
+    }
+
+    var progress = document.getElementById('upload-progress-' + printerId);
+    var bar = document.getElementById('upload-bar-' + printerId);
+    var status = document.getElementById('upload-status-' + printerId);
+    var area = document.getElementById('upload-area-' + printerId);
+
+    if (progress) progress.style.display = 'block';
+    if (area) area.style.opacity = '0.5';
+    if (bar) bar.style.width = '30%';
+    if (status) status.textContent = 'Uploading ' + file.name + '…';
+
+    var formData = new FormData();
+    formData.append('file', file);
+
+    fetch('/api/printers/' + printerId + '/files', { method: 'POST', body: formData })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (bar) bar.style.width = '100%';
+            if (data.error) {
+                if (status) status.textContent = '❌ ' + data.error;
+                setTimeout(function() {
+                    if (progress) progress.style.display = 'none';
+                    if (area) { area.style.opacity = '1'; area.style.borderColor = '#555'; }
+                    if (bar) bar.style.width = '0%';
+                }, 3000);
+                return;
+            }
+            if (status) {
+                status.textContent = data.has_usage ? '✅ Uploaded successfully' : '⚠️ Uploaded — no filament usage metadata found';
+                status.style.color = data.has_usage ? '#81c784' : '#ffb74d';
+            }
+            setTimeout(function() {
+                if (progress) progress.style.display = 'none';
+                if (area) { area.style.opacity = '1'; area.style.borderColor = '#555'; }
+                if (bar) bar.style.width = '0%';
+                if (status) { status.textContent = 'Uploading…'; status.style.color = ''; }
+                refreshVirtualPrinterFiles(printerId);
+            }, 1800);
+        })
+        .catch(function(err) {
+            if (status) status.textContent = '❌ ' + err.message;
+            if (bar) bar.style.width = '0%';
+            setTimeout(function() {
+                if (progress) progress.style.display = 'none';
+                if (area) area.style.opacity = '1';
+            }, 3000);
+        });
+}
+
+function refreshVirtualPrinterFiles(printerId) {
+    fetch('/api/printers/' + printerId + '/files')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var tbody = document.getElementById('files-body-' + printerId);
+            if (!tbody) return;
+            var files = data.files || [];
+            tbody.innerHTML = files.length > 0
+                ? files.map(function(f) { return buildFileRow(printerId, f); }).join('')
+                : '<tr><td colspan="4" style="text-align:center;color:#888;padding:16px;">No files yet — upload a .gcode or .bgcode file.</td></tr>';
+        })
+        .catch(function(err) { console.error('Error refreshing files:', err); });
+}
+
+// ─── File Actions ─────────────────────────────────────────────────────────────
+
+function processFile(printerId, fileId, filename) {
+    var row = document.getElementById('file-row-' + fileId);
+    var btn = row ? row.querySelector('button') : null;
+    if (btn) { btn.disabled = true; btn.textContent = '⏳ Processing…'; }
+
+    fetch('/api/printers/' + printerId + '/files/' + fileId + '/process', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (btn) { btn.disabled = false; btn.textContent = '▶ Process'; }
+            showProcessResult(filename, data.error ? null : data, data.error || null);
+        })
+        .catch(function(err) {
+            if (btn) { btn.disabled = false; btn.textContent = '▶ Process'; }
+            showProcessResult(filename, null, err.message);
+        });
+}
+
+function showProcessResult(filename, data, errorMsg) {
+    var modal = document.getElementById('processResultModal');
+    var body  = document.getElementById('processResultBody');
+    var hdr   = modal ? modal.querySelector('h3') : null;
+
+    if (!modal || !body) {
+        alert(errorMsg ? ('Processing failed: ' + errorMsg) :
+            ('Done! Total: ' + (data && data.total_g ? data.total_g.toFixed(2) : '?') + 'g'));
+        return;
+    }
+
+    if (errorMsg) {
+        if (hdr) hdr.textContent = '❌ Processing Failed';
+        body.innerHTML = '<p><strong>File:</strong> ' + escapeHtml(filename) + '</p>' +
+            '<div style="background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;padding:12px;color:#ef9a9a;">' +
+            escapeHtml(errorMsg) + '</div>' +
+            '<p style="margin-top:12px;color:#aaa;font-size:0.85em;">Check that spools are mapped to toolheads on the Dashboard.</p>';
+    } else {
+        if (hdr) hdr.textContent = '✅ Processing Complete';
+        var usage = data.usage || {};
+        var rows = Object.keys(usage).sort(function(a,b){return a-b;}).map(function(t) {
+            return '<tr><td style="padding:6px 8px;">Toolhead ' + t + '</td>' +
+                '<td style="padding:6px 8px;text-align:right;">' + Number(usage[t]).toFixed(2) + ' g</td></tr>';
+        }).join('');
+        body.innerHTML = '<p><strong>File:</strong> ' + escapeHtml(filename) + '</p>' +
+            '<table style="width:100%;border-collapse:collapse;margin-bottom:12px;font-size:0.9em;">' +
+            '<thead><tr style="border-bottom:1px solid #444;color:#aaa;">' +
+            '<th style="text-align:left;padding:6px 8px;">Toolhead</th>' +
+            '<th style="text-align:right;padding:6px 8px;">Filament Used</th></tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+            '<tfoot><tr style="border-top:1px solid #444;font-weight:600;">' +
+            '<td style="padding:8px;">Total</td>' +
+            '<td style="padding:8px;text-align:right;">' + Number(data.total_g || 0).toFixed(2) + ' g</td></tr></tfoot>' +
+            '</table>' +
+            '<div style="background:rgba(129,199,132,0.1);border:1px solid #81c784;border-radius:6px;padding:10px;color:#a5d6a7;font-size:0.85em;">' +
+            'Spoolman has been updated. Spool remaining weights reflect this print.</div>';
+    }
+    modal.style.display = 'block';
+}
+
+function closeProcessResultModal() {
+    var m = document.getElementById('processResultModal');
+    if (m) m.style.display = 'none';
+}
+
+function deleteFile(printerId, fileId, filename) {
+    if (!confirm('Delete "' + filename + '"?\nThis cannot be undone.')) return;
+    fetch('/api/printers/' + printerId + '/files/' + fileId, { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) { alert('Error: ' + data.error); return; }
+            var row = document.getElementById('file-row-' + fileId);
+            if (row) {
+                row.style.transition = 'opacity 0.3s';
+                row.style.opacity = '0';
+                setTimeout(function() {
+                    row.remove();
+                    var tbody = document.getElementById('files-body-' + printerId);
+                    if (tbody && tbody.querySelectorAll('tr').length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#888;padding:16px;">No files yet.</td></tr>';
+                    }
+                }, 300);
+            }
+        })
+        .catch(function(err) { alert('Error: ' + err.message); });
+}
+
+function downloadFile(printerId, fileId, filename) {
+    var a = document.createElement('a');
+    a.href = '/api/printers/' + printerId + '/files/' + fileId + '/download';
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+// ─── Virtual Printer Modal ────────────────────────────────────────────────────
+
+function showVirtualPrinterForm() {
+    var m = document.getElementById('addVirtualPrinterModal');
+    if (!m) { alert('Modal not found — please refresh.'); return; }
+    m.style.display = 'block';
+    document.getElementById('addVirtualPrinterForm').reset();
+}
+
+function closeVirtualPrinterModal() {
+    var m = document.getElementById('addVirtualPrinterModal');
+    if (m) m.style.display = 'none';
+}
+
+function deleteVirtualPrinter(printerId, name) {
+    if (!confirm('Delete virtual printer "' + name + '" and all its uploaded files?\nThis cannot be undone.')) return;
+    fetch('/api/printers/' + printerId, { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) { alert('Error: ' + data.error); return; }
+            loadPrinters();
+        })
+        .catch(function(err) { alert('Error: ' + err.message); });
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    var form = document.getElementById('addVirtualPrinterForm');
+    if (!form) return;
+    form.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var name = (document.getElementById('virtualPrinterName').value || '').trim();
+        var toolheads = parseInt(document.getElementById('virtualPrinterToolheads').value) || 1;
+        if (!name) { alert('Printer name is required.'); return; }
+        var btn = form.querySelector('button[type="submit"]');
+        var orig = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+
+        fetch('/api/printers/virtual', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name, toolheads: toolheads })
+        })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+                if (data.error) { alert('Error: ' + data.error); return; }
+                closeVirtualPrinterModal();
+                loadPrinters();
+            })
+            .catch(function(err) {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+                alert('Error: ' + err.message);
+            });
+    });
+});
+
+// ─── Real Printer Modals ──────────────────────────────────────────────────────
+
+function showAddPrinterForm() {
+    document.getElementById('addPrinterModal').style.display = 'block';
+    document.getElementById('addPrinterForm').reset();
+    setTimeout(function() {
+        var b = document.querySelector('#addPrinterForm button[type="submit"]');
+        if (b) { b.disabled = false; b.textContent = 'Add Printer'; }
+    }, 0);
+}
+
+function closeAddPrinterModal() {
+    document.getElementById('addPrinterModal').style.display = 'none';
+    var b = document.querySelector('#addPrinterForm button[type="submit"]');
+    if (b) { b.disabled = false; b.textContent = 'Add Printer'; }
+}
+
+function closeEditPrinterModal() {
+    document.getElementById('editPrinterModal').style.display = 'none';
+    var b = document.querySelector('#editPrinterForm button[type="submit"]');
+    if (b) { b.disabled = false; b.textContent = 'Update Printer'; }
+}
+
+window.addEventListener('click', function(event) {
+    var pairs = [
+        ['addPrinterModal',        closeAddPrinterModal],
+        ['editPrinterModal',       closeEditPrinterModal],
+        ['addVirtualPrinterModal', closeVirtualPrinterModal],
+        ['processResultModal',     closeProcessResultModal]
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+        var el = document.getElementById(pairs[i][0]);
+        if (el && event.target === el) { pairs[i][1](); break; }
+    }
+});
+
+function addPrinter(printerConfig) {
+    return fetch('/api/printers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(printerConfig)
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.error) throw new Error(d.error);
+        return d;
+    });
+}
+
+document.getElementById('addPrinterForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    if (!this.checkValidity()) return;
+    var fd = new FormData(this);
+    var btn = this.querySelector('button[type="submit"]');
+    var orig = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Detecting model…'; }
+    detectModelAndAddPrinter(fd.get('name'), fd.get('ip_address'), fd.get('api_key'),
+        parseInt(fd.get('toolheads')), btn, orig);
+});
+
+document.getElementById('editPrinterForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var fd = new FormData(this);
+    var pid = fd.get('printerId');
+    if (!pid) { alert('Printer ID missing.'); return; }
+    var btn = this.querySelector('button[type="submit"]');
+    var orig = btn ? (btn.textContent || 'Update Printer') : '';
+    if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
+
+    fetch('/api/printers/' + pid, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            name: fd.get('name'), model: fd.get('model'),
+            ip_address: fd.get('ip_address'), api_key: fd.get('api_key'),
+            toolheads: parseInt(fd.get('toolheads'))
+        })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) throw new Error(data.error);
+        closeEditPrinterModal();
+        loadPrinters();
+    }).catch(function(err) {
+        if (btn) { btn.disabled = false; btn.textContent = orig; }
+        alert('Error: ' + err.message);
+    });
+});
+
+function detectModelAndAddPrinter(name, ip, key, toolheads, btn, orig) {
+    fetch('/api/detect_printer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip_address: ip, api_key: key })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) throw new Error(data.error);
+        return addPrinter({ name: name, model: data.model || 'Unknown',
+            ip_address: ip, api_key: key, toolheads: toolheads });
+    }).then(function() {
+        closeAddPrinterModal();
+        loadPrinters();
+    }).catch(function(err) {
+        if (btn) { btn.disabled = false; btn.textContent = orig; }
+        alert('Error: ' + err.message);
+    });
+}
+
+function editPrinter(printerId) {
+    fetch('/api/printers').then(function(r) { return r.json(); }).then(function(data) {
+        var p = data.printers[printerId];
+        if (!p) { alert('Printer not found'); return; }
+        document.getElementById('editPrinterId').value = printerId;
+        document.getElementById('editPrinterName').value = p.name || '';
+        document.getElementById('editPrinterModel').value = p.model || '';
+        document.getElementById('editPrinterIP').value = p.ip_address || '';
+        document.getElementById('editPrinterAPIKey').value = p.api_key || '';
+        document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
+        document.getElementById('editPrinterModal').style.display = 'block';
+    }).catch(function() { alert('Error loading printer data'); });
+}
+
+function deletePrinter(printerId) {
+    if (!confirm('Delete this printer?')) return;
+    fetch('/api/printers/' + printerId, { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) { alert('Error: ' + data.error); return; }
+            loadPrinters();
+        })
+        .catch(function(err) { alert('Error: ' + err.message); });
+}
+
+// ─── Toolhead Names ───────────────────────────────────────────────────────────
+
+function toggleToolheadNames(printerId) {
+    var s = document.getElementById('toolhead-names-' + printerId);
+    if (!s) return;
+    if (s.style.display === 'none') {
+        s.style.display = 'block';
+        s.querySelectorAll('.toolhead-name-input').forEach(function(i) {
+            i.dataset.originalValue = i.value;
+        });
+    } else { s.style.display = 'none'; }
+}
+
+function saveToolheadNames(printerId) {
+    var s = document.getElementById('toolhead-names-' + printerId);
+    if (!s) return;
+    var updates = [];
+    s.querySelectorAll('.toolhead-name-input').forEach(function(inp) {
+        var n = inp.value.trim();
+        if (n && n !== (inp.dataset.originalValue || '')) {
+            updates.push({ toolheadId: parseInt(inp.dataset.toolheadId), name: n });
+        }
+    });
+    if (updates.length === 0) { alert('No changes to save'); return; }
+    Promise.all(updates.map(function(u) {
+        return fetch('/api/printers/' + printerId + '/toolheads/' + u.toolheadId, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: u.name })
+        }).then(function(r) { return r.json(); }).then(function(d) {
+            if (d.error) throw new Error(d.error);
+        });
+    })).then(function() {
+        s.style.display = 'none';
+        loadPrinters();
+    }).catch(function(err) { alert('Error: ' + err.message); });
+}
+
+function cancelToolheadNames(printerId) {
+    var s = document.getElementById('toolhead-names-' + printerId);
+    if (!s) return;
+    s.querySelectorAll('.toolhead-name-input').forEach(function(i) {
+        if (i.dataset.originalValue) i.value = i.dataset.originalValue;
+    });
+    s.style.display = 'none';
+}
