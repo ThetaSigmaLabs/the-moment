@@ -1,4 +1,4 @@
-/* The Moment Dashboard - Component Styles */
+/* FilaBridge Dashboard - Component Styles */
 
 /* Buttons */
 .btn {
@@ -19,7 +19,7 @@
 .btn:hover {
     background: #218838;
     transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
 }
 
 .btn-secondary {
@@ -57,20 +57,18 @@
     color: #fff;
 }
 
-.form-group input,
-.form-group select {
+.form-group input, .form-group select {
     width: 100%;
     padding: 12px;
-    border: 2px solid rgba(255, 255, 255, 0.2);
+    border: 2px solid rgba(255,255,255,0.2);
     border-radius: 8px;
     font-size: 16px;
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255,255,255,0.1);
     color: #fff;
     transition: border-color 0.3s ease;
 }
 
-.form-group input:focus,
-.form-group select:focus {
+.form-group input:focus, .form-group select:focus {
     outline: none;
     border-color: #667eea;
 }
@@ -99,11 +97,11 @@
 
 /* Configuration Sections */
 .config-section {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(255,255,255,0.05);
     padding: 25px;
     margin: 20px 0;
     border-radius: 10px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255,255,255,0.1);
     overflow: visible;
 }
 
@@ -113,7 +111,7 @@
 }
 
 .advanced-settings {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(255,255,255,0.05);
     padding: 20px;
     border-radius: 8px;
     margin-top: 15px;
@@ -124,7 +122,7 @@
     font-style: italic;
     margin-bottom: 20px;
     padding: 10px;
-    background: rgba(255, 193, 7, 0.1);
+    background: rgba(255,193,7,0.1);
     border-left: 3px solid #ffc107;
     border-radius: 4px;
 }
@@ -143,25 +141,38 @@
     font-size: 0.8em;
 }
 
-.status.idle {
-    background: #d4edda;
-    color: #155724;
+.status.idle { 
+    background: #d4edda; 
+    color: #155724; 
 }
 
-.status.printing {
-    background: #fff3cd;
-    color: #856404;
+.status.printing { 
+    background: #fff3cd; 
+    color: #856404; 
 }
 
-.status.offline {
-    background: #f8d7da;
-    color: #721c24;
+.status.offline { 
+    background: #f8d7da; 
+    color: #721c24; 
 }
 
-.status.not_configured {
-    background: #e2e3e5;
-    color: #383d41;
+.status.not_configured { 
+    background: #e2e3e5; 
+    color: #383d41; 
 }
+
+.status.virtual {
+    background: #ede7f6;
+    color: #4a148c;
+}
+
+/* PrusaLink returns uppercase states — mirror lowercase classes for initial render */
+.status.IDLE      { background: #d4edda; color: #155724; }
+.status.PRINTING  { background: #fff3cd; color: #856404; }
+.status.PAUSED    { background: #cce5ff; color: #004085; }
+.status.STOPPED   { background: #f8d7da; color: #721c24; }
+.status.ATTENTION { background: #ffeeba; color: #856404; }
+.status.FINISHED  { background: #d4edda; color: #155724; }
 
 /* Color Swatches */
 .color-swatch {
@@ -175,9 +186,9 @@
 
 /* Toolhead Specific Styles */
 .toolhead-select {
-    background: rgba(255, 255, 255, 0.1) !important;
+    background: rgba(255,255,255,0.1) !important;
     color: #fff !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border: 1px solid rgba(255,255,255,0.2) !important;
     padding: 8px !important;
     border-radius: 4px !important;
 }
@@ -192,8 +203,7 @@
 }
 
 .edit-spool-btn {
-    background: #007bff;
-    /* Fallback color */
+    background: #007bff; /* Fallback color */
     color: white;
     padding: 8px 12px;
     border: 1px solid transparent;
@@ -208,7 +218,7 @@
 
 .edit-spool-btn:hover {
     transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     filter: brightness(0.8);
 }
 

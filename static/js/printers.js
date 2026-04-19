@@ -306,14 +306,25 @@ function showProcessResult(filename, data, errorMsg) {
         body.innerHTML = '<p><strong>File:</strong> ' + escapeHtml(filename) + '</p>' +
             '<div style="background:rgba(244,67,54,0.1);border:1px solid #f44336;border-radius:6px;padding:12px;color:#ef9a9a;">' +
             escapeHtml(errorMsg) + '</div>' +
-            '<p style="margin-top:12px;color:#aaa;font-size:0.85em;">Check that spools are mapped to toolheads on the Dashboard.</p>';
+            '<p style="margin-top:12px;color:#aaa;font-size:0.85em;">' +
+            'Ensure spools are mapped to toolheads on the Dashboard before processing.</p>';
     } else {
-        if (hdr) hdr.textContent = '✅ Processing Complete';
+        var hasSkipped = data && data.skipped_toolheads && data.skipped_toolheads.length > 0;
+        if (hdr) hdr.textContent = hasSkipped ? '⚠️ Processed with Warnings' : '✅ Processing Complete';
         var usage = data.usage || {};
         var rows = Object.keys(usage).sort(function(a,b){return a-b;}).map(function(t) {
             return '<tr><td style="padding:6px 8px;">Toolhead ' + t + '</td>' +
                 '<td style="padding:6px 8px;text-align:right;">' + Number(usage[t]).toFixed(2) + ' g</td></tr>';
         }).join('');
+        var skippedHTML = '';
+        if (hasSkipped) {
+            var skippedList = data.skipped_toolheads.join(', T');
+            skippedHTML = '<div style="background:rgba(255,152,0,0.1);border:1px solid #ff9800;' +
+                'border-radius:6px;padding:10px;color:#ffcc80;font-size:0.85em;margin-top:10px;">' +
+                '<strong>⚠️ Toolhead(s) T' + skippedList + ' had filament usage but no spool was mapped.</strong><br>' +
+                'Go to the Dashboard, assign a spool to those toolheads, then process this file again.' +
+                '</div>';
+        }
         body.innerHTML = '<p><strong>File:</strong> ' + escapeHtml(filename) + '</p>' +
             '<table style="width:100%;border-collapse:collapse;margin-bottom:12px;font-size:0.9em;">' +
             '<thead><tr style="border-bottom:1px solid #444;color:#aaa;">' +
@@ -324,8 +335,10 @@ function showProcessResult(filename, data, errorMsg) {
             '<td style="padding:8px;">Total</td>' +
             '<td style="padding:8px;text-align:right;">' + Number(data.total_g || 0).toFixed(2) + ' g</td></tr></tfoot>' +
             '</table>' +
-            '<div style="background:rgba(129,199,132,0.1);border:1px solid #81c784;border-radius:6px;padding:10px;color:#a5d6a7;font-size:0.85em;">' +
-            'Spoolman has been updated. Spool remaining weights reflect this print.</div>';
+            (hasSkipped ? skippedHTML :
+                '<div style="background:rgba(129,199,132,0.1);border:1px solid #81c784;border-radius:6px;' +
+                'padding:10px;color:#a5d6a7;font-size:0.85em;">' +
+                'Spoolman has been updated. Spool remaining weights reflect this print.</div>');
     }
     modal.style.display = 'block';
 }

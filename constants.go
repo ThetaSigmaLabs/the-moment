@@ -14,6 +14,7 @@ const (
 	StateAttention     = "ATTENTION" // Filament runout / change required
 	StateOffline       = "offline"   // Cannot reach printer
 	StateNotConfigured = "not_configured"
+	StateVirtual       = "virtual"   // Virtual test printer — no hardware
 )
 
 // Default configuration values

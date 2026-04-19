@@ -36,11 +36,16 @@
             <div class="form-group">
                 <label for="printerToolheads">Number of Toolheads</label>
                 <select id="printerToolheads" name="toolheads">
-                    <option value="1">1 Toolhead</option>
+                    <option value="1" selected>1 Toolhead</option>
                     <option value="2">2 Toolheads</option>
                     <option value="3">3 Toolheads</option>
                     <option value="4">4 Toolheads</option>
                     <option value="5">5 Toolheads</option>
+                    <option value="6">6 Toolheads</option>
+                    <option value="7">7 Toolheads</option>
+                    <option value="8">8 Toolheads</option>
+                    <option value="9">9 Toolheads</option>
+                    <option value="10">10 Toolheads</option>
                 </select>
                 <small>How many toolheads does your printer have?</small>
             </div>
@@ -87,11 +92,16 @@
             <div class="form-group">
                 <label for="editPrinterToolheads">Number of Toolheads</label>
                 <select id="editPrinterToolheads" name="toolheads">
-                    <option value="1">1 Toolhead</option>
+                    <option value="1" selected>1 Toolhead</option>
                     <option value="2">2 Toolheads</option>
                     <option value="3">3 Toolheads</option>
                     <option value="4">4 Toolheads</option>
                     <option value="5">5 Toolheads</option>
+                    <option value="6">6 Toolheads</option>
+                    <option value="7">7 Toolheads</option>
+                    <option value="8">8 Toolheads</option>
+                    <option value="9">9 Toolheads</option>
+                    <option value="10">10 Toolheads</option>
                 </select>
             </div>
             <div class="modal-actions">
@@ -111,27 +121,31 @@
         </div>
         <p style="margin: 0 0 16px; color: #aaa; font-size: 0.9em;">
             A virtual printer lets you upload real G-code files and test Spoolman integration
-            without a physical printer. Upload a file, map your spools, then click Process to
-            deduct filament usage exactly as a real print would.
+            without a physical printer. Map spools to toolheads on the Dashboard, upload a file,
+            then click Process to deduct filament usage.
         </p>
         <form id="addVirtualPrinterForm">
             <div class="form-group">
                 <label for="virtualPrinterName">Printer Name *</label>
                 <input type="text" id="virtualPrinterName" name="name" required
                        placeholder="e.g., My Test Printer">
-                <small>A descriptive name — appears in your spool mapping UI</small>
+                <small>Appears in the Dashboard spool mapping UI</small>
             </div>
             <div class="form-group">
                 <label for="virtualPrinterToolheads">Number of Toolheads</label>
                 <select id="virtualPrinterToolheads" name="toolheads">
-                    <option value="1">1 Toolhead (single material)</option>
+                    <option value="1">1 Toolhead</option>
                     <option value="2">2 Toolheads</option>
                     <option value="3">3 Toolheads</option>
                     <option value="4">4 Toolheads</option>
-                    <option value="5">5 Toolheads (XL)</option>
-                    <option value="8">8 Toolheads (INDX)</option>
+                    <option value="5">5 Toolheads</option>
+                    <option value="6">6 Toolheads</option>
+                    <option value="7">7 Toolheads</option>
+                    <option value="8">8 Toolheads</option>
+                    <option value="9">9 Toolheads</option>
+                    <option value="10">10 Toolheads</option>
                 </select>
-                <small>Match the toolhead count to the G-code files you plan to upload</small>
+                <small>Match this to the G-code files you plan to upload</small>
             </div>
             <div class="modal-actions">
                 <button type="button" class="btn btn-secondary" onclick="closeVirtualPrinterModal()">Cancel</button>
@@ -141,15 +155,14 @@
     </div>
 </div>
 
-<!-- Virtual Printer Process Result Modal -->
+<!-- Process Result Modal -->
 <div id="processResultModal" class="modal">
     <div class="modal-content">
         <div class="modal-header">
-            <h3>✅ Processing Complete</h3>
+            <h3 id="processResultTitle">✅ Processing Complete</h3>
             <button class="close" onclick="closeProcessResultModal()">&times;</button>
         </div>
-        <div id="processResultBody" style="padding: 8px 0;">
-        </div>
+        <div id="processResultBody" style="padding: 8px 0;"></div>
         <div class="modal-actions">
             <button class="btn" onclick="closeProcessResultModal()">Done</button>
         </div>

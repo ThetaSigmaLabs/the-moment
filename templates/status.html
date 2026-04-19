@@ -50,13 +50,28 @@
         {{$printerData := index $.Status.Printers $printerID}}
         <div class="printer" data-printer-id="{{$printerID}}">
             <div class="printer-header">
-                <h3>{{$printerData.Name}}</h3>
+                <h3>
+                    {{$printerData.Name}}
+                    {{if $printerConfig.IsVirtual}}
+                    <span style="background:#ede7f6;color:#4a148c;padding:2px 8px;border-radius:12px;
+                                 font-size:0.7em;font-weight:600;vertical-align:middle;margin-left:6px;">
+                        🧪 VIRTUAL
+                    </span>
+                    {{end}}
+                </h3>
                 <span class="status {{$printerData.State}}">
-                    {{$printerData.State}}
+                    {{if eq $printerData.State "virtual"}}READY{{else}}{{$printerData.State}}{{end}}
                 </span>
             </div>
-            
+
+            {{if $printerConfig.IsVirtual}}
+            <p style="color:#aaa;font-size:0.9em;margin-bottom:4px;">
+                <strong>Toolheads:</strong> {{$printerConfig.Toolheads}} &nbsp;|&nbsp;
+                Map spools below, then upload &amp; process a G-code file in <strong>Settings → Printers</strong>.
+            </p>
+            {{else}}
             <p><strong>Model:</strong> {{$printerConfig.Model}} ({{$printerConfig.Toolheads}} toolhead{{if ne $printerConfig.Toolheads 1}}s{{end}})</p>
+            {{end}}
 
             <div class="mapping-section">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">

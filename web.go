@@ -10,12 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	neturl "net/url"
 	"sort"
-	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,7 +164,7 @@ func (ws *WebServer) setupRoutes() {
 		api.PUT("/printers/:id/toolheads/:toolhead_id", ws.updateToolheadNameHandler)
 		api.POST("/detect_printer", ws.detectPrinterHandler)
 
-		// Virtual test printer routes
+		// Virtual test printer — file management
 		api.POST("/printers/virtual", ws.addVirtualPrinterHandler)
 		api.GET("/printers/:id/files", ws.listVirtualFilesHandler)
 		api.POST("/printers/:id/files", ws.uploadVirtualFileHandler)
@@ -456,17 +456,16 @@ func validatePrinterConfig(config PrinterConfig) error {
 	if config.Name == "" {
 		return fmt.Errorf("printer name is required")
 	}
-	// Virtual printers use the sentinel IP "virtual" — no network address needed
+	// Virtual printers use sentinel IP "virtual" — no real address required
 	if !config.IsVirtual && config.IPAddress == "" {
 		return fmt.Errorf("address is required")
 	}
 	if config.Toolheads < 1 {
 		return fmt.Errorf("toolheads must be at least 1")
 	}
-	// Virtual printers support up to MaxToolheads (e.g. INDX 8-head simulation)
 	maxHeads := 10
 	if config.IsVirtual {
-		maxHeads = MaxToolheads
+		maxHeads = MaxToolheads // up to 16 for INDX simulation
 	}
 	if config.Toolheads > maxHeads {
 		return fmt.Errorf("toolheads cannot exceed %d", maxHeads)
@@ -705,7 +704,7 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 			"is_virtual": printerConfig.IsVirtual,
 		}
 
-		// For virtual printers, include the file list so the UI can render it immediately
+		// Include uploaded file list for virtual printers so the card renders immediately
 		if printerConfig.IsVirtual {
 			files, _ := ws.bridge.GetVirtualPrinterFiles(printerID)
 			printerData["files"] = files
@@ -1142,8 +1141,7 @@ func (ws *WebServer) testPrintCompleteHandler(c *gin.Context) {
 
 // ─── Virtual Test Printer Handlers ───────────────────────────────────────────
 
-// addVirtualPrinterHandler creates a virtual test printer.
-// Virtual printers require only a name and toolhead count — no IP or API key.
+// addVirtualPrinterHandler creates a virtual test printer (no IP or API key needed).
 func (ws *WebServer) addVirtualPrinterHandler(c *gin.Context) {
 	ws.operationMutex.Lock()
 	defer ws.operationMutex.Unlock()
@@ -1156,10 +1154,6 @@ func (ws *WebServer) addVirtualPrinterHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Name == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
 	if req.Toolheads < 1 {
 		req.Toolheads = 1
 	}
@@ -1169,15 +1163,14 @@ func (ws *WebServer) addVirtualPrinterHandler(c *gin.Context) {
 	}
 
 	printerID := fmt.Sprintf("virtual_%d", time.Now().UnixNano())
-	config := PrinterConfig{
+	cfg := PrinterConfig{
 		Name:      req.Name,
 		Model:     "Virtual Test Printer",
 		IPAddress: "virtual",
 		Toolheads: req.Toolheads,
 		IsVirtual: true,
 	}
-
-	if err := ws.bridge.SavePrinterConfig(printerID, config); err != nil {
+	if err := ws.bridge.SavePrinterConfig(printerID, cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -1185,18 +1178,13 @@ func (ws *WebServer) addVirtualPrinterHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reload configuration"})
 		return
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"message":    "Virtual test printer created",
-		"printer_id": printerID,
-	})
+	c.JSON(http.StatusOK, gin.H{"message": "Virtual test printer created", "printer_id": printerID})
 }
 
-// uploadVirtualFileHandler accepts a multipart .gcode or .bgcode file upload.
+// uploadVirtualFileHandler accepts multipart .gcode or .bgcode uploads.
 func (ws *WebServer) uploadVirtualFileHandler(c *gin.Context) {
 	printerID := c.Param("id")
 
-	// Verify printer exists and is virtual
 	configs, err := ws.bridge.GetAllPrinterConfigs()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1212,34 +1200,29 @@ func (ws *WebServer) uploadVirtualFileHandler(c *gin.Context) {
 		return
 	}
 
-	// Parse multipart — limit to 100MB
 	if err := c.Request.ParseMultipartForm(100 << 20); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse upload"})
 		return
 	}
-
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No file provided — use field name 'file'"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No file provided (use field name 'file')"})
 		return
 	}
 	defer file.Close()
 
-	// Validate extension
-	name := strings.ToLower(header.Filename)
-	if !strings.HasSuffix(name, ".gcode") && !strings.HasSuffix(name, ".bgcode") {
+	lower := strings.ToLower(header.Filename)
+	if !strings.HasSuffix(lower, ".gcode") && !strings.HasSuffix(lower, ".bgcode") {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Only .gcode and .bgcode files are supported"})
 		return
 	}
 
-	// Read content
 	content, err := io.ReadAll(file)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file"})
 		return
 	}
 
-	// Quick parse to validate the file has usable metadata
 	client := &PrusaLinkClient{}
 	usage, _ := client.ParseGcodeFilamentUsage(content)
 	hasUsage := len(usage) > 0
@@ -1252,9 +1235,8 @@ func (ws *WebServer) uploadVirtualFileHandler(c *gin.Context) {
 
 	msg := "File uploaded successfully"
 	if !hasUsage {
-		msg = "File uploaded but no filament usage metadata was found. Spoolman will not be updated when processed."
+		msg = "File uploaded but no filament usage metadata found — Spoolman will not be updated when processed"
 	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"message":    msg,
 		"file_id":    fileID,
@@ -1265,7 +1247,7 @@ func (ws *WebServer) uploadVirtualFileHandler(c *gin.Context) {
 	})
 }
 
-// listVirtualFilesHandler returns all uploaded files for a virtual printer.
+// listVirtualFilesHandler returns metadata for all uploaded files on a virtual printer.
 func (ws *WebServer) listVirtualFilesHandler(c *gin.Context) {
 	printerID := c.Param("id")
 
@@ -1274,12 +1256,10 @@ func (ws *WebServer) listVirtualFilesHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	printer, ok := configs[printerID]
-	if !ok {
+	if p, ok := configs[printerID]; !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Printer not found"})
 		return
-	}
-	if !printer.IsVirtual {
+	} else if !p.IsVirtual {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "File listing is only available for virtual printers"})
 		return
 	}
@@ -1289,67 +1269,58 @@ func (ws *WebServer) listVirtualFilesHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"files": files})
 }
 
-// deleteVirtualFileHandler deletes a single uploaded G-code file.
+// deleteVirtualFileHandler deletes one uploaded G-code file.
 func (ws *WebServer) deleteVirtualFileHandler(c *gin.Context) {
 	printerID := c.Param("id")
-	fileIDStr := c.Param("file_id")
-
-	fileID, err := strconv.Atoi(fileIDStr)
+	fileID, err := strconv.Atoi(c.Param("file_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
 		return
 	}
-
 	if err := ws.bridge.DeleteVirtualPrinterFile(printerID, fileID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"message": "File deleted"})
 }
 
-// processVirtualFileHandler parses a stored G-code file and updates Spoolman.
-// This is the primary action: parse filament usage → deduct from mapped spools.
+// processVirtualFileHandler parses the G-code, updates Spoolman, and returns a
+// per-toolhead breakdown plus a warning if any toolhead had usage but no spool mapped.
 func (ws *WebServer) processVirtualFileHandler(c *gin.Context) {
 	printerID := c.Param("id")
-	fileIDStr := c.Param("file_id")
-
-	fileID, err := strconv.Atoi(fileIDStr)
+	fileID, err := strconv.Atoi(c.Param("file_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
 		return
 	}
 
-	usage, err := ws.bridge.ProcessVirtualFile(printerID, fileID)
+	usage, skipped, err := ws.bridge.ProcessVirtualFile(printerID, fileID)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Build a human-readable summary
 	total := 0.0
 	for _, g := range usage {
 		total += g
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":    "Filament usage processed and Spoolman updated",
-		"usage":      usage,
-		"total_g":    total,
-		"toolheads":  len(usage),
+		"message":           "Filament usage processed and Spoolman updated",
+		"usage":             usage,
+		"total_g":           total,
+		"toolheads":         len(usage),
+		"skipped_toolheads": skipped, // toolheads with usage but no spool assigned
 	})
 }
 
 // downloadVirtualFileHandler streams a stored G-code file back to the browser.
 func (ws *WebServer) downloadVirtualFileHandler(c *gin.Context) {
 	printerID := c.Param("id")
-	fileIDStr := c.Param("file_id")
-
-	fileID, err := strconv.Atoi(fileIDStr)
+	fileID, err := strconv.Atoi(c.Param("file_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file ID"})
 		return
@@ -1361,27 +1332,20 @@ func (ws *WebServer) downloadVirtualFileHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate the file actually belongs to this printer
+	// Confirm ownership — prevent cross-printer file access
 	files, _ := ws.bridge.GetVirtualPrinterFiles(printerID)
-	belongs := false
 	for _, f := range files {
 		if f.ID == fileID {
-			belongs = true
-			break
+			contentType := "text/plain"
+			if strings.HasSuffix(strings.ToLower(displayName), ".bgcode") {
+				contentType = "application/octet-stream"
+			}
+			c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", displayName))
+			c.Data(http.StatusOK, contentType, content)
+			return
 		}
 	}
-	if !belongs {
-		c.JSON(http.StatusNotFound, gin.H{"error": "File not found for this printer"})
-		return
-	}
-
-	contentType := "text/plain"
-	if strings.HasSuffix(strings.ToLower(displayName), ".bgcode") {
-		contentType = "application/octet-stream"
-	}
-
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", displayName))
-	c.Data(http.StatusOK, contentType, content)
+	c.JSON(http.StatusNotFound, gin.H{"error": "File not found for this printer"})
 }
 
 // getPrintErrorsHandler returns all unacknowledged print errors

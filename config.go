@@ -135,6 +135,7 @@ func LoadConfig(bridge *FilamentBridge) (*Config, error) {
 			IPAddress: printerConfig.IPAddress,
 			APIKey:    printerConfig.APIKey,
 			Toolheads: printerConfig.Toolheads,
+			IsVirtual: printerConfig.IsVirtual,
 		}
 	}
 

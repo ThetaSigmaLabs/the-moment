@@ -124,8 +124,7 @@ func (b *FilamentBridge) initDatabase() error {
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)
 	}
-
-	// Enable foreign key constraint enforcement — required for ON DELETE CASCADE
+	// Required for ON DELETE CASCADE on virtual_printer_files
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		log.Printf("Warning: could not enable SQLite foreign keys: %v", err)
 	}
@@ -567,14 +566,14 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	isVirtual := 0
+	isVirtualInt := 0
 	if config.IsVirtual {
-		isVirtual = 1
+		isVirtualInt = 1
 	}
 	_, err := b.db.Exec(`
 		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtual)
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt)
 	if err != nil {
 		return fmt.Errorf("failed to save printer config: %w", err)
 	}
@@ -1026,7 +1025,7 @@ func (b *FilamentBridge) MonitorPrinters() {
 			continue // Skip placeholder
 		}
 		if printerConfig.IsVirtual {
-			continue // Skip virtual test printers — they are driven manually
+			continue // Virtual printers have no hardware — never poll
 		}
 		go func(printerID string, config PrinterConfig) {
 			if err := b.monitorPrusaLink(printerID, config); err != nil {
@@ -1401,16 +1400,23 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				continue // Skip placeholder
 			}
 
-			client := NewPrusaLinkClient(printerConfig.IPAddress, printerConfig.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
-
 			// Use the configured printer name, not the hostname from PrusaLink
 			printerName := printerConfig.Name
+
+			// Virtual printers have no hardware — show as ready without any API call
+			if printerConfig.IsVirtual {
+				status.Printers[printerID] = PrinterData{
+					Name:  printerName,
+					State: StateVirtual,
+				}
+				continue
+			}
+
+			client := NewPrusaLinkClient(printerConfig.IPAddress, printerConfig.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
 
 			// Get current status
 			printerStatus, err := client.GetStatus()
 			if err != nil {
-				// Enhanced error logging to help diagnose connection issues
-				// This is especially useful for DNS resolution problems with hostnames
 				log.Printf("Warning: Failed to get printer status from %s (%s - %s): %v",
 					printerConfig.IPAddress, printerID, printerName, err)
 				status.Printers[printerID] = PrinterData{
@@ -1571,9 +1577,9 @@ func (b *FilamentBridge) isVirtualPrinterToolheadLocation(name string) bool {
 	return false
 }
 
-// ─── Virtual Printer File Management ────────────────────────────────────────
+// ─── Virtual Printer File Management ─────────────────────────────────────────
 
-// VirtualPrinterFile represents a G-code file stored for a virtual test printer
+// VirtualPrinterFile is the metadata record returned to the UI (no content blob)
 type VirtualPrinterFile struct {
 	ID          int       `json:"id"`
 	PrinterID   string    `json:"printer_id"`
@@ -1583,40 +1589,35 @@ type VirtualPrinterFile struct {
 	UploadedAt  time.Time `json:"uploaded_at"`
 }
 
-// SaveVirtualPrinterFile stores a G-code file for a virtual printer.
-// The file content is stored as a BLOB in SQLite.
-// SQLite ON DELETE CASCADE removes all files automatically when the printer is deleted.
+// SaveVirtualPrinterFile stores G-code content as a BLOB in SQLite.
+// The ON DELETE CASCADE foreign key removes files when the printer row is deleted.
 func (b *FilamentBridge) SaveVirtualPrinterFile(printerID, filename, displayName string, content []byte) (int64, error) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	result, err := b.db.Exec(`
+	res, err := b.db.Exec(`
 		INSERT INTO virtual_printer_files (printer_id, filename, display_name, file_size, content)
 		VALUES (?, ?, ?, ?, ?)
 	`, printerID, filename, displayName, len(content), content)
 	if err != nil {
-		return 0, fmt.Errorf("failed to save virtual printer file: %w", err)
+		return 0, fmt.Errorf("failed to save virtual file: %w", err)
 	}
-
-	id, err := result.LastInsertId()
+	id, err := res.LastInsertId()
 	if err != nil {
-		return 0, fmt.Errorf("failed to get inserted file ID: %w", err)
+		return 0, fmt.Errorf("failed to get file ID: %w", err)
 	}
-
-	log.Printf("💾 Saved G-code file '%s' for virtual printer %s (id=%d, %d bytes)", displayName, printerID, id, len(content))
+	log.Printf("💾 Saved G-code '%s' for virtual printer %s (id=%d, %d bytes)", displayName, printerID, id, len(content))
 	return id, nil
 }
 
-// GetVirtualPrinterFiles returns all uploaded files for a virtual printer (metadata only, no content).
+// GetVirtualPrinterFiles returns file metadata for a printer — no content blob.
 func (b *FilamentBridge) GetVirtualPrinterFiles(printerID string) ([]VirtualPrinterFile, error) {
 	rows, err := b.db.Query(`
 		SELECT id, printer_id, filename, display_name, file_size, uploaded_at
-		FROM virtual_printer_files
-		WHERE printer_id = ?
-		ORDER BY uploaded_at DESC
+		FROM virtual_printer_files WHERE printer_id = ? ORDER BY uploaded_at DESC
 	`, printerID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query virtual printer files: %w", err)
+		return nil, fmt.Errorf("failed to query virtual files: %w", err)
 	}
 	defer rows.Close()
 
@@ -1624,112 +1625,108 @@ func (b *FilamentBridge) GetVirtualPrinterFiles(printerID string) ([]VirtualPrin
 	for rows.Next() {
 		var f VirtualPrinterFile
 		if err := rows.Scan(&f.ID, &f.PrinterID, &f.Filename, &f.DisplayName, &f.FileSize, &f.UploadedAt); err != nil {
-			return nil, fmt.Errorf("failed to scan virtual file row: %w", err)
+			return nil, fmt.Errorf("failed to scan virtual file: %w", err)
 		}
 		files = append(files, f)
 	}
-
 	if files == nil {
 		files = []VirtualPrinterFile{}
 	}
 	return files, nil
 }
 
-// GetVirtualPrinterFileContent retrieves the full content of a single file.
+// GetVirtualPrinterFileContent returns the raw file bytes and display name.
 func (b *FilamentBridge) GetVirtualPrinterFileContent(fileID int) ([]byte, string, error) {
 	var content []byte
 	var displayName string
-	err := b.db.QueryRow(`
-		SELECT content, display_name FROM virtual_printer_files WHERE id = ?
-	`, fileID).Scan(&content, &displayName)
+	err := b.db.QueryRow(
+		"SELECT content, display_name FROM virtual_printer_files WHERE id = ?", fileID,
+	).Scan(&content, &displayName)
 	if err == sql.ErrNoRows {
 		return nil, "", fmt.Errorf("file %d not found", fileID)
 	}
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to get file content: %w", err)
+		return nil, "", fmt.Errorf("failed to load file content: %w", err)
 	}
 	return content, displayName, nil
 }
 
-// DeleteVirtualPrinterFile deletes a single uploaded file.
+// DeleteVirtualPrinterFile removes a single uploaded file.
 func (b *FilamentBridge) DeleteVirtualPrinterFile(printerID string, fileID int) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	result, err := b.db.Exec(`
-		DELETE FROM virtual_printer_files WHERE id = ? AND printer_id = ?
-	`, fileID, printerID)
+	res, err := b.db.Exec(
+		"DELETE FROM virtual_printer_files WHERE id = ? AND printer_id = ?", fileID, printerID,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to delete virtual printer file: %w", err)
+		return fmt.Errorf("failed to delete virtual file: %w", err)
 	}
-	rows, _ := result.RowsAffected()
-	if rows == 0 {
+	n, _ := res.RowsAffected()
+	if n == 0 {
 		return fmt.Errorf("file %d not found for printer %s", fileID, printerID)
 	}
-	log.Printf("🗑️  Deleted virtual file id=%d from printer %s", fileID, printerID)
 	return nil
 }
 
-// ProcessVirtualFile parses a stored G-code file and updates Spoolman.
-// This is the core action the user triggers from the UI.
-func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (map[int]float64, error) {
-	// Fetch content
+// ProcessVirtualFile parses the stored G-code, updates Spoolman for every mapped
+// toolhead, and returns (usage map, list of toolhead IDs that had usage but no spool).
+func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage map[int]float64, skipped []int, err error) {
 	content, displayName, err := b.GetVirtualPrinterFileContent(fileID)
 	if err != nil {
-		return nil, fmt.Errorf("cannot load file: %w", err)
+		return nil, nil, fmt.Errorf("cannot load file: %w", err)
 	}
 
-	// Parse filament usage
 	client := &PrusaLinkClient{}
-	usage, err := client.ParseGcodeFilamentUsage(content)
+	usage, err = client.ParseGcodeFilamentUsage(content)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse G-code: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse G-code: %w", err)
 	}
 	if len(usage) == 0 {
-		return nil, fmt.Errorf("no filament usage metadata found in '%s' — ensure your slicer writes filament weight comments", displayName)
+		return nil, nil, fmt.Errorf(
+			"no filament usage metadata found in '%s' — ensure your slicer writes filament weight comments",
+			displayName,
+		)
 	}
 
-	// Look up printer name for toolhead mapping
 	configs, err := b.GetAllPrinterConfigs()
 	if err != nil {
-		return nil, fmt.Errorf("cannot load printer config: %w", err)
+		return nil, nil, fmt.Errorf("cannot load printer config: %w", err)
 	}
 	config, ok := configs[printerID]
 	if !ok {
-		return nil, fmt.Errorf("printer %s not found", printerID)
+		return nil, nil, fmt.Errorf("printer %s not found", printerID)
 	}
-
 	printerName := resolvePrinterName(config)
 
-	// Deduct from Spoolman
-	if err := b.processFilamentUsage(printerName, usage, displayName); err != nil {
-		return nil, fmt.Errorf("failed to update Spoolman: %w", err)
-	}
-
-	log.Printf("✅ Virtual printer '%s': processed '%s', %d toolhead(s)", printerName, displayName, len(usage))
-	return usage, nil
-}
-
-// migrateVirtualPrinterSupport adds is_virtual column to existing databases.
-// Safe to call on fresh databases — ALTER TABLE errors are ignored.
-func (b *FilamentBridge) migrateVirtualPrinterSupport() error {
-	queries := []string{
-		`ALTER TABLE printer_configs ADD COLUMN is_virtual INTEGER DEFAULT 0`,
-	}
-	for _, q := range queries {
-		_, err := b.db.Exec(q)
-		if err != nil {
-			// Column likely already exists — not an error
+	// Identify toolheads that have usage but no spool mapped
+	for toolheadID, g := range usage {
+		if g <= 0 {
 			continue
+		}
+		spoolID, err2 := b.GetToolheadMapping(printerName, toolheadID)
+		if err2 != nil || spoolID == 0 {
+			skipped = append(skipped, toolheadID)
 		}
 	}
 
-	// Enable foreign key enforcement (needed for ON DELETE CASCADE)
+	if err := b.processFilamentUsage(printerName, usage, displayName); err != nil {
+		return nil, skipped, fmt.Errorf("failed to update Spoolman: %w", err)
+	}
+
+	log.Printf("✅ Virtual '%s': processed '%s', %d toolhead(s), %d skipped",
+		printerName, displayName, len(usage), len(skipped))
+	return usage, skipped, nil
+}
+
+// migrateVirtualPrinterSupport safely adds the is_virtual column to existing databases.
+func (b *FilamentBridge) migrateVirtualPrinterSupport() error {
+	_, _ = b.db.Exec("ALTER TABLE printer_configs ADD COLUMN is_virtual INTEGER DEFAULT 0")
+	// Re-enable foreign keys (connection-scoped setting)
 	_, err := b.db.Exec("PRAGMA foreign_keys = ON")
 	if err != nil {
 		log.Printf("Warning: could not enable foreign key enforcement: %v", err)
 	}
-
 	return nil
 }
 
