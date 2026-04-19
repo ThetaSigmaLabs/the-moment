@@ -16,6 +16,7 @@ build/
 *.dll
 *.so
 *.dylib
+__debug_bin*
 
 # Test binary
 *.test

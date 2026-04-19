@@ -10,12 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	neturl "net/url"
 	"sort"
+	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,6 +171,10 @@ func (ws *WebServer) setupRoutes() {
 		api.DELETE("/printers/:id/files/:file_id", ws.deleteVirtualFileHandler)
 		api.POST("/printers/:id/files/:file_id/process", ws.processVirtualFileHandler)
 		api.GET("/printers/:id/files/:file_id/download", ws.downloadVirtualFileHandler)
+
+		// Virtual printer export / import
+		api.GET("/printers/:id/export", ws.exportVirtualPrinterHandler)
+		api.POST("/printers/import", ws.importVirtualPrinterHandler)
 		api.GET("/print-errors", ws.getPrintErrorsHandler)
 		api.POST("/print-errors/:id/acknowledge", ws.acknowledgePrintErrorHandler)
 		api.GET("/nfc/assign", ws.nfcAssignHandler)
@@ -1309,10 +1313,10 @@ func (ws *WebServer) processVirtualFileHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":           "Filament usage processed and Spoolman updated",
-		"usage":             usage,
-		"total_g":           total,
-		"toolheads":         len(usage),
+		"message":          "Filament usage processed and Spoolman updated",
+		"usage":            usage,
+		"total_g":          total,
+		"toolheads":        len(usage),
 		"skipped_toolheads": skipped, // toolheads with usage but no spool assigned
 	})
 }
@@ -1346,6 +1350,242 @@ func (ws *WebServer) downloadVirtualFileHandler(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusNotFound, gin.H{"error": "File not found for this printer"})
+}
+
+// ─── Virtual Printer Export / Import ─────────────────────────────────────────
+
+// VirtualPrinterExport is the complete, portable snapshot of a virtual printer.
+// It contains everything needed to recreate the printer on another instance,
+// including uploaded G-code files (base64-encoded) and spool mappings.
+// Spool IDs reference the target Spoolman instance — the user must ensure those
+// IDs exist before importing.
+type VirtualPrinterExport struct {
+	ExportVersion int                      `json:"export_version"` // schema version for forward compat
+	ExportedAt    string                   `json:"exported_at"`
+	Printer       VirtualPrinterExportMeta `json:"printer"`
+	ToolheadNames map[int]string           `json:"toolhead_names"`           // toolhead_id → display name
+	SpoolMappings map[int]int              `json:"spool_mappings"`           // toolhead_id → spool_id
+	Files         []VirtualPrinterFileExport `json:"files"`
+}
+
+// VirtualPrinterExportMeta is the printer config portion of the export.
+type VirtualPrinterExportMeta struct {
+	Name      string `json:"name"`
+	Model     string `json:"model"`
+	Toolheads int    `json:"toolheads"`
+}
+
+// VirtualPrinterFileExport is one uploaded G-code file, content base64-encoded.
+type VirtualPrinterFileExport struct {
+	Filename    string `json:"filename"`
+	DisplayName string `json:"display_name"`
+	FileSize    int64  `json:"file_size"`
+	UploadedAt  string `json:"uploaded_at"`
+	Content     string `json:"content"` // base64-encoded raw bytes
+}
+
+// exportVirtualPrinterHandler produces a complete JSON snapshot of a virtual printer.
+// GET /api/printers/:id/export
+func (ws *WebServer) exportVirtualPrinterHandler(c *gin.Context) {
+	printerID := c.Param("id")
+
+	// Verify it exists and is virtual
+	configs, err := ws.bridge.GetAllPrinterConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	printer, ok := configs[printerID]
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Printer not found"})
+		return
+	}
+	if !printer.IsVirtual {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Export is only supported for virtual test printers"})
+		return
+	}
+
+	// Toolhead names
+	toolheadNames, err := ws.bridge.GetAllToolheadNames(printerID)
+	if err != nil {
+		toolheadNames = make(map[int]string)
+	}
+	// Fill in defaults for any unnamed toolheads
+	for i := 0; i < printer.Toolheads; i++ {
+		if _, exists := toolheadNames[i]; !exists {
+			toolheadNames[i] = fmt.Sprintf("Toolhead %d", i)
+		}
+	}
+
+	// Spool mappings
+	mappings, err := ws.bridge.GetToolheadMappings(printer.Name)
+	if err != nil {
+		mappings = make(map[int]ToolheadMapping)
+	}
+	spoolMappings := make(map[int]int)
+	for toolheadID, mapping := range mappings {
+		if mapping.SpoolID > 0 {
+			spoolMappings[toolheadID] = mapping.SpoolID
+		}
+	}
+
+	// Files (with content)
+	filesMeta, err := ws.bridge.GetVirtualPrinterFiles(printerID)
+	if err != nil {
+		filesMeta = []VirtualPrinterFile{}
+	}
+	fileExports := make([]VirtualPrinterFileExport, 0, len(filesMeta))
+	for _, f := range filesMeta {
+		content, _, err := ws.bridge.GetVirtualPrinterFileContent(f.ID)
+		if err != nil {
+			log.Printf("Warning: could not read content for file %d (%s): %v", f.ID, f.Filename, err)
+			continue
+		}
+		fileExports = append(fileExports, VirtualPrinterFileExport{
+			Filename:    f.Filename,
+			DisplayName: f.DisplayName,
+			FileSize:    f.FileSize,
+			UploadedAt:  f.UploadedAt.UTC().Format(time.RFC3339),
+			Content:     base64.StdEncoding.EncodeToString(content),
+		})
+	}
+
+	export := VirtualPrinterExport{
+		ExportVersion: 1,
+		ExportedAt:    time.Now().UTC().Format(time.RFC3339),
+		Printer: VirtualPrinterExportMeta{
+			Name:      printer.Name,
+			Model:     printer.Model,
+			Toolheads: printer.Toolheads,
+		},
+		ToolheadNames: toolheadNames,
+		SpoolMappings: spoolMappings,
+		Files:         fileExports,
+	}
+
+	filename := fmt.Sprintf("virtual-printer-%s.json",
+		strings.ReplaceAll(strings.ToLower(printer.Name), " ", "-"))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	c.JSON(http.StatusOK, export)
+}
+
+// importVirtualPrinterHandler creates a new virtual printer from an export JSON.
+// POST /api/printers/import   (multipart field "file" = the .json export)
+func (ws *WebServer) importVirtualPrinterHandler(c *gin.Context) {
+	ws.operationMutex.Lock()
+	defer ws.operationMutex.Unlock()
+
+	if err := c.Request.ParseMultipartForm(200 << 20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse upload"})
+		return
+	}
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No file provided (use field name 'file')"})
+		return
+	}
+	defer file.Close()
+
+	if !strings.HasSuffix(strings.ToLower(header.Filename), ".json") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Only .json export files are supported"})
+		return
+	}
+
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file"})
+		return
+	}
+
+	var export VirtualPrinterExport
+	if err := json.Unmarshal(raw, &export); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid export JSON: " + err.Error()})
+		return
+	}
+
+	if export.ExportVersion != 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Unknown export version %d", export.ExportVersion)})
+		return
+	}
+	if export.Printer.Name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Export is missing printer name"})
+		return
+	}
+
+	// Create the printer
+	printerID := fmt.Sprintf("virtual_%d", time.Now().UnixNano())
+	cfg := PrinterConfig{
+		Name:      export.Printer.Name,
+		Model:     export.Printer.Model,
+		IPAddress: "virtual",
+		Toolheads: export.Printer.Toolheads,
+		IsVirtual: true,
+	}
+	if cfg.Toolheads < 1 {
+		cfg.Toolheads = 1
+	}
+	if cfg.Model == "" {
+		cfg.Model = "Virtual Test Printer"
+	}
+
+	if err := ws.bridge.SavePrinterConfig(printerID, cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create printer: " + err.Error()})
+		return
+	}
+
+	// Restore toolhead names
+	for toolheadID, name := range export.ToolheadNames {
+		defaultName := fmt.Sprintf("Toolhead %d", toolheadID)
+		if name != "" && name != defaultName {
+			_ = ws.bridge.SetToolheadName(printerID, toolheadID, name)
+		}
+	}
+
+	// Restore spool mappings
+	for toolheadID, spoolID := range export.SpoolMappings {
+		if spoolID > 0 {
+			if err := ws.bridge.SetToolheadMapping(export.Printer.Name, toolheadID, spoolID); err != nil {
+				log.Printf("Warning: could not restore spool mapping toolhead %d → spool %d: %v",
+					toolheadID, spoolID, err)
+			}
+		}
+	}
+
+	// Restore G-code files
+	filesRestored := 0
+	filesSkipped := 0
+	for _, f := range export.Files {
+		content, err := base64.StdEncoding.DecodeString(f.Content)
+		if err != nil {
+			log.Printf("Warning: could not decode file %s: %v", f.Filename, err)
+			filesSkipped++
+			continue
+		}
+		if _, err := ws.bridge.SaveVirtualPrinterFile(printerID, f.Filename, f.DisplayName, content); err != nil {
+			log.Printf("Warning: could not restore file %s: %v", f.Filename, err)
+			filesSkipped++
+			continue
+		}
+		filesRestored++
+	}
+
+	if err := ws.reloadBridgeConfig(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reload configuration"})
+		return
+	}
+
+	log.Printf("✅ Imported virtual printer '%s' (id=%s): %d toolhead(s), %d file(s) restored, %d skipped",
+		cfg.Name, printerID, cfg.Toolheads, filesRestored, filesSkipped)
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":        "Virtual printer imported successfully",
+		"printer_id":     printerID,
+		"printer_name":   cfg.Name,
+		"toolheads":      cfg.Toolheads,
+		"files_restored": filesRestored,
+		"files_skipped":  filesSkipped,
+		"spool_mappings_note": "Spool IDs from the export have been restored. Verify they exist in your Spoolman instance.",
+	})
 }
 
 // getPrintErrorsHandler returns all unacknowledged print errors

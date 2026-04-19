@@ -48,7 +48,7 @@
 
         {{range $printerID, $printerConfig := .Printers}}
         {{$printerData := index $.Status.Printers $printerID}}
-        <div class="printer" data-printer-id="{{$printerID}}">
+        <div class="printer" data-printer-id="{{$printerID}}" data-printer-name="{{$printerData.Name}}">
             <div class="printer-header">
                 <h3>
                     {{$printerData.Name}}

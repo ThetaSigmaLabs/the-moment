@@ -169,6 +169,36 @@
     </div>
 </div>
 
+<!-- Import Virtual Printer Modal -->
+<div id="importVirtualPrinterModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>📥 Import Virtual Printer</h3>
+            <button class="close" onclick="closeImportPrinterModal()">&times;</button>
+        </div>
+        <p style="margin:0 0 16px;color:#aaa;font-size:0.9em;">
+            Select a <strong>.json</strong> file previously exported from The Moment.
+            The printer, toolhead names, spool mappings, and uploaded G-code files
+            will all be restored. Spool IDs must exist in your current Spoolman instance.
+        </p>
+        <form id="importVirtualPrinterForm">
+            <div class="form-group">
+                <label for="importFileInput">Export File *</label>
+                <input type="file" id="importFileInput" accept=".json" required
+                       style="padding:8px;border:1px solid #555;border-radius:6px;
+                              background:rgba(255,255,255,0.05);color:#fff;width:100%;box-sizing:border-box;">
+                <small>Select a virtual-printer-*.json export file</small>
+            </div>
+            <div id="importStatus" style="display:none;padding:10px;border-radius:6px;
+                 margin-top:8px;font-size:0.9em;"></div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeImportPrinterModal()">Cancel</button>
+                <button type="submit" class="btn">📥 Import</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- NFC QR Code Modal -->
 <div id="nfcQrModal" class="nfc-qr-modal">
     <div class="nfc-qr-content">

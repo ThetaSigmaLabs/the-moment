@@ -1024,9 +1024,6 @@ func (b *FilamentBridge) MonitorPrinters() {
 		if printerID == "no_printers" {
 			continue // Skip placeholder
 		}
-		if printerConfig.IsVirtual {
-			continue // Virtual printers have no hardware — never poll
-		}
 		go func(printerID string, config PrinterConfig) {
 			if err := b.monitorPrusaLink(printerID, config); err != nil {
 				log.Printf("Error monitoring printer %s (%s): %v", config.IPAddress, printerID, err)
@@ -1719,14 +1716,54 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 	return usage, skipped, nil
 }
 
-// migrateVirtualPrinterSupport safely adds the is_virtual column to existing databases.
+// migrateVirtualPrinterSupport safely adds the is_virtual column to existing databases
+// and cleans up any mangled printer_name values in toolhead_mappings caused by the
+// h3.textContent bug where the 🧪 VIRTUAL badge span text was captured alongside
+// the printer name, producing values with embedded newlines.
 func (b *FilamentBridge) migrateVirtualPrinterSupport() error {
 	_, _ = b.db.Exec("ALTER TABLE printer_configs ADD COLUMN is_virtual INTEGER DEFAULT 0")
+
 	// Re-enable foreign keys (connection-scoped setting)
 	_, err := b.db.Exec("PRAGMA foreign_keys = ON")
 	if err != nil {
 		log.Printf("Warning: could not enable foreign key enforcement: %v", err)
 	}
+
+	// Clean up mangled printer names in toolhead_mappings.
+	// The h3.textContent bug stored names like:
+	//   "\n                    tets\n                    \n                        🧪 VIRTUAL\n                    "
+	// instead of just "tets". We strip everything from the first newline onward,
+	// then trim surrounding whitespace to recover the real name.
+	rows, err := b.db.Query("SELECT DISTINCT printer_name FROM toolhead_mappings")
+	if err == nil {
+		defer rows.Close()
+		type fix struct{ old, clean string }
+		var toFix []fix
+		for rows.Next() {
+			var name string
+			if rows.Scan(&name) != nil {
+				continue
+			}
+			cleaned := strings.TrimSpace(name)
+			// Strip everything from the first embedded newline onward
+			if idx := strings.Index(cleaned, "\n"); idx >= 0 {
+				cleaned = strings.TrimSpace(cleaned[:idx])
+			}
+			if cleaned != name && cleaned != "" {
+				toFix = append(toFix, fix{name, cleaned})
+			}
+		}
+		rows.Close()
+		for _, f := range toFix {
+			if _, err := b.db.Exec(
+				"UPDATE toolhead_mappings SET printer_name = ? WHERE printer_name = ?",
+				f.clean, f.old,
+			); err == nil {
+				log.Printf("🔧 Cleaned mangled printer_name in toolhead_mappings: %q → %q", f.old, f.clean)
+			}
+		}
+	}
+
 	return nil
 }
 

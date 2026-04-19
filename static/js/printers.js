@@ -146,6 +146,7 @@ function buildVirtualPrinterCard(printerId, printer) {
         '</div>' +
         '<div class="printer-actions" style="margin-top:14px;">' +
         '<button class="btn btn-small" onclick="toggleToolheadNames(\'' + printerId + '\')">🔤 Rename Toolheads</button>' +
+        '<button class="btn btn-small" onclick="exportVirtualPrinter(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name) + '\')" title="Download complete printer snapshot as JSON">📤 Export</button>' +
         '<button class="btn btn-small btn-danger" onclick="deleteVirtualPrinter(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name) + '\')">🗑️ Delete Printer</button>' +
         '</div>' +
         '<div id="toolhead-names-' + printerId + '" class="toolhead-names-section" style="display:none;margin-top:15px;padding:15px;background:rgba(255,255,255,0.05);border-radius:5px;">' +
@@ -403,6 +404,98 @@ function deleteVirtualPrinter(printerId, name) {
         })
         .catch(function(err) { alert('Error: ' + err.message); });
 }
+
+// ─── Export / Import ──────────────────────────────────────────────────────────
+
+function exportVirtualPrinter(printerId, name) {
+    // Trigger a browser download of the export JSON
+    var a = document.createElement('a');
+    a.href = '/api/printers/' + printerId + '/export';
+    a.download = 'virtual-printer-' + name.toLowerCase().replace(/\s+/g, '-') + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+function showImportPrinterForm() {
+    var modal = document.getElementById('importVirtualPrinterModal');
+    if (!modal) { alert('Import modal not found — please refresh.'); return; }
+    modal.style.display = 'block';
+    var input = document.getElementById('importFileInput');
+    if (input) input.value = '';
+    var status = document.getElementById('importStatus');
+    if (status) { status.textContent = ''; status.style.display = 'none'; }
+}
+
+function closeImportPrinterModal() {
+    var m = document.getElementById('importVirtualPrinterModal');
+    if (m) m.style.display = 'none';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    var importForm = document.getElementById('importVirtualPrinterForm');
+    if (!importForm) return;
+    importForm.addEventListener('submit', function(e) {
+        e.preventDefault();
+        var fileInput = document.getElementById('importFileInput');
+        if (!fileInput || !fileInput.files.length) {
+            alert('Please select a .json export file.');
+            return;
+        }
+        var file = fileInput.files[0];
+        if (!file.name.toLowerCase().endsWith('.json')) {
+            alert('Only .json export files are supported.');
+            return;
+        }
+
+        var btn = importForm.querySelector('button[type="submit"]');
+        var orig = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'Importing…'; }
+
+        var formData = new FormData();
+        formData.append('file', file);
+
+        var status = document.getElementById('importStatus');
+
+        fetch('/api/printers/import', { method: 'POST', body: formData })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+                if (data.error) {
+                    if (status) {
+                        status.textContent = '❌ ' + data.error;
+                        status.style.color = '#ef9a9a';
+                        status.style.display = 'block';
+                    }
+                    return;
+                }
+                closeImportPrinterModal();
+                loadPrinters();
+                // Switch to the printers settings tab so user sees the result
+                var tab = document.querySelector('[onclick*="printers-tab"]') ||
+                          document.querySelector('button[onclick*="printers"]');
+                if (tab) tab.click();
+
+                var msg = '✅ Imported "' + data.printer_name + '"';
+                if (data.files_restored > 0) {
+                    msg += ' with ' + data.files_restored + ' file(s).';
+                }
+                if (data.files_skipped > 0) {
+                    msg += ' ' + data.files_skipped + ' file(s) could not be restored.';
+                }
+                msg += '\n\n' + data.spool_mappings_note;
+                alert(msg);
+            })
+            .catch(function(err) {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+                if (status) {
+                    status.textContent = '❌ ' + err.message;
+                    status.style.color = '#ef9a9a';
+                    status.style.display = 'block';
+                }
+            });
+    });
+});
 
 document.addEventListener('DOMContentLoaded', function() {
     var form = document.getElementById('addVirtualPrinterForm');

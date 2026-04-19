@@ -19,7 +19,8 @@ async function loadAvailableSpools(dropdown) {
     const printerNameElement = printerElement.querySelector('h3');
     if (!printerNameElement) return;
 
-    const printerName = printerNameElement.textContent;
+    // Read from data-printer-name attribute — avoids capturing child span text (e.g. the 🧪 VIRTUAL badge)
+    const printerName = printerElement.getAttribute('data-printer-name') || printerNameElement.textContent.trim();
 
     try {
         const response = await fetch(`/api/available_spools?printer_name=${encodeURIComponent(printerName)}&toolhead_id=${toolheadId}`);
@@ -293,7 +294,8 @@ async function autoMapSpool(dropdown, selectedValue, selectedText, selectedColor
         return;
     }
 
-    const printerName = printerNameElement.textContent;
+    // Read from data-printer-name attribute — avoids capturing child span text (e.g. the 🧪 VIRTUAL badge)
+    const printerName = printerElement.getAttribute('data-printer-name') || printerNameElement.textContent.trim();
 
     // Show loading state
     const button = dropdown.querySelector('.dropdown-button');
