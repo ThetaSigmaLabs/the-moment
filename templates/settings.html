@@ -50,6 +50,26 @@
                 <p>Loading printers...</p>
             </div>
         </div>
+
+        <!-- Orphaned Spool Assignments -->
+        <div class="config-section" style="margin-top:20px;border-top:1px solid #333;padding-top:20px;">
+            <h4 style="margin-top:0;">🔓 Stuck Spool Assignments</h4>
+            <p style="color:#aaa;font-size:0.9em;margin-bottom:12px;">
+                If you deleted a printer and its spools are still showing as assigned elsewhere,
+                use this to find and release them. This only removes assignments for printers
+                that no longer exist — active printers are not affected.
+            </p>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                <button class="btn btn-small btn-secondary" onclick="checkOrphanedMappings()">
+                    🔍 Check for Stuck Assignments
+                </button>
+                <button class="btn btn-small btn-danger" id="clearOrphansBtn"
+                        onclick="clearOrphanedMappings()" style="display:none;">
+                    🔓 Release All Stuck Spools
+                </button>
+            </div>
+            <div id="orphanStatus" style="margin-top:12px;font-size:0.88em;"></div>
+        </div>
     </div>
     
     <!-- Cost Settings Tab -->

@@ -1,0 +1,74 @@
+<!-- Print History Tab -->
+<div id="history-tab" class="tab-content">
+    <div class="config-section" style="padding:0;">
+
+        <!-- Toolbar -->
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:16px 20px;border-bottom:1px solid #333;flex-wrap:wrap;gap:10px;">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <h3 style="margin:0;">🗂️ Print History</h3>
+                <span id="historyCount" style="background:#333;color:#aaa;padding:2px 10px;
+                      border-radius:12px;font-size:0.8em;">0 records</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <!-- Search -->
+                <input type="text" id="historySearch" placeholder="Search file, printer…"
+                       oninput="filterHistory()"
+                       style="padding:7px 12px;border-radius:6px;border:1px solid #555;
+                              background:rgba(255,255,255,0.07);color:#fff;font-size:0.85em;width:200px;">
+                <!-- Filter by status -->
+                <select id="historyStatusFilter" onchange="filterHistory()"
+                        style="padding:7px 10px;border-radius:6px;border:1px solid #555;
+                               background:#2a2a2a;color:#fff;font-size:0.85em;">
+                    <option value="">All statuses</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="failed">Failed</option>
+                </select>
+                <button class="btn btn-small btn-secondary" onclick="loadHistory()" title="Refresh">↺ Refresh</button>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div style="overflow-x:auto;">
+            <table id="historyTable" style="width:100%;border-collapse:collapse;font-size:0.88em;">
+                <thead>
+                    <tr style="border-bottom:2px solid #444;color:#888;text-transform:uppercase;
+                                font-size:0.75em;letter-spacing:0.05em;">
+                        <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
+                            onclick="sortHistory('print_finished')">Date ↕</th>
+                        <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
+                            onclick="sortHistory('printer_name')">Printer ↕</th>
+                        <th style="padding:10px 12px;text-align:left;">File</th>
+                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;"
+                            onclick="sortHistory('filament_used')" style="cursor:pointer;">Usage ↕</th>
+                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;">Time</th>
+                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;"
+                            onclick="sortHistory('total_cost')" style="cursor:pointer;">Cost ↕</th>
+                        <th style="padding:10px 12px;text-align:left;">Note</th>
+                        <th style="padding:10px 12px;text-align:center;">Status</th>
+                        <th style="padding:10px 12px;text-align:center;width:52px;">🖼</th>
+                    </tr>
+                </thead>
+                <tbody id="historyBody">
+                    <tr>
+                        <td colspan="9" style="text-align:center;padding:40px;color:#666;">
+                            Loading print history…
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Empty state (shown by JS) -->
+        <div id="historyEmpty" style="display:none;text-align:center;padding:60px 20px;color:#555;">
+            <div style="font-size:3em;margin-bottom:12px;">🗂️</div>
+            <div style="font-size:1.1em;margin-bottom:8px;">No print history yet</div>
+            <div style="font-size:0.85em;">
+                History is recorded automatically when a PrusaLink print finishes
+                or when you process a G-code file on a virtual printer.
+            </div>
+        </div>
+
+    </div>
+</div>

@@ -237,6 +237,61 @@
     </div>
 </div>
 
+<!-- Print History Detail Modal -->
+<div id="historyDetailModal" class="modal">
+    <div class="modal-content" style="max-width:640px;">
+        <div class="modal-header">
+            <h3 id="historyDetailTitle" style="margin:0;font-size:1em;word-break:break-all;">Print Detail</h3>
+            <button class="close" onclick="closeHistoryModal()">&times;</button>
+        </div>
+
+        <!-- Two-column layout: thumbnail left, meta right -->
+        <div style="display:flex;gap:20px;padding:4px 0 16px;flex-wrap:wrap;">
+            <!-- Thumbnail -->
+            <div style="flex-shrink:0;">
+                <div id="historyThumb" style="width:120px;height:120px;border-radius:8px;
+                     background:#1a1a1a;border:1px solid #333;overflow:hidden;display:flex;
+                     align-items:center;justify-content:center;">
+                    <span style="color:#555;font-size:2em;">🖼</span>
+                </div>
+            </div>
+            <!-- Meta grid -->
+            <div style="flex:1;min-width:200px;">
+                <table style="width:100%;border-collapse:collapse;font-size:0.88em;">
+                    <tbody id="historyMetaRows"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Cost breakdown (collapsible) -->
+        <div id="historyDetailCost" style="display:none;border-top:1px solid #333;padding-top:14px;margin-top:4px;">
+            <h4 style="margin:0 0 10px;font-size:0.9em;">💰 Cost Breakdown</h4>
+            <div id="historyDetailCostRows" style="font-size:0.88em;"></div>
+        </div>
+
+        <!-- Note editor -->
+        <div style="border-top:1px solid #333;padding-top:14px;margin-top:14px;">
+            <label style="font-size:0.85em;color:#aaa;display:block;margin-bottom:6px;">Note</label>
+            <textarea id="historyNoteInput" rows="3"
+                      style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.05);
+                             border:1px solid #555;border-radius:6px;color:#fff;padding:8px;
+                             font-size:0.9em;resize:vertical;"
+                      placeholder="Add a note about this print…"></textarea>
+        </div>
+
+        <div class="modal-actions" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
+            <button class="btn btn-small btn-danger" onclick="deleteHistoryEntry()"
+                    id="historyDeleteBtn">🗑 Delete</button>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-small btn-secondary" onclick="recalcHistoryCost()"
+                        id="historyRecalcBtn" style="display:none;">💰 Recalc Cost</button>
+                <button class="btn btn-small" onclick="saveHistoryNote()">💾 Save Note</button>
+                <button class="btn btn-small btn-secondary" onclick="closeHistoryModal()">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- NFC QR Code Modal -->
 <div id="nfcQrModal" class="nfc-qr-modal">
     <div class="nfc-qr-content">

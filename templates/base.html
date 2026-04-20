@@ -22,14 +22,23 @@
 <body data-spoolman-url="{{.SpoolmanBaseURL}}">
     <div class="container">
         <div class="header">
-            <h1>🔗 The Moment Dashboard</h1>
-            <p>The missing link between printers and filament inventory, and cost estimation</p>
+            <div style="display:flex;align-items:center;gap:14px;">
+                <img src="/static/images/the-moment-logo.png" alt="The Moment"
+                     style="height:52px;width:auto;flex-shrink:0;">
+                <div>
+                    <h1 style="margin:0;">The Moment Dashboard</h1>
+                    <p style="margin:4px 0 0;opacity:0.75;font-size:0.9em;">
+                        The missing link between printers, filament inventory, and cost
+                    </p>
+                </div>
+            </div>
         </div>
         
         <div class="content">
             <!-- Tab Navigation -->
             <ul class="tabs">
                 <li><button class="tab active" onclick="switchTab('status')">📊 Filament Status</button></li>
+                <li><button class="tab" onclick="switchTab('history')">🗂️ Print History</button></li>
                 <li><button class="tab" onclick="switchTab('nfc')">📱 NFC Management</button></li>
                 <li><button class="tab" onclick="switchTab('settings')">⚙️ Settings</button></li>
             </ul>
@@ -42,6 +51,7 @@
 
     <!-- External JavaScript Files -->
     <script src="/static/js/main.js"></script>
+    <script src="/static/js/history.js"></script>
     <script src="/static/js/cost-calculator.js"></script>
     <script src="/static/js/dropdowns.js"></script>
     <script src="/static/js/printers.js"></script>

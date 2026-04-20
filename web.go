@@ -176,6 +176,16 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/printers/:id/export", ws.exportVirtualPrinterHandler)
 		api.POST("/printers/import", ws.importVirtualPrinterHandler)
 
+		// Spool assignment maintenance
+		api.GET("/orphaned-mappings", ws.getOrphanedMappingsHandler)
+		api.DELETE("/orphaned-mappings", ws.clearOrphanedMappingsHandler)
+
+		// Print history
+		api.GET("/history", ws.getHistoryHandler)
+		api.GET("/history/:id", ws.getHistoryEntryHandler)
+		api.PATCH("/history/:id/note", ws.updateHistoryNoteHandler)
+		api.DELETE("/history/:id", ws.deleteHistoryEntryHandler)
+
 		// Cost settings and calculation
 		api.GET("/cost-settings", ws.getCostSettingsHandler)
 		api.POST("/cost-settings", ws.setCostSettingsHandler)
@@ -1306,7 +1316,7 @@ func (ws *WebServer) processVirtualFileHandler(c *gin.Context) {
 		return
 	}
 
-	usage, skipped, err := ws.bridge.ProcessVirtualFile(printerID, fileID)
+	usage, skipped, printTimeMin, err := ws.bridge.ProcessVirtualFile(printerID, fileID)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
@@ -1318,11 +1328,12 @@ func (ws *WebServer) processVirtualFileHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":          "Filament usage processed and Spoolman updated",
-		"usage":            usage,
-		"total_g":          total,
-		"toolheads":        len(usage),
-		"skipped_toolheads": skipped, // toolheads with usage but no spool assigned
+		"message":           "Filament usage processed and Spoolman updated",
+		"usage":             usage,
+		"total_g":           total,
+		"toolheads":         len(usage),
+		"print_time_min":    printTimeMin,
+		"skipped_toolheads": skipped,
 	})
 }
 
@@ -1591,6 +1602,109 @@ func (ws *WebServer) importVirtualPrinterHandler(c *gin.Context) {
 		"files_skipped":  filesSkipped,
 		"spool_mappings_note": "Spool IDs from the export have been restored. Verify they exist in your Spoolman instance.",
 	})
+}
+
+// ─── Spool Assignment Maintenance ────────────────────────────────────────────
+
+// getOrphanedMappingsHandler lists spool assignments whose printer no longer exists.
+// GET /api/orphaned-mappings
+func (ws *WebServer) getOrphanedMappingsHandler(c *gin.Context) {
+	orphans, err := ws.bridge.GetOrphanedMappings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"orphans": orphans, "count": len(orphans)})
+}
+
+// clearOrphanedMappingsHandler deletes all orphaned spool assignments.
+// DELETE /api/orphaned-mappings
+func (ws *WebServer) clearOrphanedMappingsHandler(c *gin.Context) {
+	n, err := ws.bridge.ClearOrphanedMappings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Reload config so the dashboard re-fetches available spools
+	_ = ws.reloadBridgeConfig()
+	if n == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "No orphaned assignments found", "cleared": 0})
+	} else {
+		c.JSON(http.StatusOK, gin.H{
+			"message": fmt.Sprintf("Cleared %d orphaned assignment(s) — spools are now free", n),
+			"cleared": n,
+		})
+	}
+}
+
+// ─── Print History Handlers ──────────────────────────────────────────────────
+
+// getHistoryHandler returns all print history records (newest first).
+// GET /api/history?limit=200
+func (ws *WebServer) getHistoryHandler(c *gin.Context) {
+	limit := 200
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	records, err := ws.bridge.GetPrintHistory(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"records": records, "count": len(records)})
+}
+
+// getHistoryEntryHandler returns a single print history record with full detail.
+// GET /api/history/:id
+func (ws *WebServer) getHistoryEntryHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	record, err := ws.bridge.GetPrintHistoryEntry(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, record)
+}
+
+// updateHistoryNoteHandler sets the user note on a print history record.
+// PATCH /api/history/:id/note   body: {"note": "..."}
+func (ws *WebServer) updateHistoryNoteHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var body struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.UpdatePrintNote(id, body.Note); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Note updated"})
+}
+
+// deleteHistoryEntryHandler deletes a print history record.
+// DELETE /api/history/:id
+func (ws *WebServer) deleteHistoryEntryHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if err := ws.bridge.DeletePrintHistoryEntry(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Record deleted"})
 }
 
 // ─── Cost Settings & Calculation Handlers ────────────────────────────────────

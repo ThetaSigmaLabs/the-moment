@@ -341,11 +341,14 @@ function showProcessResult(filename, data, errorMsg) {
                 'padding:10px;color:#a5d6a7;font-size:0.85em;">' +
                 'Spoolman has been updated. Spool remaining weights reflect this print.</div>');
     }
-    // Wire cost calculator — pass total grams and first mapped spool ID
+    // Wire cost calculator — pass total grams, print time, and first mapped spool ID
     if (!errorMsg && data) {
         var firstSpoolId = 0;
-        // Try to get spool ID from the stored last-process context
         if (window._lastProcessSpoolId) firstSpoolId = window._lastProcessSpoolId;
+        // Store print time so the cost modal can pre-fill it
+        if (data.print_time_min && data.print_time_min > 0) {
+            window._lastGcodePrintTimeMin = data.print_time_min;
+        }
         if (typeof afterProcessSuccess === 'function') {
             afterProcessSuccess(data.total_g || 0, firstSpoolId);
         }
@@ -716,4 +719,78 @@ function cancelToolheadNames(printerId) {
         if (i.dataset.originalValue) i.value = i.dataset.originalValue;
     });
     s.style.display = 'none';
+}
+
+// ─── Orphaned Spool Assignment Cleanup ───────────────────────────────────────
+
+function checkOrphanedMappings() {
+    var status = document.getElementById('orphanStatus');
+    var clearBtn = document.getElementById('clearOrphansBtn');
+    if (status) status.innerHTML = '<span style="color:#aaa;">Checking…</span>';
+
+    fetch('/api/orphaned-mappings')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var orphans = data.orphans || [];
+            if (orphans.length === 0) {
+                if (status) status.innerHTML =
+                    '<span style="color:#81c784;">✅ No stuck assignments found. All spools are correctly linked to active printers.</span>';
+                if (clearBtn) clearBtn.style.display = 'none';
+                return;
+            }
+            // Build a readable list
+            var rows = orphans.map(function(o) {
+                return '<tr>' +
+                    '<td style="padding:4px 12px 4px 0;color:#ffb74d;">' + escapeHtml(o.printer_name) + '</td>' +
+                    '<td style="padding:4px 12px 4px 0;color:#aaa;">T' + o.toolhead_id + '</td>' +
+                    '<td style="padding:4px 0;">Spool #' + o.spool_id + '</td>' +
+                    '</tr>';
+            }).join('');
+            if (status) status.innerHTML =
+                '<p style="color:#ffb74d;margin:0 0 8px;">⚠️ Found ' + orphans.length +
+                ' stuck assignment' + (orphans.length !== 1 ? 's' : '') +
+                ' for printers that no longer exist:</p>' +
+                '<table style="font-size:0.88em;border-collapse:collapse;">' + rows + '</table>';
+            if (clearBtn) clearBtn.style.display = '';
+        })
+        .catch(function(err) {
+            if (status) status.innerHTML =
+                '<span style="color:#ef9a9a;">Error: ' + escapeHtml(err.message) + '</span>';
+        });
+}
+
+function clearOrphanedMappings() {
+    if (!confirm('Release all stuck spool assignments?\n\nThis will remove assignments for printers that no longer exist. Active printer assignments are not affected.')) return;
+
+    var status = document.getElementById('orphanStatus');
+    var clearBtn = document.getElementById('clearOrphansBtn');
+    if (status) status.innerHTML = '<span style="color:#aaa;">Releasing…</span>';
+
+    fetch('/api/orphaned-mappings', { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                if (status) status.innerHTML =
+                    '<span style="color:#ef9a9a;">Error: ' + escapeHtml(data.error) + '</span>';
+                return;
+            }
+            if (clearBtn) clearBtn.style.display = 'none';
+            if (status) status.innerHTML =
+                '<span style="color:#81c784;">✅ ' + data.message + '</span>';
+            // Reload spools on the dashboard so they show as available
+            if (typeof loadPrinters === 'function') loadPrinters();
+        })
+        .catch(function(err) {
+            if (status) status.innerHTML =
+                '<span style="color:#ef9a9a;">Error: ' + escapeHtml(err.message) + '</span>';
+        });
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }

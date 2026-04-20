@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,16 +42,23 @@ type ToolheadMapping struct {
 	DisplayName string    `json:"display_name,omitempty"` // Custom toolhead name or empty for default
 }
 
-// PrintHistory represents a record of filament usage
+// PrintHistory represents a single print job record
 type PrintHistory struct {
-	ID            int       `json:"id"`
-	PrinterName   string    `json:"printer_name"`
-	ToolheadID    int       `json:"toolhead_id"`
-	SpoolID       int       `json:"spool_id"`
-	FilamentUsed  float64   `json:"filament_used"`
-	PrintStarted  time.Time `json:"print_started"`
-	PrintFinished time.Time `json:"print_finished"`
-	JobName       string    `json:"job_name"`
+	ID               int       `json:"id"`
+	PrinterName      string    `json:"printer_name"`
+	ToolheadID       int       `json:"toolhead_id"`
+	SpoolID          int       `json:"spool_id"`
+	FilamentUsed     float64   `json:"filament_used"`     // grams
+	PrintStarted     time.Time `json:"print_started"`
+	PrintFinished    time.Time `json:"print_finished"`
+	JobName          string    `json:"job_name"`
+	Notes            string    `json:"notes"`
+	Status           string    `json:"status"`            // completed, cancelled, failed
+	PrintTimeMinutes float64   `json:"print_time_minutes"`
+	ThumbnailBase64  string    `json:"thumbnail_base64"`  // JPG, data URI ready
+	// Joined from print_costs (may be zero if not calculated)
+	TotalCost        float64   `json:"total_cost"`
+	Currency         string    `json:"currency"`
 }
 
 // PrintError represents a failed print processing attempt
@@ -1001,27 +1009,47 @@ func (b *FilamentBridge) UnmapToolhead(printerName string, toolheadID int) error
 	return nil
 }
 
-// LogPrintUsage logs filament usage for a print job
+// LogPrintUsage logs filament usage for a print job.
+// printTimeMinutes and thumbnailBase64 are optional — pass 0 and "" if unavailable.
 func (b *FilamentBridge) LogPrintUsage(printerName string, toolheadID int, spoolID int, filamentUsed float64, jobName string) error {
+	return b.LogPrintUsageFull(printerName, toolheadID, spoolID, filamentUsed, jobName, 0, "completed", "")
+}
+
+// LogPrintUsageFull is the full version with print time, status, and thumbnail.
+func (b *FilamentBridge) LogPrintUsageFull(printerName string, toolheadID int, spoolID int,
+	filamentUsed float64, jobName string, printTimeMinutes float64, status string, thumbnailBase64 string) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	// Get print start time from current job file tracking
-	printStarted := time.Now() // Default to now if we can't determine start time
-	if storedJobFile, exists := b.currentJobFile[printerName]; exists && storedJobFile != "" {
-		// If we have a stored job file, the print likely started when we first stored it
-		// This is a rough approximation - ideally we'd track this more precisely
-		printStarted = time.Now().Add(-time.Hour) // Assume 1 hour ago as rough estimate
+	if status == "" {
+		status = "completed"
 	}
 
-	_, err := b.db.Exec(
-		"INSERT INTO print_history (printer_name, toolhead_id, spool_id, filament_used, print_started, print_finished, job_name) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		printerName, toolheadID, spoolID, filamentUsed, printStarted, time.Now(), jobName,
+	printStarted := time.Now()
+	if storedJobFile, exists := b.currentJobFile[printerName]; exists && storedJobFile != "" {
+		_ = storedJobFile
+		if printTimeMinutes > 0 {
+			printStarted = time.Now().Add(-time.Duration(printTimeMinutes) * time.Minute)
+		} else {
+			printStarted = time.Now().Add(-time.Hour)
+		}
+	}
+
+	_, err := b.db.Exec(`
+		INSERT INTO print_history
+			(printer_name, toolhead_id, spool_id, filament_used,
+			 print_started, print_finished, job_name,
+			 print_time_minutes, status, thumbnail_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		printerName, toolheadID, spoolID, filamentUsed,
+		printStarted, time.Now(), jobName,
+		printTimeMinutes, status, thumbnailBase64,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to log print usage: %w", err)
 	}
-
+	log.Printf("📋 Logged print history: %s on %s (%.2fg, %.0fmin)",
+		jobName, printerName, filamentUsed, printTimeMinutes)
 	return nil
 }
 
@@ -1685,19 +1713,19 @@ func (b *FilamentBridge) DeleteVirtualPrinterFile(printerID string, fileID int) 
 
 // ProcessVirtualFile parses the stored G-code, updates Spoolman for every mapped
 // toolhead, and returns (usage map, list of toolhead IDs that had usage but no spool).
-func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage map[int]float64, skipped []int, err error) {
+func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage map[int]float64, skipped []int, printTimeMin float64, err error) {
 	content, displayName, err := b.GetVirtualPrinterFileContent(fileID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot load file: %w", err)
+		return nil, nil, 0, fmt.Errorf("cannot load file: %w", err)
 	}
 
 	client := &PrusaLinkClient{}
 	usage, err = client.ParseGcodeFilamentUsage(content)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to parse G-code: %w", err)
+		return nil, nil, 0, fmt.Errorf("failed to parse G-code: %w", err)
 	}
 	if len(usage) == 0 {
-		return nil, nil, fmt.Errorf(
+		return nil, nil, 0, fmt.Errorf(
 			"no filament usage metadata found in '%s' — ensure your slicer writes filament weight comments",
 			displayName,
 		)
@@ -1705,11 +1733,11 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 
 	configs, err := b.GetAllPrinterConfigs()
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot load printer config: %w", err)
+		return nil, nil, 0, fmt.Errorf("cannot load printer config: %w", err)
 	}
 	config, ok := configs[printerID]
 	if !ok {
-		return nil, nil, fmt.Errorf("printer %s not found", printerID)
+		return nil, nil, 0, fmt.Errorf("printer %s not found", printerID)
 	}
 	printerName := resolvePrinterName(config)
 
@@ -1724,13 +1752,24 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 		}
 	}
 
+	// Extract print time and thumbnail before updating Spoolman
+	printTimeSec, thumbnailB64 := ParseGcodeMetadata(content)
+	printTimeMin = float64(printTimeSec) / 60.0
+
 	if err := b.processFilamentUsage(printerName, usage, displayName); err != nil {
-		return nil, skipped, fmt.Errorf("failed to update Spoolman: %w", err)
+		return nil, skipped, 0, fmt.Errorf("failed to update Spoolman: %w", err)
 	}
 
-	log.Printf("✅ Virtual '%s': processed '%s', %d toolhead(s), %d skipped",
-		printerName, displayName, len(usage), len(skipped))
-	return usage, skipped, nil
+	// Log a print history entry for every toolhead that had filament usage
+	for toolheadID, usedG := range usage {
+		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
+		_ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
+			printTimeMin, "completed", thumbnailB64)
+	}
+
+	log.Printf("✅ Virtual '%s': processed '%s', %d toolhead(s), %d skipped, %.0f min",
+		printerName, displayName, len(usage), len(skipped), printTimeMin)
+	return usage, skipped, printTimeMin, nil
 }
 
 // migrateVirtualPrinterSupport safely adds the is_virtual column to existing databases
@@ -1782,6 +1821,183 @@ func (b *FilamentBridge) migrateVirtualPrinterSupport() error {
 	}
 
 	return nil
+}
+
+// ─── Print History Queries ───────────────────────────────────────────────────
+
+// GetPrintHistory returns all print history records, newest first.
+// Joins print_costs to include total_cost and currency if available.
+func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := b.db.Query(`
+		SELECT
+			ph.id, ph.printer_name, ph.toolhead_id, ph.spool_id, ph.filament_used,
+			ph.print_started, ph.print_finished, ph.job_name,
+			COALESCE(ph.notes, ''), COALESCE(ph.status, 'completed'),
+			COALESCE(ph.print_time_minutes, 0),
+			COALESCE(ph.thumbnail_path, ''),
+			COALESCE(pc.total_cost, 0), COALESCE(pc.currency, '')
+		FROM print_history ph
+		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
+		ORDER BY ph.print_finished DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query print history: %w", err)
+	}
+	defer rows.Close()
+
+	var records []PrintHistory
+	for rows.Next() {
+		var r PrintHistory
+		if err := rows.Scan(
+			&r.ID, &r.PrinterName, &r.ToolheadID, &r.SpoolID, &r.FilamentUsed,
+			&r.PrintStarted, &r.PrintFinished, &r.JobName,
+			&r.Notes, &r.Status, &r.PrintTimeMinutes,
+			&r.ThumbnailBase64, &r.TotalCost, &r.Currency,
+		); err != nil {
+			log.Printf("Warning: failed to scan print history row: %v", err)
+			continue
+		}
+		records = append(records, r)
+	}
+	if records == nil {
+		records = []PrintHistory{}
+	}
+	return records, nil
+}
+
+// GetPrintHistoryEntry returns a single print history record by ID.
+func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
+	var r PrintHistory
+	err := b.db.QueryRow(`
+		SELECT
+			ph.id, ph.printer_name, ph.toolhead_id, ph.spool_id, ph.filament_used,
+			ph.print_started, ph.print_finished, ph.job_name,
+			COALESCE(ph.notes, ''), COALESCE(ph.status, 'completed'),
+			COALESCE(ph.print_time_minutes, 0),
+			COALESCE(ph.thumbnail_path, ''),
+			COALESCE(pc.total_cost, 0), COALESCE(pc.currency, '')
+		FROM print_history ph
+		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
+		WHERE ph.id = ?`, id,
+	).Scan(
+		&r.ID, &r.PrinterName, &r.ToolheadID, &r.SpoolID, &r.FilamentUsed,
+		&r.PrintStarted, &r.PrintFinished, &r.JobName,
+		&r.Notes, &r.Status, &r.PrintTimeMinutes,
+		&r.ThumbnailBase64, &r.TotalCost, &r.Currency,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("print history entry %d not found: %w", id, err)
+	}
+	return &r, nil
+}
+
+// UpdatePrintNote sets the user note on a print history record.
+func (b *FilamentBridge) UpdatePrintNote(id int, note string) error {
+	_, err := b.db.Exec("UPDATE print_history SET notes = ? WHERE id = ?", note, id)
+	if err != nil {
+		return fmt.Errorf("failed to update print note: %w", err)
+	}
+	return nil
+}
+
+// DeletePrintHistoryEntry removes a print history record and its associated cost record.
+func (b *FilamentBridge) DeletePrintHistoryEntry(id int) error {
+	_, err := b.db.Exec("DELETE FROM print_history WHERE id = ?", id)
+	return err
+}
+
+// ParseGcodeMetadata extracts print time (seconds) and embedded thumbnail from raw gcode bytes.
+// Returns printTimeSec=0 and thumbnailBase64="" if not found — both are optional.
+func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 string) {
+	text := string(content)
+
+	// Print time: ";TIME:20219.44" header at top of file (OrcaSlicer/Cura)
+	timeRe := regexp.MustCompile(`;TIME:([0-9]+)`)
+	if m := timeRe.FindStringSubmatch(text); len(m) >= 2 {
+		fmt.Sscanf(m[1], "%d", &printTimeSec)
+	}
+
+	// Thumbnail: OrcaSlicer / PrusaSlicer embed JPG base64 in comment lines:
+	//   "; thumbnail_JPG begin 96x96 3656"  ...lines...  "; thumbnail_JPG end"
+	thumbStartRe := regexp.MustCompile(`; thumbnail_(?:JPG|PNG) begin [0-9x]+ [0-9]+`)
+	thumbEndRe   := regexp.MustCompile(`; thumbnail_(?:JPG|PNG) end`)
+	lineRe       := regexp.MustCompile(`(?m)^; ?`)
+
+	startIdx := thumbStartRe.FindStringIndex(text)
+	if startIdx != nil {
+		afterStart := text[startIdx[1]:]
+		endIdx := thumbEndRe.FindStringIndex(afterStart)
+		if endIdx != nil {
+			block := afterStart[:endIdx[0]]
+			clean := lineRe.ReplaceAllString(block, "")
+			clean = strings.ReplaceAll(clean, "\n", "")
+			clean = strings.ReplaceAll(clean, "\r", "")
+			clean = strings.TrimSpace(clean)
+			if clean != "" {
+				thumbnailBase64 = "data:image/jpeg;base64," + clean
+			}
+		}
+	}
+	return
+}
+
+// GetOrphanedMappings returns toolhead_mappings rows where the printer_name
+// does not match any existing printer in printer_configs.
+// These are left over when a printer was deleted before the cleanup fix.
+func (b *FilamentBridge) GetOrphanedMappings() ([]map[string]interface{}, error) {
+	rows, err := b.db.Query(`
+		SELECT tm.printer_name, tm.toolhead_id, tm.spool_id
+		FROM toolhead_mappings tm
+		WHERE NOT EXISTS (
+			SELECT 1 FROM printer_configs pc WHERE pc.name = tm.printer_name
+		)
+		ORDER BY tm.printer_name, tm.toolhead_id`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query orphaned mappings: %w", err)
+	}
+	defer rows.Close()
+
+	var result []map[string]interface{}
+	for rows.Next() {
+		var printerName string
+		var toolheadID, spoolID int
+		if err := rows.Scan(&printerName, &toolheadID, &spoolID); err != nil {
+			continue
+		}
+		result = append(result, map[string]interface{}{
+			"printer_name": printerName,
+			"toolhead_id":  toolheadID,
+			"spool_id":     spoolID,
+		})
+	}
+	if result == nil {
+		result = []map[string]interface{}{}
+	}
+	return result, nil
+}
+
+// ClearOrphanedMappings deletes all toolhead_mappings rows that have no
+// matching printer in printer_configs — freeing those spools for reassignment.
+func (b *FilamentBridge) ClearOrphanedMappings() (int, error) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	res, err := b.db.Exec(`
+		DELETE FROM toolhead_mappings
+		WHERE NOT EXISTS (
+			SELECT 1 FROM printer_configs pc WHERE pc.name = toolhead_mappings.printer_name
+		)`)
+	if err != nil {
+		return 0, fmt.Errorf("failed to clear orphaned mappings: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		log.Printf("🧹 Cleared %d orphaned toolhead mapping(s) — spools are now free to reassign", n)
+	}
+	return int(n), nil
 }
 
 // Close closes the database connection
