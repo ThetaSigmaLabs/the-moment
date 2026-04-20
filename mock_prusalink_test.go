@@ -35,6 +35,9 @@ type MockPrinterState struct {
 	// G-code content returned when the file is downloaded
 	GcodeContent string
 
+	// When true, G-code download requests return 503 (simulates USB busy / file gone)
+	GcodeUnavailable bool
+
 	// Track how many times each endpoint was called
 	StatusCalls int
 	JobCalls    int
@@ -143,8 +146,14 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 		state.mu.Lock()
 		content := state.GcodeContent
 		expectedFile := state.JobFileName
+		unavailable := state.GcodeUnavailable
 		state.FileCalls++
 		state.mu.Unlock()
+
+		if unavailable {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
 
 		// Serve the file if the path matches
 		path := strings.TrimPrefix(r.URL.Path, "/")
@@ -175,6 +184,14 @@ func (m *MockPrusaLink) SetProgress(pct float64) {
 	m.State.mu.Lock()
 	defer m.State.mu.Unlock()
 	m.State.Progress = pct
+}
+
+// SetGcodeUnavailable makes G-code download requests return HTTP 503 when true,
+// simulating USB storage being busy or the file having been removed.
+func (m *MockPrusaLink) SetGcodeUnavailable(unavailable bool) {
+	m.State.mu.Lock()
+	defer m.State.mu.Unlock()
+	m.State.GcodeUnavailable = unavailable
 }
 
 // SetGcodeUsage sets the filament usage metadata in the fake G-code.

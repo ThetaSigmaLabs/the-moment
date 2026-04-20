@@ -71,6 +71,25 @@ func main() {
 		}
 	}()
 
+	// Drain the Spoolman outbox and G-code download queue every 5 minutes.
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := bridge.RetryPendingSpoolmanUpdates(); err != nil {
+					log.Printf("Error retrying pending Spoolman updates: %v", err)
+				}
+				if err := bridge.RetryPendingGcodeDownloads(); err != nil {
+					log.Printf("Error retrying pending G-code downloads: %v", err)
+				}
+			case <-sigChan:
+				return
+			}
+		}
+	}()
+
 	if *webOnly {
 		// Run only web interface
 		fmt.Println("Starting web interface only...")

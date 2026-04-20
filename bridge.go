@@ -27,6 +27,7 @@ type FilamentBridge struct {
 	wasPrinting      map[string]bool
 	currentJobFile   map[string]string     // Store current job filename per printer
 	processingPrints map[string]bool       // Track prints being processed
+	monitoringActive map[string]bool       // Guard against overlapping monitor goroutines per printer
 	printErrors      map[string]PrintError // Store print processing errors
 	errorMutex       sync.RWMutex
 	previousState    map[string]string // Last seen printer state per printer
@@ -92,6 +93,7 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		wasPrinting:      make(map[string]bool),
 		currentJobFile:   make(map[string]string),
 		processingPrints: make(map[string]bool),
+		monitoringActive: make(map[string]bool),
 		printErrors:      make(map[string]PrintError),
 		previousState:    make(map[string]string),
 	}
@@ -212,6 +214,30 @@ func (b *FilamentBridge) initDatabase() error {
         created_at TIMESTAMP NOT NULL,
         FOREIGN KEY (print_history_id) REFERENCES print_history(id) ON DELETE CASCADE
     )`,
+		`CREATE TABLE IF NOT EXISTS pending_spoolman_updates (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			printer_name TEXT NOT NULL,
+			toolhead_id INTEGER NOT NULL,
+			spool_id INTEGER NOT NULL,
+			used_weight REAL NOT NULL,
+			job_name TEXT NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			last_attempt TIMESTAMP,
+			attempts INTEGER DEFAULT 0,
+			last_error TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS pending_gcode_downloads (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			printer_name TEXT NOT NULL,
+			printer_ip TEXT NOT NULL,
+			filename TEXT NOT NULL,
+			job_type TEXT NOT NULL DEFAULT 'completed',
+			progress_pct REAL NOT NULL DEFAULT 0,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			last_attempt TIMESTAMP,
+			attempts INTEGER DEFAULT 0,
+			last_error TEXT
+		)`,
 	}
 
 	for _, query := range createTables {
@@ -1070,6 +1096,20 @@ func (b *FilamentBridge) MonitorPrinters() {
 			continue // Skip placeholder
 		}
 		go func(printerID string, config PrinterConfig) {
+			b.mutex.Lock()
+			if b.monitoringActive[printerID] {
+				b.mutex.Unlock()
+				log.Printf("Skipping poll for printer %s (%s): previous cycle still running", printerID, config.Name)
+				return
+			}
+			b.monitoringActive[printerID] = true
+			b.mutex.Unlock()
+			defer func() {
+				b.mutex.Lock()
+				b.monitoringActive[printerID] = false
+				b.mutex.Unlock()
+			}()
+
 			if err := b.monitorPrusaLink(printerID, config); err != nil {
 				log.Printf("Error monitoring printer %s (%s): %v", config.IPAddress, printerID, err)
 			}
@@ -1274,10 +1314,13 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(config PrinterConfig, fil
 
 	gcodeContent, err := prusaClient.GetGcodeFileWithRetry(filename, b.config.PrusaLinkFileDownloadTimeout)
 	if err != nil {
-		// Cannot download G-code — log error and skip rather than deducting wrong amount
-		msg := fmt.Sprintf("failed to download G-code for cancelled print: %v", err)
-		b.addPrintError(printerName, filename, msg)
-		return fmt.Errorf("%s", msg)
+		log.Printf("⚠️  G-code download failed for cancelled print %s (%s), queuing for retry: %v", printerName, filename, err)
+		if qErr := b.enqueuePendingGcodeDownload(printerName, config.IPAddress, filename, "cancelled", progressPct); qErr != nil {
+			msg := fmt.Sprintf("G-code download failed for cancelled print and could not be queued for retry: %v (original error: %v)", qErr, err)
+			b.addPrintError(printerName, filename, msg)
+			return fmt.Errorf("%s", msg)
+		}
+		return nil // queued
 	}
 
 	fullUsage, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
@@ -1322,12 +1365,17 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(config PrinterConfig, file
 	// Download and parse the G-code file (.gcode or .bgcode) for filament usage
 	log.Printf("Analyzing G-code file for filament usage: %s", filename)
 
-	// Download with retry logic
+	// Download with retry logic; queue for background retry on failure rather than
+	// dropping the event — the file usually persists on the printer's USB storage.
 	gcodeContent, err := prusaClient.GetGcodeFileWithRetry(filename, b.config.PrusaLinkFileDownloadTimeout)
 	if err != nil {
-		errorMsg := fmt.Sprintf("failed to download G-code file after retries: %v", err)
-		b.addPrintError(printerName, filename, errorMsg)
-		return fmt.Errorf("%s", errorMsg)
+		log.Printf("⚠️  G-code download failed for %s (%s), queuing for retry: %v", printerName, filename, err)
+		if qErr := b.enqueuePendingGcodeDownload(printerName, config.IPAddress, filename, "completed", 0); qErr != nil {
+			errorMsg := fmt.Sprintf("G-code download failed and could not be queued for retry: %v (original error: %v)", qErr, err)
+			b.addPrintError(printerName, filename, errorMsg)
+			return fmt.Errorf("%s", errorMsg)
+		}
+		return nil // queued — caller clears currentJobFile so state machine stays clean
 	}
 
 	// Parse the downloaded file
@@ -1532,44 +1580,49 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 	return status, nil
 }
 
-// processFilamentUsage processes filament usage updates for all toolheads
+// processFilamentUsage processes filament usage updates for all toolheads.
+// Local history is always written first so no print event is silently dropped.
+// If Spoolman is unreachable the update is queued in pending_spoolman_updates
+// and retried by RetryPendingSpoolmanUpdates on the next ticker tick.
 func (b *FilamentBridge) processFilamentUsage(printerName string, filamentUsage map[int]float64, jobName string) error {
-	// Update Spoolman with filament usage for each toolhead
 	for toolheadID, usedWeight := range filamentUsage {
 		if usedWeight <= 0 {
 			continue
 		}
 
-		// Get the mapped spool for this toolhead
 		spoolID, err := b.GetToolheadMapping(printerName, toolheadID)
 		if err != nil {
 			log.Printf("Error getting toolhead mapping for %s toolhead %d: %v",
 				printerName, toolheadID, err)
 			continue
 		}
-
 		if spoolID == 0 {
 			log.Printf("No spool mapped to %s toolhead %d, skipping filament usage update",
 				printerName, toolheadID)
 			continue
 		}
 
-		// Update Spoolman
-		if err := b.spoolman.UpdateSpoolUsage(spoolID, usedWeight); err != nil {
-			log.Printf("Error updating spool %d usage: %v", spoolID, err)
-			continue
-		}
-
-		// Log the usage in our database
+		// Always persist to local history first — the print event must never be
+		// silently dropped even when Spoolman is unreachable.
 		if err := b.LogPrintUsage(printerName, toolheadID, spoolID, usedWeight, jobName); err != nil {
 			log.Printf("Error logging print usage: %v", err)
+		}
+
+		// Attempt Spoolman update; on failure queue for background retry.
+		if err := b.spoolman.UpdateSpoolUsage(spoolID, usedWeight); err != nil {
+			log.Printf("⚠️  Spoolman update failed for spool %d — queuing for retry: %v", spoolID, err)
+			if qErr := b.enqueuePendingSpoolmanUpdate(printerName, toolheadID, spoolID, usedWeight, jobName); qErr != nil {
+				log.Printf("Error queuing pending Spoolman update: %v", qErr)
+				b.addPrintError(printerName, jobName,
+					fmt.Sprintf("Spoolman update failed for spool %d and could not be queued for retry: %v", spoolID, err))
+			}
+			continue
 		}
 
 		log.Printf("Updated spool %d: used %.2fg filament on %s toolhead %d",
 			spoolID, usedWeight, printerName, toolheadID)
 	}
 
-	// Summary log
 	if len(filamentUsage) > 0 {
 		log.Printf("✅ Print completion processing finished for %s: processed %d toolheads", printerName, len(filamentUsage))
 	} else {
@@ -1577,6 +1630,244 @@ func (b *FilamentBridge) processFilamentUsage(printerName string, filamentUsage 
 	}
 
 	return nil
+}
+
+// enqueuePendingSpoolmanUpdate stores a Spoolman usage update in the local outbox
+// for later retry. Called when UpdateSpoolUsage fails (e.g. Spoolman offline).
+func (b *FilamentBridge) enqueuePendingSpoolmanUpdate(printerName string, toolheadID, spoolID int, usedWeight float64, jobName string) error {
+	_, err := b.db.Exec(`
+		INSERT INTO pending_spoolman_updates
+			(printer_name, toolhead_id, spool_id, used_weight, job_name)
+		VALUES (?, ?, ?, ?, ?)`,
+		printerName, toolheadID, spoolID, usedWeight, jobName,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to queue pending Spoolman update: %w", err)
+	}
+	log.Printf("📋 Queued pending Spoolman update: spool %d, %.2fg (%s toolhead %d)", spoolID, usedWeight, printerName, toolheadID)
+	return nil
+}
+
+// RetryPendingSpoolmanUpdates drains the outbox: retries every queued Spoolman
+// usage update, deleting each record on success. Intended to be called on a
+// regular ticker (e.g. every 5 minutes) from the main monitoring loop.
+func (b *FilamentBridge) RetryPendingSpoolmanUpdates() error {
+	rows, err := b.db.Query(`
+		SELECT id, printer_name, toolhead_id, spool_id, used_weight, job_name
+		FROM pending_spoolman_updates
+		ORDER BY created_at ASC`)
+	if err != nil {
+		return fmt.Errorf("failed to query pending Spoolman updates: %w", err)
+	}
+
+	type pendingUpdate struct {
+		id          int
+		printerName string
+		toolheadID  int
+		spoolID     int
+		usedWeight  float64
+		jobName     string
+	}
+	var updates []pendingUpdate
+	for rows.Next() {
+		var u pendingUpdate
+		if err := rows.Scan(&u.id, &u.printerName, &u.toolheadID, &u.spoolID, &u.usedWeight, &u.jobName); err != nil {
+			log.Printf("Warning: failed to scan pending update row: %v", err)
+			continue
+		}
+		updates = append(updates, u)
+	}
+	rows.Close()
+
+	if len(updates) == 0 {
+		return nil
+	}
+
+	log.Printf("Retrying %d pending Spoolman update(s)...", len(updates))
+	successCount := 0
+	for _, u := range updates {
+		if err := b.spoolman.UpdateSpoolUsage(u.spoolID, u.usedWeight); err != nil {
+			_, _ = b.db.Exec(`
+				UPDATE pending_spoolman_updates
+				SET last_attempt = CURRENT_TIMESTAMP,
+				    attempts     = attempts + 1,
+				    last_error   = ?
+				WHERE id = ?`, err.Error(), u.id)
+			log.Printf("⚠️  Retry failed for spool %d (%.2fg): %v", u.spoolID, u.usedWeight, err)
+			continue
+		}
+		if _, delErr := b.db.Exec(`DELETE FROM pending_spoolman_updates WHERE id = ?`, u.id); delErr != nil {
+			log.Printf("Warning: failed to remove completed pending update %d: %v", u.id, delErr)
+		}
+		successCount++
+		log.Printf("✅ Retried Spoolman update: spool %d, %.2fg (%s toolhead %d)",
+			u.spoolID, u.usedWeight, u.printerName, u.toolheadID)
+	}
+
+	if successCount > 0 {
+		log.Printf("✅ Retry complete: %d/%d pending Spoolman update(s) applied", successCount, len(updates))
+	}
+	return nil
+}
+
+// GetPendingSpoolmanUpdateCount returns how many Spoolman updates are queued.
+func (b *FilamentBridge) GetPendingSpoolmanUpdateCount() int {
+	var count int
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM pending_spoolman_updates`).Scan(&count); err != nil {
+		return 0
+	}
+	return count
+}
+
+// enqueuePendingGcodeDownload stores a failed G-code download in the local retry
+// queue. Called when GetGcodeFileWithRetry exhausts all attempts so the event
+// is not silently dropped.
+func (b *FilamentBridge) enqueuePendingGcodeDownload(printerName, printerIP, filename, jobType string, progressPct float64) error {
+	_, err := b.db.Exec(`
+		INSERT INTO pending_gcode_downloads
+			(printer_name, printer_ip, filename, job_type, progress_pct)
+		VALUES (?, ?, ?, ?, ?)`,
+		printerName, printerIP, filename, jobType, progressPct,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to queue pending G-code download: %w", err)
+	}
+	log.Printf("📋 Queued pending G-code download: %s (%s, %s)", filename, printerName, jobType)
+	return nil
+}
+
+// RetryPendingGcodeDownloads re-attempts every queued G-code download, processes
+// filament usage on success, and removes the record. A record is permanently
+// removed (with an error surfaced) if the printer is no longer configured or if
+// the file parses with no usage data — both are unrecoverable conditions.
+func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
+	rows, err := b.db.Query(`
+		SELECT id, printer_name, printer_ip, filename, job_type, progress_pct
+		FROM pending_gcode_downloads
+		ORDER BY created_at ASC`)
+	if err != nil {
+		return fmt.Errorf("failed to query pending G-code downloads: %w", err)
+	}
+
+	type pendingDownload struct {
+		id          int
+		printerName string
+		printerIP   string
+		filename    string
+		jobType     string
+		progressPct float64
+	}
+	var downloads []pendingDownload
+	for rows.Next() {
+		var d pendingDownload
+		if err := rows.Scan(&d.id, &d.printerName, &d.printerIP, &d.filename, &d.jobType, &d.progressPct); err != nil {
+			log.Printf("Warning: failed to scan pending G-code download row: %v", err)
+			continue
+		}
+		downloads = append(downloads, d)
+	}
+	rows.Close()
+
+	if len(downloads) == 0 {
+		return nil
+	}
+
+	allConfigs, err := b.GetAllPrinterConfigs()
+	if err != nil {
+		return fmt.Errorf("failed to get printer configs for G-code retry: %w", err)
+	}
+
+	log.Printf("Retrying %d pending G-code download(s)...", len(downloads))
+	successCount := 0
+
+	for _, d := range downloads {
+		// Resolve current config by IP so we pick up any API key rotation.
+		var cfg PrinterConfig
+		found := false
+		for _, c := range allConfigs {
+			if c.IPAddress == d.printerIP {
+				cfg = c
+				found = true
+				break
+			}
+		}
+		if !found {
+			// Printer removed from config — unrecoverable, surface error and drop.
+			msg := fmt.Sprintf("printer at %s no longer configured; manual Spoolman update required for %s", d.printerIP, d.filename)
+			log.Printf("⚠️  G-code retry: %s", msg)
+			b.addPrintError(d.printerName, d.filename, msg)
+			_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
+			continue
+		}
+
+		prusaClient := NewPrusaLinkClient(cfg.IPAddress, cfg.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
+		gcodeContent, err := prusaClient.GetGcodeFileWithRetry(d.filename, b.config.PrusaLinkFileDownloadTimeout)
+		if err != nil {
+			_, _ = b.db.Exec(`
+				UPDATE pending_gcode_downloads
+				SET last_attempt = CURRENT_TIMESTAMP,
+				    attempts     = attempts + 1,
+				    last_error   = ?
+				WHERE id = ?`, err.Error(), d.id)
+			log.Printf("⚠️  G-code retry failed for %s (%s): %v", d.printerName, d.filename, err)
+			continue
+		}
+
+		filamentUsage, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
+		if err != nil || len(filamentUsage) == 0 {
+			// Parse failure is permanent — remove and alert.
+			msg := fmt.Sprintf("G-code retry downloaded %s but found no filament usage data; manual Spoolman update required", d.filename)
+			log.Printf("⚠️  %s", msg)
+			b.addPrintError(d.printerName, d.filename, msg)
+			_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
+			continue
+		}
+
+		jobName := d.filename
+		if d.jobType == "cancelled" {
+			scale := (d.progressPct / 100.0) * 0.95
+			if scale > 1.0 {
+				scale = 1.0
+			}
+			partialUsage := make(map[int]float64)
+			for toolheadID, weight := range filamentUsage {
+				if partial := weight * scale; partial > 0 {
+					partialUsage[toolheadID] = partial
+				}
+			}
+			filamentUsage = partialUsage
+			jobName = d.filename + " [CANCELLED]"
+		}
+
+		if err := b.processFilamentUsage(d.printerName, filamentUsage, jobName); err != nil {
+			_, _ = b.db.Exec(`
+				UPDATE pending_gcode_downloads
+				SET last_attempt = CURRENT_TIMESTAMP,
+				    attempts     = attempts + 1,
+				    last_error   = ?
+				WHERE id = ?`, err.Error(), d.id)
+			log.Printf("⚠️  G-code retry: filament processing failed for %s: %v", d.printerName, err)
+			continue
+		}
+
+		_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
+		successCount++
+		log.Printf("✅ G-code retry succeeded: %s (%s %s)", d.filename, d.printerName, d.jobType)
+	}
+
+	if successCount > 0 {
+		log.Printf("✅ G-code retry complete: %d/%d download(s) processed", successCount, len(downloads))
+	}
+	return nil
+}
+
+// GetPendingGcodeDownloadCount returns how many G-code downloads are queued for retry.
+func (b *FilamentBridge) GetPendingGcodeDownloadCount() int {
+	var count int
+	if err := b.db.QueryRow(`SELECT COUNT(*) FROM pending_gcode_downloads`).Scan(&count); err != nil {
+		return 0
+	}
+	return count
 }
 
 // isVirtualPrinterToolheadLocation checks if a location name matches the pattern

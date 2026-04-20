@@ -39,7 +39,7 @@ func setupBridgeWithMocks(t *testing.T, spoolMap map[int]float64) (*FilamentBrid
 	spoolman := NewMockSpoolman(t, spoolMap)
 
 	// Create a real bridge with a temp database
-	t.Setenv("FILABRIDGE_DB_PATH", t.TempDir())
+	t.Setenv("THE_MOMENT_DB_PATH", t.TempDir())
 	bridge, err := NewFilamentBridge(nil)
 	if err != nil {
 		t.Fatalf("NewFilamentBridge: %v", err)
@@ -499,4 +499,208 @@ func TestLifecycle_NoSpoolMapped(t *testing.T) {
 	}
 
 	t.Logf("✅ Unmapped toolhead handled gracefully — no crash, no update")
+}
+
+// TestLifecycle_SpoolmanOffline_HistoryAlwaysLogged confirms that when Spoolman
+// is unreachable at print completion:
+//   - Local print history IS still written (event not dropped)
+//   - A pending Spoolman update is queued in the outbox
+//   - No update reaches Spoolman (it was offline)
+func TestLifecycle_SpoolmanOffline_HistoryAlwaysLogged(t *testing.T) {
+	const spoolID = 20
+	const initialWeight = 1000.0
+	const printWeight = 40.0
+
+	bridge, printer, spoolman := setupBridgeWithMocks(t, map[int]float64{
+		spoolID: initialWeight,
+	})
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: printWeight})
+
+	// Take Spoolman offline before the print finishes
+	spoolman.SetOffline(true)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(100)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// Spoolman must NOT have received any update
+	if len(spoolman.Updates()) != 0 {
+		t.Errorf("expected no Spoolman updates while offline, got %d", len(spoolman.Updates()))
+	}
+
+	// Local history must still be written
+	history, err := bridge.GetPrintHistory(10)
+	if err != nil {
+		t.Fatalf("GetPrintHistory: %v", err)
+	}
+	if len(history) == 0 {
+		t.Fatal("print history is empty — event was silently dropped when Spoolman was offline")
+	}
+
+	// Outbox must hold exactly one pending update
+	pending := bridge.GetPendingSpoolmanUpdateCount()
+	if pending != 1 {
+		t.Errorf("expected 1 pending Spoolman update, got %d", pending)
+	}
+
+	t.Logf("✅ Spoolman offline: history logged, 1 pending update queued")
+}
+
+// TestLifecycle_SpoolmanRecovers_PendingRetried confirms that after Spoolman
+// comes back online, RetryPendingSpoolmanUpdates delivers the queued update
+// and clears the outbox.
+func TestLifecycle_SpoolmanRecovers_PendingRetried(t *testing.T) {
+	const spoolID = 21
+	const initialWeight = 1000.0
+	const printWeight = 55.0
+
+	bridge, printer, spoolman := setupBridgeWithMocks(t, map[int]float64{
+		spoolID: initialWeight,
+	})
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: printWeight})
+
+	// Spoolman offline during print completion
+	spoolman.SetOffline(true)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(100)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	if bridge.GetPendingSpoolmanUpdateCount() != 1 {
+		t.Fatal("expected 1 pending update after offline print")
+	}
+
+	// Spoolman comes back online
+	spoolman.SetOffline(false)
+
+	// Retry loop fires
+	if err := bridge.RetryPendingSpoolmanUpdates(); err != nil {
+		t.Fatalf("RetryPendingSpoolmanUpdates: %v", err)
+	}
+
+	// Outbox must now be empty
+	if pending := bridge.GetPendingSpoolmanUpdateCount(); pending != 0 {
+		t.Errorf("expected 0 pending updates after retry, got %d", pending)
+	}
+
+	// Spoolman must now reflect the correct remaining weight
+	remaining := spoolman.RemainingWeight(spoolID)
+	expected := initialWeight - printWeight
+	assertApproxWeight(t, "remaining after retry", expected, remaining, 0.1)
+
+	t.Logf("✅ Spoolman recovered: retry delivered %.1fg, %.1fg remaining", printWeight, remaining)
+}
+
+// registerPrinter saves a printer config to the bridge DB so
+// RetryPendingGcodeDownloads can resolve the printer by IP address.
+func registerPrinter(t *testing.T, bridge *FilamentBridge, printer *MockPrusaLink, name string, toolheads int) {
+	t.Helper()
+	cfg := printer.PrinterConfig(name, toolheads)
+	if err := bridge.SavePrinterConfig("test-printer-id", cfg); err != nil {
+		t.Fatalf("SavePrinterConfig: %v", err)
+	}
+}
+
+// TestLifecycle_GcodeDownloadFails_Queued confirms that when a G-code download
+// fails after all HTTP retries, the print event is queued for background retry
+// rather than silently dropped. No print error is surfaced for a queued event.
+func TestLifecycle_GcodeDownloadFails_Queued(t *testing.T) {
+	const spoolID = 30
+	const initialWeight = 1000.0
+
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{
+		spoolID: initialWeight,
+	})
+	registerPrinter(t, bridge, printer, "Core One L", 1)
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 35.0})
+	printer.SetGcodeUnavailable(true) // USB busy / file gone
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(100)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// A pending G-code download must be queued
+	if count := bridge.GetPendingGcodeDownloadCount(); count != 1 {
+		t.Errorf("expected 1 pending G-code download, got %d", count)
+	}
+
+	// No unacknowledged print errors — the queue handles it silently
+	if errs := bridge.GetPrintErrors(); len(errs) != 0 {
+		t.Errorf("expected no print errors while queued, got %d: %v", len(errs), errs)
+	}
+
+	t.Logf("✅ G-code unavailable: 1 pending download queued, no spurious print error")
+}
+
+// TestLifecycle_GcodeDownloadFails_RetrySucceeds confirms that once the G-code
+// becomes available again, RetryPendingGcodeDownloads processes the download,
+// deducts the correct weight from the spool, and clears the retry queue.
+func TestLifecycle_GcodeDownloadFails_RetrySucceeds(t *testing.T) {
+	const spoolID = 31
+	const initialWeight = 1000.0
+	const printWeight = 48.0
+
+	bridge, printer, spoolman := setupBridgeWithMocks(t, map[int]float64{
+		spoolID: initialWeight,
+	})
+	registerPrinter(t, bridge, printer, "Core One L", 1)
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: printWeight})
+	printer.SetGcodeUnavailable(true)
+
+	// Print finishes while G-code is unavailable — event is queued
+	printer.SetState(StatePrinting)
+	printer.SetProgress(100)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	if bridge.GetPendingGcodeDownloadCount() != 1 {
+		t.Fatal("expected 1 pending G-code download after unavailable download")
+	}
+
+	// G-code becomes accessible again
+	printer.SetGcodeUnavailable(false)
+
+	// Retry loop fires
+	if err := bridge.RetryPendingGcodeDownloads(); err != nil {
+		t.Fatalf("RetryPendingGcodeDownloads: %v", err)
+	}
+
+	// Queue must be empty
+	if count := bridge.GetPendingGcodeDownloadCount(); count != 0 {
+		t.Errorf("expected 0 pending downloads after retry, got %d", count)
+	}
+
+	// Spoolman must reflect the correct deduction
+	remaining := spoolman.RemainingWeight(spoolID)
+	expected := initialWeight - printWeight
+	assertApproxWeight(t, "remaining after G-code retry", expected, remaining, 0.1)
+
+	t.Logf("✅ G-code retry succeeded: %.1fg deducted, %.1fg remaining", printWeight, remaining)
 }

@@ -42,6 +42,7 @@ type MockSpoolman struct {
 	mu      sync.RWMutex
 	spools  map[int]*SpoolRecord
 	updates []UsageUpdate // All PATCH /api/v1/spool/:id calls received
+	offline bool          // When true, all requests receive 503
 }
 
 // NewMockSpoolman creates and starts a fake Spoolman server pre-loaded with
@@ -205,7 +206,16 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 		fmt.Fprint(w, `[]`)
 	})
 
-	mock.Server = httptest.NewServer(mux)
+	mock.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mock.mu.RLock()
+		offline := mock.offline
+		mock.mu.RUnlock()
+		if offline {
+			http.Error(w, `{"detail":"Service unavailable"}`, http.StatusServiceUnavailable)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	}))
 	t.Cleanup(func() { mock.Server.Close() })
 
 	return mock
@@ -254,4 +264,12 @@ func (m *MockSpoolman) ResetUpdates() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.updates = nil
+}
+
+// SetOffline makes the mock return HTTP 503 for all requests when true,
+// simulating Spoolman being unreachable.
+func (m *MockSpoolman) SetOffline(offline bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.offline = offline
 }

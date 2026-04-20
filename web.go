@@ -32,6 +32,10 @@ var templatesFS embed.FS
 //go:embed static/**
 var staticFS embed.FS
 
+// maskedCredential is returned in place of real credential values in API responses.
+// On write, callers that receive this sentinel back must preserve the stored value.
+const maskedCredential = "***"
+
 // WebServer handles HTTP requests using Gin
 type WebServer struct {
 	bridge         *FilamentBridge
@@ -622,6 +626,9 @@ func (ws *WebServer) getConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if config[ConfigKeySpoolmanPassword] != "" {
+		config[ConfigKeySpoolmanPassword] = maskedCredential
+	}
 	c.JSON(http.StatusOK, config)
 }
 
@@ -633,8 +640,11 @@ func (ws *WebServer) updateConfigHandler(c *gin.Context) {
 		return
 	}
 
-	// Update each config value
+	// Update each config value, skipping credential sentinels (unchanged masked values)
 	for key, value := range config {
+		if key == ConfigKeySpoolmanPassword && value == maskedCredential {
+			continue
+		}
 		if err := ws.bridge.SetConfigValue(key, value); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
@@ -714,11 +724,15 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 	// Enhance printer configs with toolhead names
 	result := make(map[string]interface{})
 	for printerID, printerConfig := range printerConfigs {
+		maskedKey := ""
+		if printerConfig.APIKey != "" {
+			maskedKey = maskedCredential
+		}
 		printerData := map[string]interface{}{
 			"name":       printerConfig.Name,
 			"model":      printerConfig.Model,
 			"ip_address": printerConfig.IPAddress,
-			"api_key":    printerConfig.APIKey,
+			"api_key":    maskedKey,
 			"toolheads":  printerConfig.Toolheads,
 			"is_virtual": printerConfig.IsVirtual,
 		}
@@ -804,6 +818,20 @@ func (ws *WebServer) updatePrinterHandler(c *gin.Context) {
 	if err := c.ShouldBindJSON(&printerConfig); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// If the client echoed back the masked sentinel, preserve the stored API key
+	if printerConfig.APIKey == maskedCredential {
+		existing, err := ws.bridge.GetAllPrinterConfigs()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		if existingPrinter, ok := existing[printerID]; ok {
+			printerConfig.APIKey = existingPrinter.APIKey
+		} else {
+			printerConfig.APIKey = ""
+		}
 	}
 
 	// Validate printer configuration
