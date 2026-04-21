@@ -49,17 +49,86 @@ type PrintHistory struct {
 	PrinterName      string    `json:"printer_name"`
 	ToolheadID       int       `json:"toolhead_id"`
 	SpoolID          int       `json:"spool_id"`
-	FilamentUsed     float64   `json:"filament_used"`     // grams
+	FilamentUsed     float64   `json:"filament_used"` // grams
 	PrintStarted     time.Time `json:"print_started"`
 	PrintFinished    time.Time `json:"print_finished"`
 	JobName          string    `json:"job_name"`
 	Notes            string    `json:"notes"`
-	Status           string    `json:"status"`            // completed, cancelled, failed
+	Status           string    `json:"status"` // completed, cancelled, failed
 	PrintTimeMinutes float64   `json:"print_time_minutes"`
-	ThumbnailBase64  string    `json:"thumbnail_base64"`  // JPG, data URI ready
+	ThumbnailBase64  string    `json:"thumbnail_base64"` // JPG, data URI ready
 	// Joined from print_costs (may be zero if not calculated)
-	TotalCost        float64   `json:"total_cost"`
-	Currency         string    `json:"currency"`
+	TotalCost float64 `json:"total_cost"`
+	Currency  string  `json:"currency"`
+
+	// Source and precision metadata (OctoPrint records fill these fully)
+	Source            string `json:"source"`             // "prusalink" | "octoprint"
+	TotalDurationSec  float64 `json:"total_duration_sec"`
+	PrintDurationSec  float64 `json:"print_duration_sec"`
+	PauseDurationSec  float64 `json:"pause_duration_sec"`
+	PauseCount        int     `json:"pause_count"`
+	CancelReason      string  `json:"cancel_reason,omitempty"`
+	TimePrecision     string  `json:"time_precision"`     // "exact" | "approximate"
+	FilamentPrecision string  `json:"filament_precision"` // "measured" | "estimated"
+
+	// Per-tool filament and pause detail (populated only on single-record fetch)
+	FilamentUsages []PrintFilamentUsage `json:"filament_usages,omitempty"`
+	Pauses         []PrintPause         `json:"pauses,omitempty"`
+}
+
+// PrintFilamentUsage is per-tool filament data stored for a unified print record.
+type PrintFilamentUsage struct {
+	ID             int     `json:"id"`
+	PrintID        int     `json:"print_id"`
+	ToolIndex      int     `json:"tool_index"`
+	SpoolID        int     `json:"spool_id"`
+	FilamentUsedMM float64 `json:"filament_used_mm"`
+	FilamentUsedG  float64 `json:"filament_used_grams"`
+}
+
+// PrintPause records a single pause event within a print job.
+type PrintPause struct {
+	ID          int       `json:"id"`
+	PrintID     int       `json:"print_id"`
+	PausedAt    time.Time `json:"paused_at"`
+	ResumedAt   time.Time `json:"resumed_at"`
+	DurationSec float64   `json:"duration_sec"`
+	Reason      string    `json:"reason"` // filament_change | runout | user | unknown
+}
+
+// OctoPrintPayload is the request body sent by the OctoPrint plugin.
+type OctoPrintPayload struct {
+	Source            string                    `json:"source"`
+	PrinterID         string                    `json:"printer_id"`
+	FileName          string                    `json:"file_name"`
+	Status            string                    `json:"status"`
+	StartedAt         time.Time                 `json:"started_at"`
+	EndedAt           time.Time                 `json:"ended_at"`
+	TotalDurationSec  float64                   `json:"total_duration_sec"`
+	PrintDurationSec  float64                   `json:"print_duration_sec"`
+	PauseDurationSec  float64                   `json:"pause_duration_sec"`
+	PauseCount        int                       `json:"pause_count"`
+	Pauses            []OctoPrintPayloadPause   `json:"pauses"`
+	CancelReason      *string                   `json:"cancel_reason"`
+	Filament          []OctoPrintPayloadFilament `json:"filament"`
+	TimePrecision     string                    `json:"time_precision"`
+	FilamentPrecision string                    `json:"filament_precision"`
+}
+
+// OctoPrintPayloadPause is a single pause entry within an OctoPrint payload.
+type OctoPrintPayloadPause struct {
+	PausedAt    time.Time `json:"paused_at"`
+	ResumedAt   time.Time `json:"resumed_at"`
+	DurationSec float64   `json:"duration_sec"`
+	Reason      string    `json:"reason"`
+}
+
+// OctoPrintPayloadFilament is per-tool filament data within an OctoPrint payload.
+type OctoPrintPayloadFilament struct {
+	ToolIndex      int     `json:"tool_index"`
+	SpoolID        int     `json:"spool_id"`
+	FilamentUsedMM float64 `json:"filament_used_mm"`
+	FilamentUsedG  float64 `json:"filament_used_grams"`
 }
 
 // PrintError represents a failed print processing attempt
@@ -109,6 +178,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migrateVirtualPrinterSupport(); err != nil {
 		return nil, fmt.Errorf("failed to migrate virtual printer support: %w", err)
+	}
+
+	if err := bridge.migrateOctoPrintSupport(); err != nil {
+		return nil, fmt.Errorf("failed to migrate octoprint support: %w", err)
 	}
 
 	// Update Spoolman URL and timeout if config is provided
@@ -289,6 +362,53 @@ func (b *FilamentBridge) updatePrintHistoryTable() error {
 		}
 	}
 
+	return nil
+}
+
+// migrateOctoPrintSupport adds columns and tables needed for OctoPrint push integration.
+func (b *FilamentBridge) migrateOctoPrintSupport() error {
+	newColumns := []string{
+		`ALTER TABLE print_history ADD COLUMN source TEXT DEFAULT 'prusalink'`,
+		`ALTER TABLE print_history ADD COLUMN total_duration_sec REAL`,
+		`ALTER TABLE print_history ADD COLUMN print_duration_sec REAL`,
+		`ALTER TABLE print_history ADD COLUMN pause_duration_sec REAL DEFAULT 0`,
+		`ALTER TABLE print_history ADD COLUMN pause_count INTEGER DEFAULT 0`,
+		`ALTER TABLE print_history ADD COLUMN cancel_reason TEXT`,
+		`ALTER TABLE print_history ADD COLUMN time_precision TEXT DEFAULT 'approximate'`,
+		`ALTER TABLE print_history ADD COLUMN filament_precision TEXT DEFAULT 'estimated'`,
+	}
+	for _, q := range newColumns {
+		b.db.Exec(q) // ignore "duplicate column" errors from existing DBs
+	}
+
+	// print_costs.print_history_id must be unique for the ON CONFLICT upsert in SavePrintCost.
+	b.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_print_costs_print_id ON print_costs(print_history_id)`)
+
+	newTables := []string{
+		`CREATE TABLE IF NOT EXISTS print_filament_usage (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			print_id INTEGER NOT NULL,
+			tool_index INTEGER NOT NULL DEFAULT 0,
+			spool_id INTEGER,
+			filament_used_mm REAL NOT NULL DEFAULT 0,
+			filament_used_grams REAL NOT NULL DEFAULT 0,
+			FOREIGN KEY (print_id) REFERENCES print_history(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS print_pauses (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			print_id INTEGER NOT NULL,
+			paused_at TIMESTAMP,
+			resumed_at TIMESTAMP,
+			duration_sec REAL NOT NULL DEFAULT 0,
+			reason TEXT NOT NULL DEFAULT 'unknown',
+			FOREIGN KEY (print_id) REFERENCES print_history(id) ON DELETE CASCADE
+		)`,
+	}
+	for _, q := range newTables {
+		if _, err := b.db.Exec(q); err != nil {
+			return fmt.Errorf("failed to create octoprint table: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -2129,7 +2249,15 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 			COALESCE(ph.notes, ''), COALESCE(ph.status, 'completed'),
 			COALESCE(ph.print_time_minutes, 0),
 			COALESCE(ph.thumbnail_path, ''),
-			COALESCE(pc.total_cost, 0), COALESCE(pc.currency, '')
+			COALESCE(pc.total_cost, 0), COALESCE(pc.currency, ''),
+			COALESCE(ph.source, 'prusalink'),
+			COALESCE(ph.total_duration_sec, ph.print_time_minutes * 60),
+			COALESCE(ph.print_duration_sec, ph.print_time_minutes * 60),
+			COALESCE(ph.pause_duration_sec, 0),
+			COALESCE(ph.pause_count, 0),
+			COALESCE(ph.cancel_reason, ''),
+			COALESCE(ph.time_precision, 'approximate'),
+			COALESCE(ph.filament_precision, 'estimated')
 		FROM print_history ph
 		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
 		ORDER BY ph.print_finished DESC
@@ -2147,6 +2275,9 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 			&r.PrintStarted, &r.PrintFinished, &r.JobName,
 			&r.Notes, &r.Status, &r.PrintTimeMinutes,
 			&r.ThumbnailBase64, &r.TotalCost, &r.Currency,
+			&r.Source, &r.TotalDurationSec, &r.PrintDurationSec,
+			&r.PauseDurationSec, &r.PauseCount, &r.CancelReason,
+			&r.TimePrecision, &r.FilamentPrecision,
 		); err != nil {
 			log.Printf("Warning: failed to scan print history row: %v", err)
 			continue
@@ -2159,7 +2290,8 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 	return records, nil
 }
 
-// GetPrintHistoryEntry returns a single print history record by ID.
+// GetPrintHistoryEntry returns a single print history record by ID,
+// including per-tool filament usage and pause detail for OctoPrint records.
 func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 	var r PrintHistory
 	err := b.db.QueryRow(`
@@ -2169,7 +2301,15 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 			COALESCE(ph.notes, ''), COALESCE(ph.status, 'completed'),
 			COALESCE(ph.print_time_minutes, 0),
 			COALESCE(ph.thumbnail_path, ''),
-			COALESCE(pc.total_cost, 0), COALESCE(pc.currency, '')
+			COALESCE(pc.total_cost, 0), COALESCE(pc.currency, ''),
+			COALESCE(ph.source, 'prusalink'),
+			COALESCE(ph.total_duration_sec, ph.print_time_minutes * 60),
+			COALESCE(ph.print_duration_sec, ph.print_time_minutes * 60),
+			COALESCE(ph.pause_duration_sec, 0),
+			COALESCE(ph.pause_count, 0),
+			COALESCE(ph.cancel_reason, ''),
+			COALESCE(ph.time_precision, 'approximate'),
+			COALESCE(ph.filament_precision, 'estimated')
 		FROM print_history ph
 		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
 		WHERE ph.id = ?`, id,
@@ -2178,10 +2318,45 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 		&r.PrintStarted, &r.PrintFinished, &r.JobName,
 		&r.Notes, &r.Status, &r.PrintTimeMinutes,
 		&r.ThumbnailBase64, &r.TotalCost, &r.Currency,
+		&r.Source, &r.TotalDurationSec, &r.PrintDurationSec,
+		&r.PauseDurationSec, &r.PauseCount, &r.CancelReason,
+		&r.TimePrecision, &r.FilamentPrecision,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("print history entry %d not found: %w", id, err)
 	}
+
+	// Fetch per-tool filament usage (populated for OctoPrint records).
+	fuRows, err := b.db.Query(`
+		SELECT id, print_id, tool_index, COALESCE(spool_id, 0),
+		       filament_used_mm, filament_used_grams
+		FROM print_filament_usage WHERE print_id = ? ORDER BY tool_index`, id)
+	if err == nil {
+		defer fuRows.Close()
+		for fuRows.Next() {
+			var fu PrintFilamentUsage
+			if fuRows.Scan(&fu.ID, &fu.PrintID, &fu.ToolIndex, &fu.SpoolID,
+				&fu.FilamentUsedMM, &fu.FilamentUsedG) == nil {
+				r.FilamentUsages = append(r.FilamentUsages, fu)
+			}
+		}
+	}
+
+	// Fetch pause events.
+	pRows, err := b.db.Query(`
+		SELECT id, print_id, paused_at, resumed_at, duration_sec, reason
+		FROM print_pauses WHERE print_id = ? ORDER BY paused_at`, id)
+	if err == nil {
+		defer pRows.Close()
+		for pRows.Next() {
+			var p PrintPause
+			if pRows.Scan(&p.ID, &p.PrintID, &p.PausedAt, &p.ResumedAt,
+				&p.DurationSec, &p.Reason) == nil {
+				r.Pauses = append(r.Pauses, p)
+			}
+		}
+	}
+
 	return &r, nil
 }
 
@@ -2289,6 +2464,117 @@ func (b *FilamentBridge) ClearOrphanedMappings() (int, error) {
 		log.Printf("🧹 Cleared %d orphaned toolhead mapping(s) — spools are now free to reassign", n)
 	}
 	return int(n), nil
+}
+
+// LogOctoPrintRecord persists a complete print record pushed by the OctoPrint plugin.
+// It inserts the top-level print_history row, per-tool filament rows, pause rows,
+// calculates cost, and queues Spoolman filament-usage updates.
+func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	if p.Source == "" {
+		p.Source = "octoprint"
+	}
+	if p.Status == "" {
+		p.Status = "completed"
+	}
+	if p.TimePrecision == "" {
+		p.TimePrecision = "exact"
+	}
+	if p.FilamentPrecision == "" {
+		p.FilamentPrecision = "measured"
+	}
+
+	// Sum filament across all tools for the top-level record.
+	var totalGrams, totalMM float64
+	for _, f := range p.Filament {
+		totalGrams += f.FilamentUsedG
+		totalMM += f.FilamentUsedMM
+	}
+
+	printTimeMin := p.PrintDurationSec / 60.0
+	if printTimeMin == 0 {
+		printTimeMin = p.TotalDurationSec / 60.0
+	}
+
+	var cancelReason sql.NullString
+	if p.CancelReason != nil {
+		cancelReason = sql.NullString{String: *p.CancelReason, Valid: true}
+	}
+
+	res, err := b.db.Exec(`
+		INSERT INTO print_history
+			(printer_name, toolhead_id, spool_id, filament_used,
+			 print_started, print_finished, job_name,
+			 print_time_minutes, status, thumbnail_path,
+			 source, total_duration_sec, print_duration_sec,
+			 pause_duration_sec, pause_count, cancel_reason,
+			 time_precision, filament_precision)
+		VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, '',
+		        ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.PrinterID, totalGrams,
+		p.StartedAt, p.EndedAt, p.FileName,
+		printTimeMin, p.Status,
+		p.Source, p.TotalDurationSec, p.PrintDurationSec,
+		p.PauseDurationSec, p.PauseCount, cancelReason,
+		p.TimePrecision, p.FilamentPrecision,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to insert octoprint record: %w", err)
+	}
+	printID64, _ := res.LastInsertId()
+	printID := int(printID64)
+
+	// Per-tool filament rows.
+	for _, f := range p.Filament {
+		if _, err := b.db.Exec(`
+			INSERT INTO print_filament_usage
+				(print_id, tool_index, spool_id, filament_used_mm, filament_used_grams)
+			VALUES (?, ?, ?, ?, ?)`,
+			printID, f.ToolIndex, f.SpoolID, f.FilamentUsedMM, f.FilamentUsedG,
+		); err != nil {
+			log.Printf("Warning: failed to insert filament usage for tool %d: %v", f.ToolIndex, err)
+		}
+	}
+
+	// Pause events.
+	for _, pause := range p.Pauses {
+		if _, err := b.db.Exec(`
+			INSERT INTO print_pauses
+				(print_id, paused_at, resumed_at, duration_sec, reason)
+			VALUES (?, ?, ?, ?, ?)`,
+			printID, pause.PausedAt, pause.ResumedAt, pause.DurationSec, pause.Reason,
+		); err != nil {
+			log.Printf("Warning: failed to insert pause record: %v", err)
+		}
+	}
+
+	// Queue Spoolman usage updates for each tool that has a spool and filament.
+	for _, f := range p.Filament {
+		if f.SpoolID > 0 && f.FilamentUsedG > 0 {
+			if _, err := b.db.Exec(`
+				INSERT INTO pending_spoolman_updates
+					(printer_name, toolhead_id, spool_id, used_weight, job_name, created_at, attempts)
+				VALUES (?, ?, ?, ?, ?, ?, 0)`,
+				p.PrinterID, f.ToolIndex, f.SpoolID, f.FilamentUsedG, p.FileName, time.Now(),
+			); err != nil {
+				log.Printf("Warning: failed to queue Spoolman update for spool %d: %v", f.SpoolID, err)
+			}
+		}
+	}
+
+	// CalculatePrintCostMultiSpool prices each filament entry against its own spool.
+	// Neither it nor SavePrintCost acquires b.mutex, so both are safe to call here.
+	if bd, err := b.CalculatePrintCostMultiSpool(p.Filament, printTimeMin); err == nil {
+		if err := b.SavePrintCost(printID, bd); err != nil {
+			log.Printf("Warning: failed to save cost for octoprint record %d: %v", printID, err)
+		}
+	}
+
+	log.Printf("📋 OctoPrint record logged: %s on %s (%.2fg, %.0fmin, %s)",
+		p.FileName, p.PrinterID, totalGrams, printTimeMin, p.Status)
+	return printID, nil
 }
 
 // Close closes the database connection

@@ -184,6 +184,9 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/orphaned-mappings", ws.getOrphanedMappingsHandler)
 		api.DELETE("/orphaned-mappings", ws.clearOrphanedMappingsHandler)
 
+		// OctoPrint push endpoint
+		api.POST("/prints", ws.receivePrintHandler)
+
 		// Print history
 		api.GET("/history", ws.getHistoryHandler)
 		api.GET("/history/:id", ws.getHistoryEntryHandler)
@@ -629,6 +632,9 @@ func (ws *WebServer) getConfigHandler(c *gin.Context) {
 	if config[ConfigKeySpoolmanPassword] != "" {
 		config[ConfigKeySpoolmanPassword] = maskedCredential
 	}
+	if config[ConfigKeyTheMomentAPIKey] != "" {
+		config[ConfigKeyTheMomentAPIKey] = maskedCredential
+	}
 	c.JSON(http.StatusOK, config)
 }
 
@@ -642,7 +648,7 @@ func (ws *WebServer) updateConfigHandler(c *gin.Context) {
 
 	// Update each config value, skipping credential sentinels (unchanged masked values)
 	for key, value := range config {
-		if key == ConfigKeySpoolmanPassword && value == maskedCredential {
+		if value == maskedCredential && (key == ConfigKeySpoolmanPassword || key == ConfigKeyTheMomentAPIKey) {
 			continue
 		}
 		if err := ws.bridge.SetConfigValue(key, value); err != nil {
@@ -1663,6 +1669,51 @@ func (ws *WebServer) clearOrphanedMappingsHandler(c *gin.Context) {
 			"cleared": n,
 		})
 	}
+}
+
+// ─── OctoPrint Push Handler ──────────────────────────────────────────────────
+
+// receivePrintHandler accepts a completed print record pushed by the OctoPrint plugin.
+// POST /api/prints
+// Requires X-API-Key header when the_moment_api_key config value is set.
+func (ws *WebServer) receivePrintHandler(c *gin.Context) {
+	// API key check (optional — skipped when key is unconfigured).
+	if storedKey, _ := ws.bridge.GetConfigValue(ConfigKeyTheMomentAPIKey); storedKey != "" {
+		if c.GetHeader("X-API-Key") != storedKey {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing API key"})
+			return
+		}
+	}
+
+	var payload OctoPrintPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload: " + err.Error()})
+		return
+	}
+
+	if payload.PrinterID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "printer_id is required"})
+		return
+	}
+	if payload.FileName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_name is required"})
+		return
+	}
+	if payload.EndedAt.IsZero() {
+		payload.EndedAt = time.Now()
+	}
+	if payload.StartedAt.IsZero() {
+		payload.StartedAt = payload.EndedAt.Add(-time.Duration(payload.TotalDurationSec) * time.Second)
+	}
+
+	printID, err := ws.bridge.LogOctoPrintRecord(payload)
+	if err != nil {
+		log.Printf("Error logging OctoPrint record: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save print record"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{"id": printID})
 }
 
 // ─── Print History Handlers ──────────────────────────────────────────────────

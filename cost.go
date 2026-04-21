@@ -107,16 +107,44 @@ func (b *FilamentBridge) SetCostSettings(s *CostSettings) error {
 
 // ─── Calculation ──────────────────────────────────────────────────────────────
 
-// CalculatePrintCost computes a full cost breakdown for a virtual print.
+// assembleCostBreakdown builds a CostBreakdown given pre-computed inputs.
+// filamentCost is the total filament cost already computed by the caller;
+// filamentPriceKg is stored for display only (use 0 when it is a blended value).
+func assembleCostBreakdown(settings *CostSettings, filamentGrams, printTimeMin, filamentCost, filamentPriceKg float64) *CostBreakdown {
+	hours := printTimeMin / 60.0
+	electricityCost  := (settings.PrinterWattage / 1000.0) * hours * settings.ElectricityRate
+	maintenanceCost  := hours * settings.MaintenanceRate
+	depreciationCost := hours * settings.DepreciationRate
+	subTotal         := filamentCost + electricityCost + maintenanceCost + depreciationCost
+	marginAmt        := subTotal * (settings.MarginPercent / 100.0)
+	totalCost        := subTotal + marginAmt
+
+	round4 := func(v float64) float64 { return math.Round(v*10000) / 10000 }
+
+	return &CostBreakdown{
+		FilamentGrams:    filamentGrams,
+		PrintTimeMin:     printTimeMin,
+		FilamentPriceKg:  filamentPriceKg,
+		FilamentCost:     round4(filamentCost),
+		ElectricityCost:  round4(electricityCost),
+		MaintenanceCost:  round4(maintenanceCost),
+		DepreciationCost: round4(depreciationCost),
+		SubTotal:         round4(subTotal),
+		MarginAmount:     round4(marginAmt),
+		TotalCost:        round4(totalCost),
+		Settings:         *settings,
+		Currency:         settings.Currency,
+	}
+}
+
+// CalculatePrintCost computes a full cost breakdown for a single-spool print.
 // spoolID is used to look up filament price from Spoolman (0 = no filament cost).
-// printTimeMin is the estimated print duration in minutes.
 func (b *FilamentBridge) CalculatePrintCost(filamentGrams float64, printTimeMin float64, spoolID int) (*CostBreakdown, error) {
 	settings, err := b.GetCostSettings()
 	if err != nil {
 		return nil, fmt.Errorf("could not load cost settings: %w", err)
 	}
 
-	// Filament price from Spoolman
 	var pricePerKg float64
 	if spoolID > 0 {
 		spools, err := b.spoolman.GetAllSpools()
@@ -130,37 +158,45 @@ func (b *FilamentBridge) CalculatePrintCost(filamentGrams float64, printTimeMin 
 		}
 	}
 
-	hours := printTimeMin / 60.0
-
-	filamentCost    := (filamentGrams / 1000.0) * pricePerKg
-	electricityCost := (settings.PrinterWattage / 1000.0) * hours * settings.ElectricityRate
-	maintenanceCost := hours * settings.MaintenanceRate
-	depreciationCost:= hours * settings.DepreciationRate
-
-	subTotal    := filamentCost + electricityCost + maintenanceCost + depreciationCost
-	marginAmt   := subTotal * (settings.MarginPercent / 100.0)
-	totalCost   := subTotal + marginAmt
-
-	// Round to 4 decimal places to avoid float noise in UI
-	round4 := func(v float64) float64 { return math.Round(v*10000) / 10000 }
-
-	bd := &CostBreakdown{
-		FilamentGrams:    filamentGrams,
-		PrintTimeMin:     printTimeMin,
-		FilamentPriceKg:  pricePerKg,
-		FilamentCost:     round4(filamentCost),
-		ElectricityCost:  round4(electricityCost),
-		MaintenanceCost:  round4(maintenanceCost),
-		DepreciationCost: round4(depreciationCost),
-		SubTotal:         round4(subTotal),
-		MarginAmount:     round4(marginAmt),
-		TotalCost:        round4(totalCost),
-		Settings:         *settings,
-		Currency:         settings.Currency,
-	}
+	filamentCost := (filamentGrams / 1000.0) * pricePerKg
+	bd := assembleCostBreakdown(settings, filamentGrams, printTimeMin, filamentCost, pricePerKg)
 
 	log.Printf("💰 Cost calc: %.2fg filament + %.1fmin = %s %.4f (margin %.0f%%)",
-		filamentGrams, printTimeMin, settings.Currency, totalCost, settings.MarginPercent)
+		filamentGrams, printTimeMin, settings.Currency, bd.TotalCost, settings.MarginPercent)
+	return bd, nil
+}
+
+// CalculatePrintCostMultiSpool computes cost when filament came from multiple spools
+// (multi-toolhead prints or filament changes mid-print). Each filament entry is priced
+// against its own spool — a single Spoolman call fetches all prices.
+func (b *FilamentBridge) CalculatePrintCostMultiSpool(filament []OctoPrintPayloadFilament, printTimeMin float64) (*CostBreakdown, error) {
+	settings, err := b.GetCostSettings()
+	if err != nil {
+		return nil, fmt.Errorf("could not load cost settings: %w", err)
+	}
+
+	// One Spoolman call to get all prices.
+	spoolPrices := make(map[int]float64)
+	if len(filament) > 0 {
+		if spools, err := b.spoolman.GetAllSpools(); err == nil {
+			for _, s := range spools {
+				if s.Price != nil {
+					spoolPrices[s.ID] = *s.Price
+				}
+			}
+		}
+	}
+
+	var totalGrams, filamentCost float64
+	for _, f := range filament {
+		totalGrams += f.FilamentUsedG
+		filamentCost += (f.FilamentUsedG / 1000.0) * spoolPrices[f.SpoolID]
+	}
+
+	bd := assembleCostBreakdown(settings, totalGrams, printTimeMin, filamentCost, 0)
+
+	log.Printf("💰 Cost calc (multi-spool): %.2fg filament + %.1fmin = %s %.4f (margin %.0f%%)",
+		totalGrams, printTimeMin, settings.Currency, bd.TotalCost, settings.MarginPercent)
 	return bd, nil
 }
 

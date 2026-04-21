@@ -1,0 +1,29 @@
+<form class="form-horizontal">
+    <div class="control-group">
+        <label class="control-label">The Moment URL</label>
+        <div class="controls">
+            <input type="text" class="input-block-level"
+                   data-bind="value: settings.plugins.the_moment.url"
+                   placeholder="http://192.168.1.x:5000">
+            <span class="help-block">Base URL of your The Moment instance.</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">API Key</label>
+        <div class="controls">
+            <input type="password" class="input-block-level"
+                   data-bind="value: settings.plugins.the_moment.api_key"
+                   placeholder="Leave blank if not set in The Moment">
+            <span class="help-block">Matches the API key in The Moment → Config → The Moment API Key.</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Printer ID</label>
+        <div class="controls">
+            <input type="text" class="input-block-level"
+                   data-bind="value: settings.plugins.the_moment.printer_id"
+                   placeholder="ender3-v3-se">
+            <span class="help-block">Short identifier shown in The Moment print history.</span>
+        </div>
+    </div>
+</form>

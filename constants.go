@@ -41,6 +41,7 @@ const (
 	ConfigKeySpoolmanPassword                = "spoolman_password"
 	ConfigKeyAutoAssignPreviousSpoolEnabled  = "auto_assign_previous_spool_enabled"
 	ConfigKeyAutoAssignPreviousSpoolLocation = "auto_assign_previous_spool_location"
+	ConfigKeyTheMomentAPIKey                = "the_moment_api_key"
 
 	// Cost calculation config keys
 	ConfigKeyCostElectricityRate = "cost_electricity_rate" // $/kWh
