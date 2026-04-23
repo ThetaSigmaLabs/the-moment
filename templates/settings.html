@@ -157,8 +157,23 @@
             </div>
 
             <div style="margin-top:20px;">
-                <button class="btn" onclick="saveCostSettings()">💾 Save Cost Settings</button>
+                <button class="btn" onclick="saveCostSettings()">💾 Save Global Settings</button>
                 <button class="btn btn-secondary" onclick="loadCostSettings()" style="margin-left:8px;">↺ Reset</button>
+            </div>
+        </div>
+
+        <!-- Per-printer cost overrides -->
+        <div class="config-section" style="margin-top:0;border-top:1px solid #333;">
+            <h4 style="margin:0 0 8px;">🖨️ Per-Printer Overrides</h4>
+            <div class="help-text" style="margin-bottom:16px;">
+                Override global defaults for each printer. Zero means "use global".
+                <strong>Print wattage</strong> replaces the global default.
+                <strong>Preheat</strong> adds a one-time electricity charge per print.
+                <strong>High-temp extra wattage</strong> is added automatically when Spoolman identifies the spool material as ABS, ASA, PA, or PC.
+                <strong>Purchase cost ÷ lifespan</strong> derives the per-hour depreciation; or enter it directly.
+            </div>
+            <div id="printerCostCards" style="display:flex;flex-direction:column;gap:12px;">
+                <p style="color:#666;font-size:0.9em;">Loading printers…</p>
             </div>
         </div>
     </div>

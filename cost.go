@@ -5,50 +5,99 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"time"
 )
 
 // ─── Structs ──────────────────────────────────────────────────────────────────
 
-// CostSettings holds all user-configurable cost parameters.
-// Stored in the config table; loaded on every cost calculation.
+// CostSettings holds global cost parameters — fallbacks when no per-printer
+// setting overrides them.
 type CostSettings struct {
 	ElectricityRate  float64 `json:"electricity_rate"`  // $/kWh
-	PrinterWattage   float64 `json:"printer_wattage"`   // Watts (whole printer draw)
+	PrinterWattage   float64 `json:"printer_wattage"`   // Watts — global default
 	MaintenanceRate  float64 `json:"maintenance_rate"`  // $/hour (consumables, wear)
-	DepreciationRate float64 `json:"depreciation_rate"` // $/hour (printer purchase spread over life)
+	DepreciationRate float64 `json:"depreciation_rate"` // $/hour — global default
 	MarginPercent    float64 `json:"margin_percent"`    // % markup applied to total cost
 	Currency         string  `json:"currency"`          // ISO code e.g. "USD", "CAD"
 }
 
-// CostBreakdown is the calculated result for one print job.
+// PrinterCostSettings holds per-printer overrides.
+// Zero values mean "use the global CostSettings value".
+type PrinterCostSettings struct {
+	PrinterName         string  `json:"printer_name"`
+	PrintWattageW       float64 `json:"print_wattage_w"`       // 0 = use global
+	PreheatWattageW     float64 `json:"preheat_wattage_w"`     // watts during warmup
+	PreheatTimeMin      float64 `json:"preheat_time_min"`      // minutes per print
+	HighTempExtraW      float64 `json:"high_temp_extra_w"`     // extra W for ABS/ASA/PA/PC etc.
+	PrinterPurchaseCost float64 `json:"printer_purchase_cost"` // $ — used with lifespan
+	EstimatedLifeHrs    float64 `json:"estimated_life_hrs"`    // hours before replacement
+	DepreciationPerHr   float64 `json:"depreciation_per_hr"`   // direct override (0 = derive)
+}
+
+// effectiveDepreciationPerHr returns the per-hour depreciation rate for this
+// printer: direct override > purchase cost / lifespan > 0 (fall back to global).
+func (p *PrinterCostSettings) effectiveDepreciationPerHr() float64 {
+	if p.DepreciationPerHr > 0 {
+		return p.DepreciationPerHr
+	}
+	if p.PrinterPurchaseCost > 0 && p.EstimatedLifeHrs > 0 {
+		return p.PrinterPurchaseCost / p.EstimatedLifeHrs
+	}
+	return 0
+}
+
+// CostBreakdown is the full calculated cost for one print job.
 type CostBreakdown struct {
-	// Inputs (echoed back for the UI)
+	// Inputs (echoed back for display)
 	FilamentGrams   float64 `json:"filament_grams"`
 	PrintTimeMin    float64 `json:"print_time_min"`
 	FilamentPriceKg float64 `json:"filament_price_per_kg"` // from Spoolman
 
 	// Cost components
-	FilamentCost    float64 `json:"filament_cost"`
-	ElectricityCost float64 `json:"electricity_cost"`
-	MaintenanceCost float64 `json:"maintenance_cost"`
+	FilamentCost     float64 `json:"filament_cost"`
+	PreheatCost      float64 `json:"preheat_cost"`      // one-time warmup electricity
+	ElectricityCost  float64 `json:"electricity_cost"`  // print-time electricity
+	MaintenanceCost  float64 `json:"maintenance_cost"`
 	DepreciationCost float64 `json:"depreciation_cost"`
-	SubTotal        float64 `json:"sub_total"`   // before margin
-	MarginAmount    float64 `json:"margin_amount"`
-	TotalCost       float64 `json:"total_cost"`  // what you charge
+	SubTotal         float64 `json:"sub_total"`    // before margin
+	MarginAmount     float64 `json:"margin_amount"`
+	TotalCost        float64 `json:"total_cost"`
 
-	// Settings snapshot (so the UI can display what was used)
+	// Diagnostic flags
+	PrintWattageUsed float64 `json:"print_wattage_used"` // effective W (inc. high-temp bump)
+	HighTempApplied  bool    `json:"high_temp_applied"`
+
+	// Settings snapshot (so the UI can show what was used)
 	Settings CostSettings `json:"settings"`
 	Currency string       `json:"currency"`
 }
 
-// ─── Settings persistence ─────────────────────────────────────────────────────
+// ─── High-temp material detection ────────────────────────────────────────────
 
-// GetCostSettings loads cost settings from the config table, using safe defaults
-// when keys are absent (new install) or unparseable.
+// highTempMaterials lists material codes (uppercase) that typically run hotter
+// than 220 °C and may warrant an enclosure heater or sustained high-bed temps.
+var highTempMaterials = map[string]bool{
+	"ABS": true, "ASA": true,
+	"PA": true, "PA6": true, "PA12": true, "PA-CF": true, "PA-GF": true, "PA12-CF": true,
+	"PC": true, "PC-ABS": true, "PC-CF": true,
+	"POM": true, "PEEK": true, "PPS": true, "PEI": true, "PPSU": true,
+	"NYLON": true,
+}
+
+// isHighTempMaterial returns true when the Spoolman material string indicates
+// a filament that requires elevated temperatures.
+func isHighTempMaterial(material string) bool {
+	return highTempMaterials[strings.ToUpper(strings.TrimSpace(material))]
+}
+
+// ─── Global settings persistence ─────────────────────────────────────────────
+
+// GetCostSettings loads global cost settings from the configuration table.
 func (b *FilamentBridge) GetCostSettings() (*CostSettings, error) {
 	defaults := &CostSettings{
 		ElectricityRate:  0.12,
@@ -59,9 +108,9 @@ func (b *FilamentBridge) GetCostSettings() (*CostSettings, error) {
 		Currency:         "USD",
 	}
 
-	rows, err := b.db.Query("SELECT key, value FROM config WHERE key LIKE 'cost_%'")
+	rows, err := b.db.Query("SELECT key, value FROM configuration WHERE key LIKE 'cost_%'")
 	if err != nil {
-		return defaults, nil // silently use defaults on DB error
+		return defaults, nil
 	}
 	defer rows.Close()
 
@@ -83,7 +132,7 @@ func (b *FilamentBridge) GetCostSettings() (*CostSettings, error) {
 	return defaults, nil
 }
 
-// SetCostSettings persists cost settings to the config table (upsert).
+// SetCostSettings persists global cost settings.
 func (b *FilamentBridge) SetCostSettings(s *CostSettings) error {
 	pairs := map[string]string{
 		ConfigKeyCostElectricityRate:  fmt.Sprintf("%.6f", s.ElectricityRate),
@@ -95,7 +144,7 @@ func (b *FilamentBridge) SetCostSettings(s *CostSettings) error {
 	}
 	for k, v := range pairs {
 		if _, err := b.db.Exec(
-			`INSERT INTO config (key, value) VALUES (?, ?)
+			`INSERT INTO configuration (key, value) VALUES (?, ?)
 			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, k, v,
 		); err != nil {
 			return fmt.Errorf("failed to save %s: %w", k, err)
@@ -105,19 +154,119 @@ func (b *FilamentBridge) SetCostSettings(s *CostSettings) error {
 	return nil
 }
 
+// ─── Per-printer settings persistence ────────────────────────────────────────
+
+// GetPrinterCostSettings loads per-printer overrides. Returns a zero-value
+// struct (all zeros) when no row exists — callers treat 0 as "use global".
+func (b *FilamentBridge) GetPrinterCostSettings(printerName string) (*PrinterCostSettings, error) {
+	s := &PrinterCostSettings{PrinterName: printerName}
+	err := b.db.QueryRow(`
+		SELECT print_wattage_w, preheat_wattage_w, preheat_time_min,
+		       high_temp_extra_w, printer_purchase_cost, estimated_life_hrs, depreciation_per_hr
+		FROM printer_cost_settings WHERE printer_name = ?`, printerName,
+	).Scan(
+		&s.PrintWattageW, &s.PreheatWattageW, &s.PreheatTimeMin,
+		&s.HighTempExtraW, &s.PrinterPurchaseCost, &s.EstimatedLifeHrs, &s.DepreciationPerHr,
+	)
+	if err == sql.ErrNoRows {
+		return s, nil // zeros = use global
+	}
+	return s, err
+}
+
+// SetPrinterCostSettings upserts per-printer overrides.
+func (b *FilamentBridge) SetPrinterCostSettings(s *PrinterCostSettings) error {
+	_, err := b.db.Exec(`
+		INSERT INTO printer_cost_settings
+			(printer_name, print_wattage_w, preheat_wattage_w, preheat_time_min,
+			 high_temp_extra_w, printer_purchase_cost, estimated_life_hrs, depreciation_per_hr,
+			 updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(printer_name) DO UPDATE SET
+			print_wattage_w      = excluded.print_wattage_w,
+			preheat_wattage_w    = excluded.preheat_wattage_w,
+			preheat_time_min     = excluded.preheat_time_min,
+			high_temp_extra_w    = excluded.high_temp_extra_w,
+			printer_purchase_cost= excluded.printer_purchase_cost,
+			estimated_life_hrs   = excluded.estimated_life_hrs,
+			depreciation_per_hr  = excluded.depreciation_per_hr,
+			updated_at           = CURRENT_TIMESTAMP`,
+		s.PrinterName, s.PrintWattageW, s.PreheatWattageW, s.PreheatTimeMin,
+		s.HighTempExtraW, s.PrinterPurchaseCost, s.EstimatedLifeHrs, s.DepreciationPerHr,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to save printer cost settings for %s: %w", s.PrinterName, err)
+	}
+	log.Printf("💰 Printer cost settings saved for %s", s.PrinterName)
+	return nil
+}
+
+// GetAllPrinterCostSettings returns saved overrides for all printers that have
+// any setting stored. The list may be shorter than the full printer list.
+func (b *FilamentBridge) GetAllPrinterCostSettings() ([]*PrinterCostSettings, error) {
+	rows, err := b.db.Query(`
+		SELECT printer_name, print_wattage_w, preheat_wattage_w, preheat_time_min,
+		       high_temp_extra_w, printer_purchase_cost, estimated_life_hrs, depreciation_per_hr
+		FROM printer_cost_settings ORDER BY printer_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*PrinterCostSettings
+	for rows.Next() {
+		s := &PrinterCostSettings{}
+		if err := rows.Scan(
+			&s.PrinterName, &s.PrintWattageW, &s.PreheatWattageW, &s.PreheatTimeMin,
+			&s.HighTempExtraW, &s.PrinterPurchaseCost, &s.EstimatedLifeHrs, &s.DepreciationPerHr,
+		); err == nil {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
 // ─── Calculation ──────────────────────────────────────────────────────────────
 
-// assembleCostBreakdown builds a CostBreakdown given pre-computed inputs.
-// filamentCost is the total filament cost already computed by the caller;
-// filamentPriceKg is stored for display only (use 0 when it is a blended value).
-func assembleCostBreakdown(settings *CostSettings, filamentGrams, printTimeMin, filamentCost, filamentPriceKg float64) *CostBreakdown {
+// assembleCostBreakdown builds a CostBreakdown from pre-computed filament cost
+// and inputs, applying per-printer overrides where set.
+// pc may be nil — all per-printer fields default to global settings.
+// isHighTemp adds pc.HighTempExtraW to print wattage when true.
+func assembleCostBreakdown(
+	settings *CostSettings, pc *PrinterCostSettings,
+	filamentGrams, printTimeMin, filamentCost, filamentPriceKg float64,
+	isHighTemp bool,
+) *CostBreakdown {
 	hours := printTimeMin / 60.0
-	electricityCost  := (settings.PrinterWattage / 1000.0) * hours * settings.ElectricityRate
-	maintenanceCost  := hours * settings.MaintenanceRate
-	depreciationCost := hours * settings.DepreciationRate
-	subTotal         := filamentCost + electricityCost + maintenanceCost + depreciationCost
-	marginAmt        := subTotal * (settings.MarginPercent / 100.0)
-	totalCost        := subTotal + marginAmt
+
+	// Effective print wattage
+	printW := settings.PrinterWattage
+	if pc != nil && pc.PrintWattageW > 0 {
+		printW = pc.PrintWattageW
+	}
+	if isHighTemp && pc != nil && pc.HighTempExtraW > 0 {
+		printW += pc.HighTempExtraW
+	}
+
+	// Preheat: one-time electricity cost per print (not per hour)
+	var preheatCost float64
+	if pc != nil && pc.PreheatWattageW > 0 && pc.PreheatTimeMin > 0 {
+		preheatCost = (pc.PreheatWattageW / 1000.0) * (pc.PreheatTimeMin / 60.0) * settings.ElectricityRate
+	}
+
+	electricityCost := (printW / 1000.0) * hours * settings.ElectricityRate
+	maintenanceCost := hours * settings.MaintenanceRate
+
+	// Depreciation: per-printer rate overrides global
+	depreciationRate := settings.DepreciationRate
+	if pc != nil && pc.effectiveDepreciationPerHr() > 0 {
+		depreciationRate = pc.effectiveDepreciationPerHr()
+	}
+	depreciationCost := hours * depreciationRate
+
+	subTotal  := filamentCost + preheatCost + electricityCost + maintenanceCost + depreciationCost
+	marginAmt := subTotal * (settings.MarginPercent / 100.0)
+	totalCost := subTotal + marginAmt
 
 	round4 := func(v float64) float64 { return math.Round(v*10000) / 10000 }
 
@@ -126,19 +275,22 @@ func assembleCostBreakdown(settings *CostSettings, filamentGrams, printTimeMin, 
 		PrintTimeMin:     printTimeMin,
 		FilamentPriceKg:  filamentPriceKg,
 		FilamentCost:     round4(filamentCost),
+		PreheatCost:      round4(preheatCost),
 		ElectricityCost:  round4(electricityCost),
 		MaintenanceCost:  round4(maintenanceCost),
 		DepreciationCost: round4(depreciationCost),
 		SubTotal:         round4(subTotal),
 		MarginAmount:     round4(marginAmt),
 		TotalCost:        round4(totalCost),
+		PrintWattageUsed: printW,
+		HighTempApplied:  isHighTemp && pc != nil && pc.HighTempExtraW > 0,
 		Settings:         *settings,
 		Currency:         settings.Currency,
 	}
 }
 
-// CalculatePrintCost computes a full cost breakdown for a single-spool print.
-// spoolID is used to look up filament price from Spoolman (0 = no filament cost).
+// CalculatePrintCost computes cost for a single-spool print using global settings.
+// spoolID=0 means no filament price lookup.
 func (b *FilamentBridge) CalculatePrintCost(filamentGrams float64, printTimeMin float64, spoolID int) (*CostBreakdown, error) {
 	settings, err := b.GetCostSettings()
 	if err != nil {
@@ -159,48 +311,105 @@ func (b *FilamentBridge) CalculatePrintCost(filamentGrams float64, printTimeMin 
 	}
 
 	filamentCost := (filamentGrams / 1000.0) * pricePerKg
-	bd := assembleCostBreakdown(settings, filamentGrams, printTimeMin, filamentCost, pricePerKg)
+	bd := assembleCostBreakdown(settings, nil, filamentGrams, printTimeMin, filamentCost, pricePerKg, false)
 
 	log.Printf("💰 Cost calc: %.2fg filament + %.1fmin = %s %.4f (margin %.0f%%)",
 		filamentGrams, printTimeMin, settings.Currency, bd.TotalCost, settings.MarginPercent)
 	return bd, nil
 }
 
-// CalculatePrintCostMultiSpool computes cost when filament came from multiple spools
-// (multi-toolhead prints or filament changes mid-print). Each filament entry is priced
-// against its own spool — a single Spoolman call fetches all prices.
-func (b *FilamentBridge) CalculatePrintCostMultiSpool(filament []OctoPrintPayloadFilament, printTimeMin float64) (*CostBreakdown, error) {
+// CalculatePrintCostForPrinter computes cost using per-printer settings and
+// detects high-temp filament from the spool's Spoolman material field.
+func (b *FilamentBridge) CalculatePrintCostForPrinter(filamentGrams, printTimeMin float64, spoolID int, printerName string) (*CostBreakdown, error) {
 	settings, err := b.GetCostSettings()
 	if err != nil {
 		return nil, fmt.Errorf("could not load cost settings: %w", err)
 	}
 
-	// One Spoolman call to get all prices.
-	spoolPrices := make(map[int]float64)
+	pc, _ := b.GetPrinterCostSettings(printerName) // nil on error = use global
+
+	var pricePerKg float64
+	var isHighTemp bool
+	if spoolID > 0 {
+		spools, err := b.spoolman.GetAllSpools()
+		if err == nil {
+			for _, s := range spools {
+				if s.ID == spoolID {
+					if s.Price != nil {
+						pricePerKg = *s.Price
+					}
+					if isHighTempMaterial(s.Material) {
+						isHighTemp = true
+					}
+					break
+				}
+			}
+		}
+	}
+
+	filamentCost := (filamentGrams / 1000.0) * pricePerKg
+	bd := assembleCostBreakdown(settings, pc, filamentGrams, printTimeMin, filamentCost, pricePerKg, isHighTemp)
+
+	log.Printf("💰 Cost calc (%s): %.2fg + %.0fmin = %s %.4f%s",
+		printerName, filamentGrams, printTimeMin, settings.Currency, bd.TotalCost,
+		map[bool]string{true: " [high-temp]", false: ""}[isHighTemp])
+	return bd, nil
+}
+
+// CalculatePrintCostMultiSpool computes cost for multi-spool prints using global
+// settings only. Use CalculatePrintCostMultiSpoolForPrinter when a printer name
+// is available.
+func (b *FilamentBridge) CalculatePrintCostMultiSpool(filament []OctoPrintPayloadFilament, printTimeMin float64) (*CostBreakdown, error) {
+	return b.CalculatePrintCostMultiSpoolForPrinter(filament, printTimeMin, "")
+}
+
+// CalculatePrintCostMultiSpoolForPrinter computes cost for multi-spool prints,
+// applying per-printer overrides and detecting high-temp from any spool material.
+// Each filament entry is priced against its own spool — one Spoolman call total.
+func (b *FilamentBridge) CalculatePrintCostMultiSpoolForPrinter(filament []OctoPrintPayloadFilament, printTimeMin float64, printerName string) (*CostBreakdown, error) {
+	settings, err := b.GetCostSettings()
+	if err != nil {
+		return nil, fmt.Errorf("could not load cost settings: %w", err)
+	}
+
+	var pc *PrinterCostSettings
+	if printerName != "" {
+		pc, _ = b.GetPrinterCostSettings(printerName)
+	}
+
+	spoolPrices    := make(map[int]float64)
+	spoolMaterials := make(map[int]string)
 	if len(filament) > 0 {
 		if spools, err := b.spoolman.GetAllSpools(); err == nil {
 			for _, s := range spools {
 				if s.Price != nil {
 					spoolPrices[s.ID] = *s.Price
 				}
+				spoolMaterials[s.ID] = s.Material
 			}
 		}
 	}
 
 	var totalGrams, filamentCost float64
+	var isHighTemp bool
 	for _, f := range filament {
 		totalGrams += f.FilamentUsedG
 		filamentCost += (f.FilamentUsedG / 1000.0) * spoolPrices[f.SpoolID]
+		if isHighTempMaterial(spoolMaterials[f.SpoolID]) {
+			isHighTemp = true
+		}
 	}
 
-	bd := assembleCostBreakdown(settings, totalGrams, printTimeMin, filamentCost, 0)
+	bd := assembleCostBreakdown(settings, pc, totalGrams, printTimeMin, filamentCost, 0, isHighTemp)
 
-	log.Printf("💰 Cost calc (multi-spool): %.2fg filament + %.1fmin = %s %.4f (margin %.0f%%)",
-		totalGrams, printTimeMin, settings.Currency, bd.TotalCost, settings.MarginPercent)
+	htLabel := ""
+	if isHighTemp { htLabel = " [high-temp]" }
+	log.Printf("💰 Cost calc (multi-spool%s): %.2fg filament + %.1fmin = %s %.4f (margin %.0f%%)",
+		htLabel, totalGrams, printTimeMin, settings.Currency, bd.TotalCost, settings.MarginPercent)
 	return bd, nil
 }
 
-// SavePrintCost persists a cost record linked to a print_history row.
+// SavePrintCost persists a cost record linked to a print_history row (upsert).
 func (b *FilamentBridge) SavePrintCost(printHistoryID int, bd *CostBreakdown) error {
 	_, err := b.db.Exec(`
 		INSERT INTO print_costs
@@ -215,7 +424,7 @@ func (b *FilamentBridge) SavePrintCost(printHistoryID int, bd *CostBreakdown) er
 		printHistoryID,
 		bd.FilamentCost,
 		bd.ElectricityCost,
-		bd.MaintenanceCost+bd.DepreciationCost, // stored in maintenance_cost column
+		bd.MaintenanceCost+bd.DepreciationCost+bd.PreheatCost,
 		bd.TotalCost,
 		bd.Currency,
 		time.Now(),

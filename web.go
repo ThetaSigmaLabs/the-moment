@@ -187,7 +187,8 @@ func (ws *WebServer) setupRoutes() {
 		// OctoPrint push endpoint
 		api.POST("/prints", ws.receivePrintHandler)
 
-		// Print history
+		// Print history and sessions
+		api.GET("/sessions", ws.getSessionsHandler)
 		api.GET("/history", ws.getHistoryHandler)
 		api.GET("/history/:id", ws.getHistoryEntryHandler)
 		api.PATCH("/history/:id/note", ws.updateHistoryNoteHandler)
@@ -196,6 +197,9 @@ func (ws *WebServer) setupRoutes() {
 		// Cost settings and calculation
 		api.GET("/cost-settings", ws.getCostSettingsHandler)
 		api.POST("/cost-settings", ws.setCostSettingsHandler)
+		api.GET("/cost-settings/printers", ws.getAllPrinterCostSettingsHandler)
+		api.GET("/printers/:id/cost-settings", ws.getPrinterCostSettingsHandler)
+		api.POST("/printers/:id/cost-settings", ws.setPrinterCostSettingsHandler)
 		api.POST("/cost/calculate", ws.calculateCostHandler)
 		api.GET("/print-errors", ws.getPrintErrorsHandler)
 		api.POST("/print-errors/:id/acknowledge", ws.acknowledgePrintErrorHandler)
@@ -1718,6 +1722,21 @@ func (ws *WebServer) receivePrintHandler(c *gin.Context) {
 
 // ─── Print History Handlers ──────────────────────────────────────────────────
 
+// getSessionsHandler returns print jobs grouped by session_id, newest first.
+// GET /api/sessions?limit=200
+func (ws *WebServer) getSessionsHandler(c *gin.Context) {
+	limit := 200
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	sessions, err := ws.bridge.GetPrintSessions(limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"sessions": sessions, "count": len(sessions)})
+}
+
 // getHistoryHandler returns all print history records (newest first).
 // GET /api/history?limit=200
 func (ws *WebServer) getHistoryHandler(c *gin.Context) {
@@ -1815,6 +1834,93 @@ func (ws *WebServer) setCostSettingsHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Cost settings saved"})
+}
+
+// getAllPrinterCostSettingsHandler returns per-printer cost overrides for all
+// configured printers, merging saved settings with the printer list so the UI
+// always has an entry for every printer (zeroes where no override is saved).
+// GET /api/cost-settings/printers
+func (ws *WebServer) getAllPrinterCostSettingsHandler(c *gin.Context) {
+	saved, err := ws.bridge.GetAllPrinterCostSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// Index saved settings by printer name for fast lookup.
+	byName := make(map[string]*PrinterCostSettings, len(saved))
+	for _, s := range saved {
+		byName[s.PrinterName] = s
+	}
+
+	// Build a result that includes every configured printer, filling in zeros
+	// when no override has been saved yet.
+	configs, _ := ws.bridge.GetAllPrinterConfigs()
+	var result []*PrinterCostSettings
+	seen := make(map[string]bool)
+	for _, cfg := range configs {
+		name := resolvePrinterName(cfg)
+		seen[name] = true
+		if s, ok := byName[name]; ok {
+			result = append(result, s)
+		} else {
+			result = append(result, &PrinterCostSettings{PrinterName: name})
+		}
+	}
+	// Also include any saved settings for printers not in printer_configs
+	// (e.g. OctoPrint printers identified only by printer_id).
+	for _, s := range saved {
+		if !seen[s.PrinterName] {
+			result = append(result, s)
+		}
+	}
+	if result == nil {
+		result = []*PrinterCostSettings{}
+	}
+	c.JSON(http.StatusOK, gin.H{"printers": result})
+}
+
+// getPrinterCostSettingsHandler returns per-printer cost overrides.
+// GET /api/printers/:id/cost-settings
+func (ws *WebServer) getPrinterCostSettingsHandler(c *gin.Context) {
+	printerName := ws.resolvePrinterName(c.Param("id"))
+	s, err := ws.bridge.GetPrinterCostSettings(printerName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, s)
+}
+
+// setPrinterCostSettingsHandler saves per-printer cost overrides.
+// POST /api/printers/:id/cost-settings
+func (ws *WebServer) setPrinterCostSettingsHandler(c *gin.Context) {
+	printerName := ws.resolvePrinterName(c.Param("id"))
+	var s PrinterCostSettings
+	if err := c.ShouldBindJSON(&s); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	s.PrinterName = printerName // authoritative from URL
+	if err := ws.bridge.SetPrinterCostSettings(&s); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Printer cost settings saved"})
+}
+
+// resolvePrinterName maps a printer_id (from printer_configs) to the display
+// name used in print_history. Falls back to the raw id if not found.
+func (ws *WebServer) resolvePrinterName(printerID string) string {
+	configs, err := ws.bridge.GetAllPrinterConfigs()
+	if err != nil {
+		return printerID
+	}
+	if cfg, ok := configs[printerID]; ok {
+		return resolvePrinterName(cfg)
+	}
+	// Not in printer_configs — treat the id as the printer_name directly
+	// (covers OctoPrint printers whose printer_id becomes their printer_name).
+	return printerID
 }
 
 // calculateCostHandler computes a cost breakdown without persisting it.

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -18,6 +19,18 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+// newSessionID returns a random UUID v4 string used to group all print_history
+// rows that belong to the same physical print job.
+func newSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
 
 // FilamentBridge manages the connection between PrusaLink and Spoolman
 type FilamentBridge struct {
@@ -61,6 +74,11 @@ type PrintHistory struct {
 	TotalCost float64 `json:"total_cost"`
 	Currency  string  `json:"currency"`
 
+	// SessionID groups all print_history rows from the same physical print job.
+	// Multi-toolhead PrusaLink prints produce N rows; all share one SessionID.
+	// Legacy rows (pre-session-id) have an empty string here.
+	SessionID string `json:"session_id"`
+
 	// Source and precision metadata (OctoPrint records fill these fully)
 	Source            string `json:"source"`             // "prusalink" | "octoprint"
 	TotalDurationSec  float64 `json:"total_duration_sec"`
@@ -77,10 +95,15 @@ type PrintHistory struct {
 }
 
 // PrintFilamentUsage is per-tool filament data stored for a unified print record.
+// ChangeNumber distinguishes multiple spool loads on the same tool: 0 = first load,
+// 1 = second (first manual change), etc.  Multi-tool prints have distinct ToolIndex
+// values; manual filament changes on one tool have the same ToolIndex with
+// incrementing ChangeNumber.
 type PrintFilamentUsage struct {
 	ID             int     `json:"id"`
 	PrintID        int     `json:"print_id"`
 	ToolIndex      int     `json:"tool_index"`
+	ChangeNumber   int     `json:"change_number"`
 	SpoolID        int     `json:"spool_id"`
 	FilamentUsedMM float64 `json:"filament_used_mm"`
 	FilamentUsedG  float64 `json:"filament_used_grams"`
@@ -98,6 +121,7 @@ type PrintPause struct {
 
 // OctoPrintPayload is the request body sent by the OctoPrint plugin.
 type OctoPrintPayload struct {
+	SessionID         string                    `json:"session_id"` // optional; generated server-side if absent
 	Source            string                    `json:"source"`
 	PrinterID         string                    `json:"printer_id"`
 	FileName          string                    `json:"file_name"`
@@ -124,11 +148,32 @@ type OctoPrintPayloadPause struct {
 }
 
 // OctoPrintPayloadFilament is per-tool filament data within an OctoPrint payload.
+// ChangeNumber mirrors PrintFilamentUsage.ChangeNumber: 0 for initial load, 1+ for
+// each subsequent manual spool swap on that tool index.
 type OctoPrintPayloadFilament struct {
 	ToolIndex      int     `json:"tool_index"`
+	ChangeNumber   int     `json:"change_number"`
 	SpoolID        int     `json:"spool_id"`
 	FilamentUsedMM float64 `json:"filament_used_mm"`
 	FilamentUsedG  float64 `json:"filament_used_grams"`
+}
+
+// PrintSession groups all print_history rows sharing a session_id into one logical
+// print job. Multi-toolhead PrusaLink prints produce N rows per session; OctoPrint
+// produces one row. Legacy rows (empty session_id) each form their own session.
+type PrintSession struct {
+	SessionID    string         `json:"session_id"`
+	JobName      string         `json:"job_name"`
+	PrinterName  string         `json:"printer_name"`
+	Status       string         `json:"status"`
+	Source       string         `json:"source"`
+	PrintStarted time.Time      `json:"print_started"`
+	PrintFinished time.Time     `json:"print_finished"`
+	TotalFilamentG float64      `json:"total_filament_grams"`
+	TotalCost    float64        `json:"total_cost"`
+	Currency     string         `json:"currency"`
+	ToolCount    int            `json:"tool_count"`
+	Records      []PrintHistory `json:"records"`
 }
 
 // PrintError represents a failed print processing attempt
@@ -182,6 +227,14 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migrateOctoPrintSupport(); err != nil {
 		return nil, fmt.Errorf("failed to migrate octoprint support: %w", err)
+	}
+
+	if err := bridge.migrateSessionSupport(); err != nil {
+		return nil, fmt.Errorf("failed to migrate session support: %w", err)
+	}
+
+	if err := bridge.migratePrinterCostSettings(); err != nil {
+		return nil, fmt.Errorf("failed to migrate printer cost settings: %w", err)
 	}
 
 	// Update Spoolman URL and timeout if config is provided
@@ -409,6 +462,32 @@ func (b *FilamentBridge) migrateOctoPrintSupport() error {
 			return fmt.Errorf("failed to create octoprint table: %w", err)
 		}
 	}
+	return nil
+}
+
+// migratePrinterCostSettings creates the per-printer cost overrides table.
+func (b *FilamentBridge) migratePrinterCostSettings() error {
+	_, err := b.db.Exec(`
+		CREATE TABLE IF NOT EXISTS printer_cost_settings (
+			printer_name         TEXT PRIMARY KEY,
+			print_wattage_w      REAL NOT NULL DEFAULT 0,
+			preheat_wattage_w    REAL NOT NULL DEFAULT 0,
+			preheat_time_min     REAL NOT NULL DEFAULT 0,
+			high_temp_extra_w    REAL NOT NULL DEFAULT 0,
+			printer_purchase_cost REAL NOT NULL DEFAULT 0,
+			estimated_life_hrs   REAL NOT NULL DEFAULT 0,
+			depreciation_per_hr  REAL NOT NULL DEFAULT 0,
+			updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`)
+	return err
+}
+
+// migrateSessionSupport adds the session_id column to print_history and the
+// change_number column to print_filament_usage.
+func (b *FilamentBridge) migrateSessionSupport() error {
+	b.db.Exec(`ALTER TABLE print_history ADD COLUMN session_id TEXT`)
+	b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_print_history_session_id ON print_history(session_id)`)
+	b.db.Exec(`ALTER TABLE print_filament_usage ADD COLUMN change_number INTEGER NOT NULL DEFAULT 0`)
 	return nil
 }
 
@@ -1157,18 +1236,28 @@ func (b *FilamentBridge) UnmapToolhead(printerName string, toolheadID int) error
 
 // LogPrintUsage logs filament usage for a print job.
 // printTimeMinutes and thumbnailBase64 are optional — pass 0 and "" if unavailable.
-func (b *FilamentBridge) LogPrintUsage(printerName string, toolheadID int, spoolID int, filamentUsed float64, jobName string) error {
-	return b.LogPrintUsageFull(printerName, toolheadID, spoolID, filamentUsed, jobName, 0, "completed", "")
+// sessionID groups rows from the same physical print; pass newSessionID() at the
+// call site so all toolheads in one print share the same ID.
+func (b *FilamentBridge) LogPrintUsage(printerName string, toolheadID int, spoolID int, filamentUsed float64, jobName string, sessionID string) error {
+	return b.LogPrintUsageFull(printerName, toolheadID, spoolID, filamentUsed, jobName, 0, "completed", "", sessionID, "prusalink")
 }
 
-// LogPrintUsageFull is the full version with print time, status, and thumbnail.
+// LogPrintUsageFull is the full version with print time, status, thumbnail, session, and source.
+// source should be "prusalink", "virtual", or "octoprint".
+// Cost is automatically calculated and saved after the insert (outside the mutex).
 func (b *FilamentBridge) LogPrintUsageFull(printerName string, toolheadID int, spoolID int,
-	filamentUsed float64, jobName string, printTimeMinutes float64, status string, thumbnailBase64 string) error {
+	filamentUsed float64, jobName string, printTimeMinutes float64, status string, thumbnailBase64 string,
+	sessionID string, source string) error {
 	b.mutex.Lock()
-	defer b.mutex.Unlock()
 
 	if status == "" {
 		status = "completed"
+	}
+	if sessionID == "" {
+		sessionID = newSessionID()
+	}
+	if source == "" {
+		source = "prusalink"
 	}
 
 	printStarted := time.Now()
@@ -1181,21 +1270,35 @@ func (b *FilamentBridge) LogPrintUsageFull(printerName string, toolheadID int, s
 		}
 	}
 
-	_, err := b.db.Exec(`
+	res, err := b.db.Exec(`
 		INSERT INTO print_history
 			(printer_name, toolhead_id, spool_id, filament_used,
 			 print_started, print_finished, job_name,
-			 print_time_minutes, status, thumbnail_path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 print_time_minutes, status, thumbnail_path, session_id,
+			 source, time_precision, filament_precision)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approximate', 'estimated')`,
 		printerName, toolheadID, spoolID, filamentUsed,
 		printStarted, time.Now(), jobName,
-		printTimeMinutes, status, thumbnailBase64,
+		printTimeMinutes, status, thumbnailBase64, sessionID, source,
 	)
 	if err != nil {
+		b.mutex.Unlock()
 		return fmt.Errorf("failed to log print usage: %w", err)
 	}
+	printID64, _ := res.LastInsertId()
 	log.Printf("📋 Logged print history: %s on %s (%.2fg, %.0fmin)",
 		jobName, printerName, filamentUsed, printTimeMinutes)
+	b.mutex.Unlock() // release before Spoolman network call
+
+	// Auto-calculate and store cost (best-effort — never fails the log).
+	if printID64 > 0 && filamentUsed > 0 {
+		if bd, calcErr := b.CalculatePrintCostForPrinter(filamentUsed, printTimeMinutes, spoolID, printerName); calcErr == nil {
+			if saveErr := b.SavePrintCost(int(printID64), bd); saveErr != nil {
+				log.Printf("Warning: cost save failed for print %d: %v", printID64, saveErr)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -1464,6 +1567,14 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(config PrinterConfig, fil
 		return err
 	}
 
+	_, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
+	sessionID := newSessionID()
+	for toolheadID, usedG := range partialUsage {
+		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
+		_ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename+" [CANCELLED]",
+			0, "cancelled", thumbnailB64, sessionID, "prusalink")
+	}
+
 	return nil
 }
 
@@ -1515,10 +1626,19 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(config PrinterConfig, file
 
 	log.Printf("Successfully parsed G-code file for filament usage: %+v", filamentUsage)
 
-	// Process filament usage using helper function
+	printTimeSec, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
+	printTimeMin := float64(printTimeSec) / 60.0
+
 	if err := b.processFilamentUsage(printerName, filamentUsage, filename); err != nil {
 		log.Printf("Error processing filament usage: %v", err)
 		return err
+	}
+
+	sessionID := newSessionID()
+	for toolheadID, usedG := range filamentUsage {
+		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
+		_ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename,
+			printTimeMin, "completed", thumbnailB64, sessionID, "prusalink")
 	}
 
 	return nil
@@ -1720,12 +1840,6 @@ func (b *FilamentBridge) processFilamentUsage(printerName string, filamentUsage 
 			log.Printf("No spool mapped to %s toolhead %d, skipping filament usage update",
 				printerName, toolheadID)
 			continue
-		}
-
-		// Always persist to local history first — the print event must never be
-		// silently dropped even when Spoolman is unreachable.
-		if err := b.LogPrintUsage(printerName, toolheadID, spoolID, usedWeight, jobName); err != nil {
-			log.Printf("Error logging print usage: %v", err)
 		}
 
 		// Attempt Spoolman update; on failure queue for background retry.
@@ -1970,6 +2084,19 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 			continue
 		}
 
+		printTimeSec, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
+		printTimeMin := float64(printTimeSec) / 60.0
+		status := "completed"
+		if d.jobType == "cancelled" {
+			status = "cancelled"
+		}
+		sessionID := newSessionID()
+		for toolheadID, usedG := range filamentUsage {
+			spoolID, _ := b.GetToolheadMapping(d.printerName, toolheadID)
+			_ = b.LogPrintUsageFull(d.printerName, toolheadID, spoolID, usedG, jobName,
+				printTimeMin, status, thumbnailB64, sessionID, "prusalink")
+		}
+
 		_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
 		successCount++
 		log.Printf("✅ G-code retry succeeded: %s (%s %s)", d.filename, d.printerName, d.jobType)
@@ -2167,15 +2294,17 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 	printTimeSec, thumbnailB64 := ParseGcodeMetadata(content)
 	printTimeMin = float64(printTimeSec) / 60.0
 
+	// Update Spoolman for every toolhead with filament usage.
 	if err := b.processFilamentUsage(printerName, usage, displayName); err != nil {
 		return nil, skipped, 0, fmt.Errorf("failed to update Spoolman: %w", err)
 	}
 
-	// Log a print history entry for every toolhead that had filament usage
+	// All toolheads in this virtual print share one session ID.
+	sessionID := newSessionID()
 	for toolheadID, usedG := range usage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
 		_ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
-			printTimeMin, "completed", thumbnailB64)
+			printTimeMin, "completed", thumbnailB64, sessionID, "virtual")
 	}
 
 	log.Printf("✅ Virtual '%s': processed '%s', %d toolhead(s), %d skipped, %.0f min",
@@ -2257,7 +2386,8 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 			COALESCE(ph.pause_count, 0),
 			COALESCE(ph.cancel_reason, ''),
 			COALESCE(ph.time_precision, 'approximate'),
-			COALESCE(ph.filament_precision, 'estimated')
+			COALESCE(ph.filament_precision, 'estimated'),
+			COALESCE(ph.session_id, '')
 		FROM print_history ph
 		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
 		ORDER BY ph.print_finished DESC
@@ -2277,7 +2407,7 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 			&r.ThumbnailBase64, &r.TotalCost, &r.Currency,
 			&r.Source, &r.TotalDurationSec, &r.PrintDurationSec,
 			&r.PauseDurationSec, &r.PauseCount, &r.CancelReason,
-			&r.TimePrecision, &r.FilamentPrecision,
+			&r.TimePrecision, &r.FilamentPrecision, &r.SessionID,
 		); err != nil {
 			log.Printf("Warning: failed to scan print history row: %v", err)
 			continue
@@ -2309,7 +2439,8 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 			COALESCE(ph.pause_count, 0),
 			COALESCE(ph.cancel_reason, ''),
 			COALESCE(ph.time_precision, 'approximate'),
-			COALESCE(ph.filament_precision, 'estimated')
+			COALESCE(ph.filament_precision, 'estimated'),
+			COALESCE(ph.session_id, '')
 		FROM print_history ph
 		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
 		WHERE ph.id = ?`, id,
@@ -2320,7 +2451,7 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 		&r.ThumbnailBase64, &r.TotalCost, &r.Currency,
 		&r.Source, &r.TotalDurationSec, &r.PrintDurationSec,
 		&r.PauseDurationSec, &r.PauseCount, &r.CancelReason,
-		&r.TimePrecision, &r.FilamentPrecision,
+		&r.TimePrecision, &r.FilamentPrecision, &r.SessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("print history entry %d not found: %w", id, err)
@@ -2328,14 +2459,14 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 
 	// Fetch per-tool filament usage (populated for OctoPrint records).
 	fuRows, err := b.db.Query(`
-		SELECT id, print_id, tool_index, COALESCE(spool_id, 0),
+		SELECT id, print_id, tool_index, COALESCE(change_number, 0), COALESCE(spool_id, 0),
 		       filament_used_mm, filament_used_grams
-		FROM print_filament_usage WHERE print_id = ? ORDER BY tool_index`, id)
+		FROM print_filament_usage WHERE print_id = ? ORDER BY tool_index, change_number`, id)
 	if err == nil {
 		defer fuRows.Close()
 		for fuRows.Next() {
 			var fu PrintFilamentUsage
-			if fuRows.Scan(&fu.ID, &fu.PrintID, &fu.ToolIndex, &fu.SpoolID,
+			if fuRows.Scan(&fu.ID, &fu.PrintID, &fu.ToolIndex, &fu.ChangeNumber, &fu.SpoolID,
 				&fu.FilamentUsedMM, &fu.FilamentUsedG) == nil {
 				r.FilamentUsages = append(r.FilamentUsages, fu)
 			}
@@ -2358,6 +2489,63 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 	}
 
 	return &r, nil
+}
+
+// GetPrintSessions returns print jobs grouped by session_id, newest first.
+// Records with an empty session_id each form their own implicit session.
+func (b *FilamentBridge) GetPrintSessions(limit int) ([]PrintSession, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	records, err := b.GetPrintHistory(limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by session_id; records with no session_id get a unique per-row key.
+	type sessionKey = string
+	order := []sessionKey{}
+	groups := map[sessionKey][]PrintHistory{}
+
+	for _, r := range records {
+		key := r.SessionID
+		if key == "" {
+			key = fmt.Sprintf("__solo_%d", r.ID)
+		}
+		if _, exists := groups[key]; !exists {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], r)
+	}
+
+	sessions := make([]PrintSession, 0, len(order))
+	for _, key := range order {
+		recs := groups[key]
+		first := recs[0]
+
+		var totalFilament, totalCost float64
+		for _, r := range recs {
+			totalFilament += r.FilamentUsed
+			totalCost += r.TotalCost
+		}
+		sessionID := first.SessionID
+
+		sessions = append(sessions, PrintSession{
+			SessionID:      sessionID,
+			JobName:        first.JobName,
+			PrinterName:    first.PrinterName,
+			Status:         first.Status,
+			Source:         first.Source,
+			PrintStarted:   first.PrintStarted,
+			PrintFinished:  first.PrintFinished,
+			TotalFilamentG: totalFilament,
+			TotalCost:      totalCost,
+			Currency:       first.Currency,
+			ToolCount:      len(recs),
+			Records:        recs,
+		})
+	}
+	return sessions, nil
 }
 
 // UpdatePrintNote sets the user note on a print history record.
@@ -2485,6 +2673,9 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 	if p.FilamentPrecision == "" {
 		p.FilamentPrecision = "measured"
 	}
+	if p.SessionID == "" {
+		p.SessionID = newSessionID()
+	}
 
 	// Sum filament across all tools for the top-level record.
 	var totalGrams, totalMM float64
@@ -2510,15 +2701,15 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 			 print_time_minutes, status, thumbnail_path,
 			 source, total_duration_sec, print_duration_sec,
 			 pause_duration_sec, pause_count, cancel_reason,
-			 time_precision, filament_precision)
+			 time_precision, filament_precision, session_id)
 		VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, '',
-		        ?, ?, ?, ?, ?, ?, ?, ?)`,
+		        ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.PrinterID, totalGrams,
 		p.StartedAt, p.EndedAt, p.FileName,
 		printTimeMin, p.Status,
 		p.Source, p.TotalDurationSec, p.PrintDurationSec,
 		p.PauseDurationSec, p.PauseCount, cancelReason,
-		p.TimePrecision, p.FilamentPrecision,
+		p.TimePrecision, p.FilamentPrecision, p.SessionID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert octoprint record: %w", err)
@@ -2530,9 +2721,9 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 	for _, f := range p.Filament {
 		if _, err := b.db.Exec(`
 			INSERT INTO print_filament_usage
-				(print_id, tool_index, spool_id, filament_used_mm, filament_used_grams)
-			VALUES (?, ?, ?, ?, ?)`,
-			printID, f.ToolIndex, f.SpoolID, f.FilamentUsedMM, f.FilamentUsedG,
+				(print_id, tool_index, change_number, spool_id, filament_used_mm, filament_used_grams)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			printID, f.ToolIndex, f.ChangeNumber, f.SpoolID, f.FilamentUsedMM, f.FilamentUsedG,
 		); err != nil {
 			log.Printf("Warning: failed to insert filament usage for tool %d: %v", f.ToolIndex, err)
 		}
@@ -2564,9 +2755,10 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 		}
 	}
 
-	// CalculatePrintCostMultiSpool prices each filament entry against its own spool.
+	// CalculatePrintCostMultiSpoolForPrinter prices each filament entry against its own spool
+	// and applies per-printer wattage / preheat / depreciation overrides.
 	// Neither it nor SavePrintCost acquires b.mutex, so both are safe to call here.
-	if bd, err := b.CalculatePrintCostMultiSpool(p.Filament, printTimeMin); err == nil {
+	if bd, err := b.CalculatePrintCostMultiSpoolForPrinter(p.Filament, printTimeMin, p.PrinterID); err == nil {
 		if err := b.SavePrintCost(printID, bd); err != nil {
 			log.Printf("Warning: failed to save cost for octoprint record %d: %v", printID, err)
 		}

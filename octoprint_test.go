@@ -33,7 +33,7 @@ func TestAssembleCostBreakdown_ZeroInputs(t *testing.T) {
 		MarginPercent:    0,
 		Currency:         "USD",
 	}
-	bd := assembleCostBreakdown(settings, 0, 0, 0, 0)
+	bd := assembleCostBreakdown(settings, nil, 0, 0, 0, 0, false)
 	if bd.TotalCost != 0 {
 		t.Errorf("expected zero cost for zero inputs, got %.4f", bd.TotalCost)
 	}
@@ -42,7 +42,7 @@ func TestAssembleCostBreakdown_ZeroInputs(t *testing.T) {
 func TestAssembleCostBreakdown_FilamentOnly(t *testing.T) {
 	settings := &CostSettings{Currency: "USD"}
 	// 100g at $20/kg = $2.00 filament cost, no time-based costs
-	bd := assembleCostBreakdown(settings, 100, 0, 2.00, 20.00)
+	bd := assembleCostBreakdown(settings, nil, 100, 0, 2.00, 20.00, false)
 	assertApprox(t, "filament cost", 2.00, bd.FilamentCost, 0.001)
 	assertApprox(t, "total cost", 2.00, bd.TotalCost, 0.001)
 }
@@ -50,7 +50,7 @@ func TestAssembleCostBreakdown_FilamentOnly(t *testing.T) {
 func TestAssembleCostBreakdown_Margin(t *testing.T) {
 	settings := &CostSettings{MarginPercent: 20, Currency: "USD"}
 	// filament cost = $1.00, margin = 20%, total = $1.20
-	bd := assembleCostBreakdown(settings, 50, 0, 1.00, 0)
+	bd := assembleCostBreakdown(settings, nil, 50, 0, 1.00, 0, false)
 	assertApprox(t, "margin amount", 0.20, bd.MarginAmount, 0.001)
 	assertApprox(t, "total cost", 1.20, bd.TotalCost, 0.001)
 }
@@ -67,7 +67,7 @@ func TestAssembleCostBreakdown_TimeCosts(t *testing.T) {
 	// electricity: 0.12 kW * 1h * $0.12/kWh = $0.0144
 	// maintenance: 1h * $0.60 = $0.60
 	// depreciation: 1h * $0.30 = $0.30
-	bd := assembleCostBreakdown(settings, 0, 60, 0, 0)
+	bd := assembleCostBreakdown(settings, nil, 0, 60, 0, 0, false)
 	assertApprox(t, "electricity", 0.0144, bd.ElectricityCost, 0.0001)
 	assertApprox(t, "maintenance", 0.60, bd.MaintenanceCost, 0.001)
 	assertApprox(t, "depreciation", 0.30, bd.DepreciationCost, 0.001)
@@ -254,7 +254,7 @@ func TestAssembleCostBreakdown_MultiSpoolWeighting(t *testing.T) {
 	}
 	totalGrams := 9.0
 	filamentCost := 0.0 // SpoolID=0, no price
-	bd := assembleCostBreakdown(settings, totalGrams, 60, filamentCost, 0)
+	bd := assembleCostBreakdown(settings, nil, totalGrams, 60, filamentCost, 0, false)
 
 	assertApprox(t, "total grams echoed", 9.0, bd.FilamentGrams, 0.01)
 	expectedElec := (100.0 / 1000.0) * 1.0 * 0.10
@@ -296,6 +296,161 @@ func TestGetPrintHistory_PrusaLinkDefaults(t *testing.T) {
 	assertEqual(t, "source default", "prusalink", r.Source)
 	assertEqual(t, "time_precision default", "approximate", r.TimePrecision)
 	assertEqual(t, "filament_precision default", "estimated", r.FilamentPrecision)
+}
+
+// ─── session_id and change_number ────────────────────────────────────────────
+
+// TestLogOctoPrintRecord_SessionIDGenerated verifies that a payload with no
+// session_id gets one assigned by the server, and it appears in the history record.
+func TestLogOctoPrintRecord_SessionIDGenerated(t *testing.T) {
+	bridge := testBridge(t)
+
+	payload := OctoPrintPayload{
+		PrinterID: "ender3-v3-se",
+		FileName:  "no_session.gcode",
+		Status:    "completed",
+		EndedAt:   time.Now(),
+		Filament:  []OctoPrintPayloadFilament{},
+	}
+	// SessionID deliberately left empty — server must generate one.
+
+	printID, err := bridge.LogOctoPrintRecord(payload)
+	if err != nil {
+		t.Fatalf("LogOctoPrintRecord: %v", err)
+	}
+	entry, err := bridge.GetPrintHistoryEntry(printID)
+	if err != nil {
+		t.Fatalf("GetPrintHistoryEntry: %v", err)
+	}
+	if entry.SessionID == "" {
+		t.Error("expected a non-empty session_id to be generated")
+	}
+	t.Logf("✅ session_id generated: %s", entry.SessionID)
+}
+
+// TestLogOctoPrintRecord_SessionIDPassthrough verifies that a plugin-supplied
+// session_id is stored and returned unchanged.
+func TestLogOctoPrintRecord_SessionIDPassthrough(t *testing.T) {
+	bridge := testBridge(t)
+
+	wantSession := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	payload := OctoPrintPayload{
+		SessionID: wantSession,
+		PrinterID: "ender3-v3-se",
+		FileName:  "session_test.gcode",
+		Status:    "completed",
+		EndedAt:   time.Now(),
+		Filament:  []OctoPrintPayloadFilament{},
+	}
+
+	printID, err := bridge.LogOctoPrintRecord(payload)
+	if err != nil {
+		t.Fatalf("LogOctoPrintRecord: %v", err)
+	}
+	entry, err := bridge.GetPrintHistoryEntry(printID)
+	if err != nil {
+		t.Fatalf("GetPrintHistoryEntry: %v", err)
+	}
+	assertEqual(t, "session_id", wantSession, entry.SessionID)
+	t.Logf("✅ session_id passthrough: %s", entry.SessionID)
+}
+
+// TestLogOctoPrintRecord_ChangeNumber verifies that a filament-change payload
+// (two entries for tool 0 with different spools) stores distinct change_numbers.
+func TestLogOctoPrintRecord_ChangeNumber(t *testing.T) {
+	bridge := testBridge(t)
+
+	payload := OctoPrintPayload{
+		PrinterID: "ender3-v3-se",
+		FileName:  "change_test.gcode",
+		Status:    "completed",
+		EndedAt:   time.Now(),
+		Filament: []OctoPrintPayloadFilament{
+			{ToolIndex: 0, ChangeNumber: 0, SpoolID: 1, FilamentUsedMM: 1000, FilamentUsedG: 3.0},
+			{ToolIndex: 0, ChangeNumber: 1, SpoolID: 2, FilamentUsedMM: 2000, FilamentUsedG: 6.0},
+		},
+	}
+
+	printID, err := bridge.LogOctoPrintRecord(payload)
+	if err != nil {
+		t.Fatalf("LogOctoPrintRecord: %v", err)
+	}
+	entry, err := bridge.GetPrintHistoryEntry(printID)
+	if err != nil {
+		t.Fatalf("GetPrintHistoryEntry: %v", err)
+	}
+	if len(entry.FilamentUsages) != 2 {
+		t.Fatalf("expected 2 filament_usages, got %d", len(entry.FilamentUsages))
+	}
+	if entry.FilamentUsages[0].ChangeNumber != 0 {
+		t.Errorf("expected change_number=0 for first load, got %d", entry.FilamentUsages[0].ChangeNumber)
+	}
+	if entry.FilamentUsages[1].ChangeNumber != 1 {
+		t.Errorf("expected change_number=1 for second load, got %d", entry.FilamentUsages[1].ChangeNumber)
+	}
+	t.Logf("✅ change_number: load0=%d, load1=%d",
+		entry.FilamentUsages[0].ChangeNumber, entry.FilamentUsages[1].ChangeNumber)
+}
+
+// TestGetPrintSessions_GroupsBySessionID verifies that two print_history rows
+// sharing a session_id are returned as a single PrintSession.
+func TestGetPrintSessions_GroupsBySessionID(t *testing.T) {
+	bridge := testBridge(t)
+
+	sharedSession := "shared-session-id"
+	// Insert two toolhead rows for the same PrusaLink print.
+	for _, toolhead := range []int{0, 1} {
+		_, err := bridge.db.Exec(`
+			INSERT INTO print_history
+				(printer_name, toolhead_id, spool_id, filament_used,
+				 print_started, print_finished, job_name, status,
+				 print_time_minutes, session_id, source)
+			VALUES ('CoreOne', ?, ?, 10.0,
+			        '2026-04-20T10:00:00Z', '2026-04-20T11:00:00Z',
+			        'twohead.gcode', 'completed', 60, ?, 'prusalink')`,
+			toolhead, toolhead+1, sharedSession)
+		if err != nil {
+			t.Fatalf("insert toolhead %d: %v", toolhead, err)
+		}
+	}
+	// Insert one unrelated record with no session_id (legacy row).
+	_, err := bridge.db.Exec(`
+		INSERT INTO print_history
+			(printer_name, toolhead_id, spool_id, filament_used,
+			 print_started, print_finished, job_name, status, print_time_minutes)
+		VALUES ('CoreOne', 0, 1, 5.0,
+		        '2026-04-19T10:00:00Z', '2026-04-19T11:00:00Z',
+		        'legacy.gcode', 'completed', 60)`)
+	if err != nil {
+		t.Fatalf("insert legacy record: %v", err)
+	}
+
+	sessions, err := bridge.GetPrintSessions(10)
+	if err != nil {
+		t.Fatalf("GetPrintSessions: %v", err)
+	}
+	// Three rows → two sessions (two rows share session_id, one is solo legacy).
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(sessions))
+	}
+	// Newest first: shared session printed 2026-04-20 comes before legacy 2026-04-19.
+	shared := sessions[0]
+	if shared.SessionID != sharedSession {
+		t.Errorf("expected session_id=%s, got %s", sharedSession, shared.SessionID)
+	}
+	if shared.ToolCount != 2 {
+		t.Errorf("expected tool_count=2, got %d", shared.ToolCount)
+	}
+	assertApprox(t, "total filament", 20.0, shared.TotalFilamentG, 0.01)
+
+	legacy := sessions[1]
+	if legacy.SessionID != "" {
+		t.Errorf("expected empty session_id for legacy row, got %s", legacy.SessionID)
+	}
+	if legacy.ToolCount != 1 {
+		t.Errorf("expected tool_count=1 for solo legacy, got %d", legacy.ToolCount)
+	}
+	t.Logf("✅ sessions: shared(%d tools, %.1fg) + legacy(1 tool)", shared.ToolCount, shared.TotalFilamentG)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

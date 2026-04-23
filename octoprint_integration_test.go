@@ -282,3 +282,68 @@ func TestOctoPrintEndpoint_MissingRequiredFields(t *testing.T) {
 	}
 	t.Logf("✅ Missing printer_id → 400")
 }
+
+// TestSessionsEndpoint_GroupsBySessionID verifies that two prints sharing a
+// session_id appear as one session in GET /api/sessions, and a standalone print
+// appears as its own session.
+func TestSessionsEndpoint_GroupsBySessionID(t *testing.T) {
+	serverURL, cleanup := testServer(t)
+	defer cleanup()
+
+	sharedSession := "test-session-abcd-1234"
+
+	for _, file := range []string{"tool0.gcode", "tool1.gcode"} {
+		resp, body := post(t, serverURL+"/api/prints", map[string]interface{}{
+			"session_id":         sharedSession,
+			"printer_id":         "core-one",
+			"file_name":          file,
+			"status":             "completed",
+			"ended_at":           "2026-04-20T11:00:00Z",
+			"total_duration_sec": 3600,
+			"filament": []map[string]interface{}{
+				{"tool_index": 0, "spool_id": 0, "filament_used_mm": 1000, "filament_used_grams": 3.0},
+			},
+		})
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("expected 201 posting %s, got %d: %s", file, resp.StatusCode, body)
+		}
+	}
+
+	// One standalone print with a different session.
+	resp, body := post(t, serverURL+"/api/prints", map[string]interface{}{
+		"session_id":         "other-session-xyz",
+		"printer_id":         "ender3",
+		"file_name":          "solo.gcode",
+		"status":             "completed",
+		"ended_at":           "2026-04-19T10:00:00Z",
+		"total_duration_sec": 1800,
+		"filament": []map[string]interface{}{
+			{"tool_index": 0, "spool_id": 0, "filament_used_mm": 500, "filament_used_grams": 1.5},
+		},
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 posting solo.gcode, got %d: %s", resp.StatusCode, body)
+	}
+
+	_, sessBody := get(t, serverURL+"/api/sessions")
+	var wrapper struct {
+		Sessions []map[string]interface{} `json:"sessions"`
+		Count    int                      `json:"count"`
+	}
+	if err := json.Unmarshal(sessBody, &wrapper); err != nil {
+		t.Fatalf("sessions response not JSON: %v — body: %s", err, sessBody)
+	}
+	if wrapper.Count != 2 {
+		t.Errorf("expected 2 sessions (1 shared + 1 solo), got %d — body: %s", wrapper.Count, sessBody)
+	}
+
+	// Shared session (newest) should have tool_count=2.
+	shared := wrapper.Sessions[0]
+	if int(shared["tool_count"].(float64)) != 2 {
+		t.Errorf("expected tool_count=2 for shared session, got %v", shared["tool_count"])
+	}
+	if shared["session_id"] != sharedSession {
+		t.Errorf("expected session_id=%s, got %v", sharedSession, shared["session_id"])
+	}
+	t.Logf("✅ GET /api/sessions → %d sessions; shared tool_count=%v", wrapper.Count, shared["tool_count"])
+}

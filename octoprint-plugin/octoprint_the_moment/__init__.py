@@ -16,7 +16,9 @@ Settings (configured in OctoPrint Settings → The Moment):
 
 import datetime
 import logging
+import math
 import threading
+import uuid
 
 import flask
 import octoprint.plugin
@@ -52,6 +54,7 @@ class TheMomentPlugin(
 
     def _reset_state(self):
         self._print_started_at: datetime.datetime | None = None
+        self._session_id: str = ""
         self._current_file: str = ""
         # Each entry: {"paused_at": datetime, "resumed_at": datetime|None,
         #              "duration_sec": float, "reason": str,
@@ -158,36 +161,50 @@ class TheMomentPlugin(
     def _build_filament_payload(self, final_mm_per_tool: dict[int, float]) -> list[dict]:
         """
         Close open segments and return the filament list for the API payload.
-        Segments for the same (tool_index, spool_id) pair are merged.
-        mm is converted to grams using 1 cm³ ≈ 1.24 g (PLA density average).
-        Callers that have exact gram values from Spoolman can override this.
+
+        Consecutive segments on the same tool with the same spool_id are merged
+        (a pause without a filament swap). When the spool changes for a tool, a
+        new entry is emitted with an incrementing change_number (0 = initial load,
+        1 = first manual swap, …).  Multi-toolhead prints use distinct tool_index
+        values, all with change_number=0.
+
+        mm → grams uses 1.75 mm diameter, 1.24 g/cm³ (PLA default).
         """
         self._close_open_segments(final_mm_per_tool)
 
-        # Merge by (tool_index, spool_id)
-        merged: dict[tuple[int, int], float] = {}
+        # Build ordered runs per tool: list of [spool_id, used_mm], merging
+        # consecutive same-spool segments so pauses don't inflate change_number.
+        tool_runs: dict[int, list[list]] = {}
         for seg in self._filament_segments:
-            key = (seg["tool_index"], seg["spool_id"])
-            merged[key] = merged.get(key, 0.0) + seg.get("used_mm", 0.0)
+            tool = seg["tool_index"]
+            spool = seg["spool_id"]
+            used = seg.get("used_mm", 0.0)
+            if used <= 0:
+                continue
+            if tool not in tool_runs:
+                tool_runs[tool] = []
+            runs = tool_runs[tool]
+            if runs and runs[-1][0] == spool:
+                runs[-1][1] += used
+            else:
+                runs.append([spool, used])
 
-        # Diameter 1.75 mm, density 1.24 g/cm³ (PLA) — reasonable default.
-        import math
-        radius_cm = 0.175 / 2  # 1.75mm → 0.175cm
-        density = 1.24
+        radius_cm = 0.175 / 2
         cross_section = math.pi * radius_cm ** 2
+        density = 1.24
 
         entries = []
-        for (tool_idx, spool_id), used_mm in sorted(merged.items()):
-            if used_mm <= 0:
-                continue
-            used_cm = used_mm / 10.0
-            grams = used_cm * cross_section * density
-            entries.append(dict(
-                tool_index=tool_idx,
-                spool_id=spool_id,
-                filament_used_mm=round(used_mm, 2),
-                filament_used_grams=round(grams, 3),
-            ))
+        for tool_idx in sorted(tool_runs.keys()):
+            for change_number, (spool_id, used_mm) in enumerate(tool_runs[tool_idx]):
+                used_cm = used_mm / 10.0
+                grams = used_cm * cross_section * density
+                entries.append(dict(
+                    tool_index=tool_idx,
+                    change_number=change_number,
+                    spool_id=spool_id,
+                    filament_used_mm=round(used_mm, 2),
+                    filament_used_grams=round(grams, 3),
+                ))
         return entries
 
     # ── Event handling ───────────────────────────────────────────────────────
@@ -217,6 +234,7 @@ class TheMomentPlugin(
         with self._lock:
             self._reset_state()
             self._print_started_at = datetime.datetime.utcnow()
+            self._session_id = str(uuid.uuid4())
             self._current_file = payload.get("name", "")
             self._current_spools = self._get_current_spools()
             start_mm = self._get_filament_position_mm()
@@ -284,6 +302,7 @@ class TheMomentPlugin(
             print_sec = max(0.0, total_sec - pause_sec)
 
             body = dict(
+                session_id=self._session_id,
                 source="octoprint",
                 printer_id=self._settings.get(["printer_id"]),
                 file_name=self._current_file,
@@ -356,6 +375,7 @@ class TheMomentPlugin(
 
 
 __plugin_name__ = "The Moment"
+__plugin_identifier__ = "the_moment"
 __plugin_version__ = "1.0.0"
 __plugin_description__ = "Sends print events to The Moment for unified print history and cost tracking."
 __plugin_pythoncompat__ = ">=3.7,<4"

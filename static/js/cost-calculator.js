@@ -204,7 +204,12 @@ function _renderCostRows(d, currency) {
     if (d.print_time_min !== undefined && d.print_time_min > 0) {
         html += row('Print time', _fmtMin(d.print_time_min));
     }
-    html += row('Electricity', fmt(d.electricity_cost));
+    if (d.preheat_cost !== undefined && d.preheat_cost > 0) {
+        html += row('Preheat', fmt(d.preheat_cost));
+    }
+    var elecLabel = 'Electricity';
+    if (d.high_temp_applied) elecLabel += ' ⚡ high-temp';
+    html += row(elecLabel, fmt(d.electricity_cost));
     html += row('Maintenance', fmt(d.maintenance_cost));
     if (d.depreciation_cost !== undefined && d.depreciation_cost > 0) {
         html += row('Depreciation', fmt(d.depreciation_cost));
@@ -246,6 +251,116 @@ function _getVal(id) {
     return el ? el.value : '';
 }
 
+// ─── Per-printer cost settings ────────────────────────────────────────────────
+
+function loadPrinterCostSettings() {
+    fetch('/api/cost-settings/printers')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var printers = data.printers || [];
+            var container = document.getElementById('printerCostCards');
+            if (!container) return;
+            if (printers.length === 0) {
+                container.innerHTML = '<p style="color:#666;font-size:0.9em;">No printers configured yet.</p>';
+                return;
+            }
+            container.innerHTML = printers.map(function(p) {
+                return buildPrinterCostCard(p);
+            }).join('');
+        })
+        .catch(function(err) {
+            var c = document.getElementById('printerCostCards');
+            if (c) c.innerHTML = '<p style="color:#ef9a9a;">Failed to load: ' + err.message + '</p>';
+        });
+}
+
+function buildPrinterCostCard(p) {
+    var name = p.printer_name || '';
+    var safe = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    // Derive display depreciation
+    var derivedDepreciation = '';
+    if (p.printer_purchase_cost > 0 && p.estimated_life_hrs > 0) {
+        derivedDepreciation = ' (≈ ' + _fmtCurrencySimple(p.printer_purchase_cost / p.estimated_life_hrs) + '/hr derived)';
+    }
+
+    return '<div style="border:1px solid #333;border-radius:8px;padding:16px;background:rgba(255,255,255,0.03);">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">' +
+        '<strong style="font-size:0.95em;">' + _escHtml(name) + '</strong>' +
+        '<button class="btn btn-small" onclick="savePrinterCostSettings(' + JSON.stringify(name) + ')">💾 Save</button>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;">' +
+
+        _pcField(safe, 'print_wattage_w',       'Print wattage (W)',           p.print_wattage_w,       1,   'Steady-state draw during printing. 0 = use global.') +
+        _pcField(safe, 'preheat_wattage_w',     'Preheat wattage (W)',         p.preheat_wattage_w,     1,   'Watts during warmup — usually 2–3× print wattage.') +
+        _pcField(safe, 'preheat_time_min',       'Preheat time (min)',           p.preheat_time_min,      0.5, 'Minutes to reach print temperature. One-time cost per print.') +
+        _pcField(safe, 'high_temp_extra_w',      'High-temp extra (W)',         p.high_temp_extra_w,     1,   'Added when Spoolman material is ABS / ASA / PA / PC etc.') +
+        _pcField(safe, 'printer_purchase_cost',  'Purchase cost ($)',            p.printer_purchase_cost, 1,   'What you paid. Used with lifespan to derive depreciation/hr.') +
+        _pcField(safe, 'estimated_life_hrs',     'Lifespan (hours)',             p.estimated_life_hrs,    100, 'Expected print hours before replacement.') +
+        _pcField(safe, 'depreciation_per_hr',    'Depreciation override ($/hr)', p.depreciation_per_hr,  0.001,'Direct $/hr override' + derivedDepreciation + '. 0 = derive from cost ÷ hours.') +
+
+        '</div></div>';
+}
+
+function _pcField(safeName, field, label, value, step, hint) {
+    var id = 'pc_' + safeName + '_' + field;
+    return '<div>' +
+        '<label style="font-size:0.8em;color:#aaa;display:block;margin-bottom:3px;">' + label + '</label>' +
+        '<input type="number" id="' + id + '" min="0" step="' + step + '" value="' + (value || 0) + '" ' +
+        'style="width:100%;padding:5px 8px;border-radius:4px;border:1px solid #444;background:rgba(255,255,255,0.05);color:#fff;font-size:0.9em;">' +
+        (hint ? '<small style="color:#555;font-size:0.75em;">' + hint + '</small>' : '') +
+        '</div>';
+}
+
+function savePrinterCostSettings(printerName) {
+    var safe = printerName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    function v(field) {
+        var el = document.getElementById('pc_' + safe + '_' + field);
+        return el ? (parseFloat(el.value) || 0) : 0;
+    }
+    var payload = {
+        printer_name:          printerName,
+        print_wattage_w:       v('print_wattage_w'),
+        preheat_wattage_w:     v('preheat_wattage_w'),
+        preheat_time_min:      v('preheat_time_min'),
+        high_temp_extra_w:     v('high_temp_extra_w'),
+        printer_purchase_cost: v('printer_purchase_cost'),
+        estimated_life_hrs:    v('estimated_life_hrs'),
+        depreciation_per_hr:   v('depreciation_per_hr'),
+    };
+
+    // Use printer_name as the :id segment — resolvePrinterName on the server
+    // falls back to treating it as a raw name when it's not a printer_configs ID.
+    fetch('/api/printers/' + encodeURIComponent(printerName) + '/cost-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) { alert('Error: ' + data.error); return; }
+            // Flash the save button briefly
+            var btns = document.querySelectorAll('#printerCostCards button');
+            btns.forEach(function(b) {
+                if (b.getAttribute('onclick') && b.getAttribute('onclick').includes(JSON.stringify(printerName))) {
+                    var orig = b.textContent;
+                    b.textContent = '✅ Saved!';
+                    setTimeout(function() { b.textContent = orig; }, 1800);
+                }
+            });
+        })
+        .catch(function(err) { alert('Error saving: ' + err.message); });
+}
+
+function _escHtml(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function _fmtCurrencySimple(n) {
+    return '$' + (Math.round(n * 1000) / 1000).toFixed(3);
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+
 // Load cost settings whenever the cost tab is opened
 document.addEventListener('DOMContentLoaded', function() {
     // Hook into settings tab switching
@@ -254,8 +369,10 @@ document.addEventListener('DOMContentLoaded', function() {
     if (costTabBtn) {
         costTabBtn.addEventListener('click', function() {
             setTimeout(loadCostSettings, 50);
+            setTimeout(loadPrinterCostSettings, 100);
         });
     }
     // Also load on page ready in case cost tab is default
     loadCostSettings();
+    loadPrinterCostSettings();
 });
