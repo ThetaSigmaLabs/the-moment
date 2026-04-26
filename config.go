@@ -14,12 +14,13 @@ import (
 
 // PrinterConfig represents configuration for a single printer
 type PrinterConfig struct {
-	Name      string `json:"name"`
-	Model     string `json:"model"`
-	IPAddress string `json:"ip_address"`
-	APIKey    string `json:"api_key,omitempty"`
-	Toolheads int    `json:"toolheads"`
-	IsVirtual bool   `json:"is_virtual,omitempty"` // Virtual test printer — no real hardware
+	Name        string `json:"name"`
+	Model       string `json:"model"`
+	IPAddress   string `json:"ip_address"`
+	APIKey      string `json:"api_key,omitempty"`
+	Toolheads   int    `json:"toolheads"`
+	IsVirtual   bool   `json:"is_virtual,omitempty"`   // Virtual test printer — no real hardware
+	PrinterType string `json:"printer_type,omitempty"` // "prusalink" | "octoprint"
 }
 
 // FilamentSpool represents a filament spool from Spoolman
@@ -126,17 +127,7 @@ func LoadConfig(bridge *FilamentBridge) (*Config, error) {
 
 	// Process each printer configuration
 	for printerID, printerConfig := range printerConfigs {
-		// Load printer configs directly from database without making API calls
-		// This prevents race conditions and timeouts during config loading
-		// Live printer status will be handled by the monitoring cycle
-		config.Printers[printerID] = PrinterConfig{
-			Name:      printerConfig.Name,
-			Model:     printerConfig.Model,
-			IPAddress: printerConfig.IPAddress,
-			APIKey:    printerConfig.APIKey,
-			Toolheads: printerConfig.Toolheads,
-			IsVirtual: printerConfig.IsVirtual,
-		}
+		config.Printers[printerID] = printerConfig
 	}
 
 	// If no printers configured, add placeholder

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E '\\\\.\\(go|svelte|ts|html\\)$')",
+      "Bash(python -m pytest octoprint-plugin/tests/test_plugin.py -v)",
+      "Bash(python3 -m pytest /Users/stephen/code/the-moment/octoprint-plugin/tests/test_plugin.py -v)",
+      "Bash(python3 -m unittest discover -s /Users/stephen/code/the-moment/octoprint-plugin/tests -p \"test_*.py\" -v)",
+      "Bash(python3 -m unittest discover -s octoprint-plugin/tests -p \"test_*.py\" -v)",
+      "Bash(pip3 install *)"
+    ]
+  }
+}

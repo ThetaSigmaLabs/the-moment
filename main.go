@@ -95,7 +95,7 @@ func main() {
 		fmt.Println("Starting web interface only...")
 		webServer := NewWebServer(bridge)
 		go func() {
-			if err := webServer.Start(*port); err != nil {
+			if err := webServer.Start(*host, *port); err != nil {
 				log.Fatalf("Web server error: %v", err)
 			}
 		}()
@@ -170,7 +170,7 @@ func main() {
 
 		// Start web server in a goroutine
 		go func() {
-			if err := webServer.Start(*port); err != nil {
+			if err := webServer.Start(*host, *port); err != nil {
 				log.Fatalf("Web server error: %v", err)
 			}
 		}()

@@ -679,3 +679,111 @@ func (c *SpoolmanClient) UpdateSpoolmanLocationReferences(oldName, newName strin
 	log.Printf("UpdateSpoolmanLocationReferences: Successfully renamed location from '%s' to '%s' in Spoolman", oldName, newName)
 	return nil
 }
+
+// ─── NFC tag helpers ──────────────────────────────────────────────────────────
+
+// nfcIDKey is the extra-field key used to store an NFC tag UUID on a spool.
+const nfcIDKey = "nfc_id"
+
+// GetSpoolByID fetches a single spool from Spoolman by ID.
+func (c *SpoolmanClient) GetSpoolByID(spoolID int) (*SpoolmanSpool, error) {
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/spool/%d", c.baseURL, spoolID), nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addAuthHeader(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("getting spool %d: %w", spoolID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+	var s SpoolmanSpool
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return nil, fmt.Errorf("decoding spool %d: %w", spoolID, err)
+	}
+	s = c.normalizeSpoolData(s)
+	return &s, nil
+}
+
+// SetSpoolNFCTag writes a UUID into the spool's extra["nfc_id"] field.
+// This is idempotent — calling again overwrites the previous UUID.
+func (c *SpoolmanClient) SetSpoolNFCTag(spoolID int, nfcUUID string) error {
+	// Fetch current extra map so we preserve any other extra fields.
+	spool, err := c.GetSpoolByID(spoolID)
+	if err != nil {
+		return fmt.Errorf("fetching spool before NFC tag assignment: %w", err)
+	}
+	extra := spool.Extra
+	if extra == nil {
+		extra = make(map[string]interface{})
+	}
+	extra[nfcIDKey] = nfcUUID
+	return c.UpdateSpool(spoolID, map[string]interface{}{"extra": extra})
+}
+
+// ClearSpoolNFCTag removes the nfc_id extra field from a spool.
+func (c *SpoolmanClient) ClearSpoolNFCTag(spoolID int) error {
+	spool, err := c.GetSpoolByID(spoolID)
+	if err != nil {
+		return fmt.Errorf("fetching spool before NFC tag removal: %w", err)
+	}
+	extra := spool.Extra
+	if extra == nil {
+		return nil // nothing to remove
+	}
+	delete(extra, nfcIDKey)
+	return c.UpdateSpool(spoolID, map[string]interface{}{"extra": extra})
+}
+
+// GetSpoolByNFCTag searches all spools for one whose extra["nfc_id"] matches uuid.
+// Returns nil, nil when no match exists.
+func (c *SpoolmanClient) GetSpoolByNFCTag(nfcUUID string) (*SpoolmanSpool, error) {
+	// Use the all-spools endpoint; Spoolman has no query-by-extra-field API.
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/spool?allow_archived=true", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addAuthHeader(req)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching spools for NFC lookup: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+	var spools []SpoolmanSpool
+	if err := json.NewDecoder(resp.Body).Decode(&spools); err != nil {
+		return nil, fmt.Errorf("decoding spools for NFC lookup: %w", err)
+	}
+	for i := range spools {
+		extra := spools[i].Extra
+		if extra == nil {
+			continue
+		}
+		if v, ok := extra[nfcIDKey]; ok {
+			if id, ok := v.(string); ok && id == nfcUUID {
+				s := c.normalizeSpoolData(spools[i])
+				return &s, nil
+			}
+		}
+	}
+	return nil, nil // not found
+}
+
+// SubtractSpoolUsage reduces a spool's used_weight by the given amount.
+// The used_weight will not go below zero.
+func (c *SpoolmanClient) SubtractSpoolUsage(spoolID int, grams float64) error {
+	spool, err := c.GetSpoolByID(spoolID)
+	if err != nil {
+		return fmt.Errorf("fetching spool %d before subtraction: %w", spoolID, err)
+	}
+	newUsedWeight := spool.UsedWeight - grams
+	if newUsedWeight < 0 {
+		newUsedWeight = 0
+	}
+	return c.UpdateSpool(spoolID, map[string]interface{}{"used_weight": newUsedWeight})
+}

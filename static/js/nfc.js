@@ -348,18 +348,56 @@ async function copyUrlToClipboard(urlElementId, buttonElement) {
 function displaySpoolQR(spoolData) {
     console.log('Displaying spool QR:', spoolData);
 
-    // Hide no-selection message
     document.getElementById('spool-no-selection').style.display = 'none';
-
-    // Show QR display
     const display = document.getElementById('spool-qr-display');
     display.style.display = 'block';
 
-    // Update content
     document.getElementById('spool-selected-name').textContent = `[${spoolData.spool_id}] ${spoolData.spool_name}`;
-    document.getElementById('spool-selected-details').innerHTML = ``;
+
+    // Show NFC UUID tag status + action buttons
+    const hasTag = spoolData.nfc_id && spoolData.nfc_id !== '';
+    let tagHTML = '';
+    if (hasTag) {
+        tagHTML = `<div style="margin-top:6px;font-size:0.82em;color:#4ade80;">
+            🏷️ UUID tag assigned
+            <button onclick="removeNFCTag(${spoolData.spool_id})" style="margin-left:8px;padding:2px 8px;font-size:0.85em;background:#ef4444;color:#fff;border:none;border-radius:4px;cursor:pointer;">Remove tag</button>
+        </div>
+        <div style="font-size:0.75em;color:#888;word-break:break-all;margin-top:2px;">${spoolData.nfc_id}</div>`;
+    } else {
+        tagHTML = `<div style="margin-top:6px;font-size:0.82em;color:#888;">
+            No UUID tag assigned —
+            <button onclick="assignNFCTag(${spoolData.spool_id})" style="margin-left:4px;padding:2px 8px;font-size:0.85em;background:#7c3aed;color:#fff;border:none;border-radius:4px;cursor:pointer;">Assign new tag</button>
+        </div>`;
+    }
+    document.getElementById('spool-selected-details').innerHTML = tagHTML;
+
     document.getElementById('spool-qr-large').src = `data:image/png;base64,${spoolData.qr_code_base64}`;
-    document.getElementById('spool-url-text').textContent = spoolData.url;
+    // Show the UUID tag URL when available, otherwise the legacy assign URL
+    document.getElementById('spool-url-text').textContent = spoolData.tag_url || spoolData.url;
+}
+
+async function assignNFCTag(spoolID) {
+    try {
+        const resp = await fetch(`/api/nfc/spool/${spoolID}/tag`, { method: 'POST' });
+        const data = await resp.json();
+        if (data.error) { alert('Failed to assign tag: ' + data.error); return; }
+        alert(`NFC tag assigned!\nUUID: ${data.nfc_id}\nProgram this URL to the tag:\n${data.tag_url}`);
+        loadSpoolTags(); // Reload to show updated state
+    } catch (e) {
+        alert('Error: ' + e);
+    }
+}
+
+async function removeNFCTag(spoolID) {
+    if (!confirm('Remove the NFC UUID tag from this spool? The physical tag will need to be re-programmed.')) return;
+    try {
+        const resp = await fetch(`/api/nfc/spool/${spoolID}/tag`, { method: 'DELETE' });
+        const data = await resp.json();
+        if (data.error) { alert('Failed to remove tag: ' + data.error); return; }
+        loadSpoolTags();
+    } catch (e) {
+        alert('Error: ' + e);
+    }
 }
 
 // Display QR code for selected filament

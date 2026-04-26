@@ -137,6 +137,10 @@ type OctoPrintPayload struct {
 	Filament          []OctoPrintPayloadFilament `json:"filament"`
 	TimePrecision     string                    `json:"time_precision"`
 	FilamentPrecision string                    `json:"filament_precision"`
+	// SpoolmanManaged: true (or nil/omitted) = the OctoPrint Spoolman/SpoolManager
+	// plugin already deducted filament; The Moment must NOT deduct again.
+	// false = no Spoolman plugin active; The Moment deducts from Spoolman.
+	SpoolmanManaged *bool `json:"spoolman_managed,omitempty"`
 }
 
 // OctoPrintPayloadPause is a single pause entry within an OctoPrint payload.
@@ -421,6 +425,7 @@ func (b *FilamentBridge) updatePrintHistoryTable() error {
 // migrateOctoPrintSupport adds columns and tables needed for OctoPrint push integration.
 func (b *FilamentBridge) migrateOctoPrintSupport() error {
 	newColumns := []string{
+		`ALTER TABLE printer_configs ADD COLUMN printer_type TEXT DEFAULT 'prusalink'`,
 		`ALTER TABLE print_history ADD COLUMN source TEXT DEFAULT 'prusalink'`,
 		`ALTER TABLE print_history ADD COLUMN total_duration_sec REAL`,
 		`ALTER TABLE print_history ADD COLUMN print_duration_sec REAL`,
@@ -636,6 +641,8 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 		ConfigKeySpoolmanTimeout:                 fmt.Sprintf("%d", SpoolmanTimeout),
 		ConfigKeyAutoAssignPreviousSpoolEnabled:  "false", // Enable auto-assignment of previous spool to default location
 		ConfigKeyAutoAssignPreviousSpoolLocation: "",      // Default location name for auto-assigned previous spools
+		ConfigKeyNFCTrashLocation:                "Trash",    // Location for empty/done spools (tag ready to re-program)
+		ConfigKeyNFCInventoryLocation:            "Inventory", // Default storage when spool displaced from toolhead
 	}
 
 	// Check if this is a fresh installation by checking if any config exists
@@ -676,6 +683,8 @@ func getConfigDescription(key string) string {
 		ConfigKeySpoolmanTimeout:                 "Spoolman API timeout in seconds",
 		ConfigKeyAutoAssignPreviousSpoolEnabled:  "Enable automatic assignment of previous spool to default location when assigning new spool to toolhead",
 		ConfigKeyAutoAssignPreviousSpoolLocation: "Default location name where previous spools will be automatically assigned (must exist as a location)",
+		ConfigKeyNFCTrashLocation:                "Spoolman location name for empty/finished spools (NFC tag ready to re-program)",
+		ConfigKeyNFCInventoryLocation:            "Spoolman location name used as default storage when a spool is displaced from a toolhead via NFC",
 	}
 	if desc, exists := descriptions[key]; exists {
 		return desc
@@ -767,7 +776,7 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolLocation(location string) err
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
-	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0) FROM printer_configs")
+	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink') FROM printer_configs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer configs: %w", err)
 	}
@@ -775,19 +784,20 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 
 	configs := make(map[string]PrinterConfig)
 	for rows.Next() {
-		var printerID, name, model, ipAddress, apiKey string
+		var printerID, name, model, ipAddress, apiKey, printerType string
 		var toolheads int
 		var isVirtual bool
-		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual); err != nil {
+		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType); err != nil {
 			return nil, fmt.Errorf("failed to scan printer config row: %w", err)
 		}
 		configs[printerID] = PrinterConfig{
-			Name:      name,
-			Model:     model,
-			IPAddress: ipAddress,
-			APIKey:    apiKey,
-			Toolheads: toolheads,
-			IsVirtual: isVirtual,
+			Name:        name,
+			Model:       model,
+			IPAddress:   ipAddress,
+			APIKey:      apiKey,
+			Toolheads:   toolheads,
+			IsVirtual:   isVirtual,
+			PrinterType: printerType,
 		}
 	}
 
@@ -803,10 +813,14 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	if config.IsVirtual {
 		isVirtualInt = 1
 	}
+	printerType := config.PrinterType
+	if printerType == "" {
+		printerType = PrinterTypePrusaLink
+	}
 	_, err := b.db.Exec(`
-		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt)
+		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType)
 	if err != nil {
 		return fmt.Errorf("failed to save printer config: %w", err)
 	}
@@ -1313,10 +1327,13 @@ func (b *FilamentBridge) MonitorPrinters() {
 		return
 	}
 
-	// Monitor each printer using PrusaLink
+	// Monitor each PrusaLink printer (OctoPrint printers use push — skip them here)
 	for printerID, printerConfig := range configSnapshot.Printers {
 		if printerID == "no_printers" {
 			continue // Skip placeholder
+		}
+		if printerConfig.PrinterType == PrinterTypeOctoPrint {
+			continue // OctoPrint pushes data; no polling needed
 		}
 		go func(printerID string, config PrinterConfig) {
 			b.mutex.Lock()
@@ -1738,6 +1755,15 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				status.Printers[printerID] = PrinterData{
 					Name:  printerName,
 					State: StateVirtual,
+				}
+				continue
+			}
+
+			// OctoPrint printers push data; no polling status available
+			if printerConfig.PrinterType == PrinterTypeOctoPrint {
+				status.Printers[printerID] = PrinterData{
+					Name:  printerName,
+					State: StateOctoPrint,
 				}
 				continue
 			}
@@ -2741,16 +2767,23 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 		}
 	}
 
-	// Queue Spoolman usage updates for each tool that has a spool and filament.
-	for _, f := range p.Filament {
-		if f.SpoolID > 0 && f.FilamentUsedG > 0 {
-			if _, err := b.db.Exec(`
-				INSERT INTO pending_spoolman_updates
-					(printer_name, toolhead_id, spool_id, used_weight, job_name, created_at, attempts)
-				VALUES (?, ?, ?, ?, ?, ?, 0)`,
-				p.PrinterID, f.ToolIndex, f.SpoolID, f.FilamentUsedG, p.FileName, time.Now(),
-			); err != nil {
-				log.Printf("Warning: failed to queue Spoolman update for spool %d: %v", f.SpoolID, err)
+	// Spoolman inventory update — only when OctoPrint is NOT managing Spoolman.
+	// SpoolmanManaged nil (field absent) or true → OctoPrint/SpoolManager already
+	// deducted; do nothing to avoid double-decrement.
+	// SpoolmanManaged false → no Spoolman plugin active; The Moment deducts.
+	spoolmanManaged := p.SpoolmanManaged == nil || *p.SpoolmanManaged
+	if !spoolmanManaged {
+		for _, f := range p.Filament {
+			if f.FilamentUsedG <= 0 || f.SpoolID <= 0 {
+				continue
+			}
+			if err := b.spoolman.UpdateSpoolUsage(f.SpoolID, f.FilamentUsedG); err != nil {
+				log.Printf("⚠️  Spoolman update failed for spool %d (OctoPrint unmanaged mode) — queuing for retry: %v", f.SpoolID, err)
+				if qErr := b.enqueuePendingSpoolmanUpdate(p.PrinterID, f.ToolIndex, f.SpoolID, f.FilamentUsedG, p.FileName); qErr != nil {
+					log.Printf("Error queuing pending Spoolman update for spool %d: %v", f.SpoolID, qErr)
+				}
+			} else {
+				log.Printf("✅ Spoolman updated spool %d: %.2fg used (OctoPrint unmanaged)", f.SpoolID, f.FilamentUsedG)
 			}
 		}
 	}
@@ -2767,6 +2800,85 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 	log.Printf("📋 OctoPrint record logged: %s on %s (%.2fg, %.0fmin, %s)",
 		p.FileName, p.PrinterID, totalGrams, printTimeMin, p.Status)
 	return printID, nil
+}
+
+// ReassignFilamentSegment moves the filament usage recorded against segmentID to
+// newSpoolID.  It subtracts the grams from the old spool in Spoolman (if any) and
+// adds them to the new spool, then updates the local DB row and recalculates cost.
+// segmentID is the print_filament_usage.id primary key.
+func (b *FilamentBridge) ReassignFilamentSegment(printID, segmentID, newSpoolID int) error {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	// Fetch the existing segment.
+	var oldSpoolID int
+	var gramsUsed float64
+	var mmUsed float64
+	var toolIndex, changeNumber int
+	err := b.db.QueryRow(
+		`SELECT tool_index, change_number, COALESCE(spool_id,0), filament_used_grams, filament_used_mm
+		 FROM print_filament_usage WHERE id = ? AND print_id = ?`,
+		segmentID, printID,
+	).Scan(&toolIndex, &changeNumber, &oldSpoolID, &gramsUsed, &mmUsed)
+	if err != nil {
+		return fmt.Errorf("segment %d not found for print %d: %w", segmentID, printID, err)
+	}
+	if gramsUsed <= 0 {
+		return fmt.Errorf("segment has no filament usage to reassign")
+	}
+
+	// Adjust Spoolman inventory: subtract from old spool, add to new spool.
+	if oldSpoolID > 0 && oldSpoolID != newSpoolID {
+		if err := b.spoolman.SubtractSpoolUsage(oldSpoolID, gramsUsed); err != nil {
+			log.Printf("⚠️  ReassignFilamentSegment: subtract from spool %d failed: %v", oldSpoolID, err)
+			// Non-fatal — proceed so the DB stays consistent.
+		}
+	}
+	if newSpoolID > 0 && newSpoolID != oldSpoolID {
+		if err := b.spoolman.UpdateSpoolUsage(newSpoolID, gramsUsed); err != nil {
+			log.Printf("⚠️  ReassignFilamentSegment: add to spool %d failed: %v", newSpoolID, err)
+		}
+	}
+
+	// Update the local record.
+	if _, err := b.db.Exec(
+		`UPDATE print_filament_usage SET spool_id = ? WHERE id = ? AND print_id = ?`,
+		newSpoolID, segmentID, printID,
+	); err != nil {
+		return fmt.Errorf("updating segment DB record: %w", err)
+	}
+
+	// Rebuild filament list for cost recalculation.
+	rows, err := b.db.Query(
+		`SELECT tool_index, COALESCE(change_number,0), COALESCE(spool_id,0), filament_used_grams
+		 FROM print_filament_usage WHERE print_id = ? ORDER BY tool_index, change_number`, printID)
+	if err != nil {
+		return nil // cost recalc is best-effort
+	}
+	defer rows.Close()
+
+	var filamentForCost []OctoPrintPayloadFilament
+	for rows.Next() {
+		var f OctoPrintPayloadFilament
+		if rows.Scan(&f.ToolIndex, &f.ChangeNumber, &f.SpoolID, &f.FilamentUsedG) == nil {
+			filamentForCost = append(filamentForCost, f)
+		}
+	}
+	rows.Close()
+
+	// Fetch print time for cost calc.
+	var printTimeMin float64
+	var printerName string
+	b.db.QueryRow(`SELECT COALESCE(print_time_minutes,0), printer_name FROM print_history WHERE id = ?`, printID).
+		Scan(&printTimeMin, &printerName)
+
+	if bd, err := b.CalculatePrintCostMultiSpoolForPrinter(filamentForCost, printTimeMin, printerName); err == nil {
+		b.SavePrintCost(printID, bd)
+	}
+
+	log.Printf("🔄 Filament segment %d (print %d T%d.%d) reassigned spool %d → %d (%.2fg)",
+		segmentID, printID, toolIndex, changeNumber, oldSpoolID, newSpoolID, gramsUsed)
+	return nil
 }
 
 // Close closes the database connection

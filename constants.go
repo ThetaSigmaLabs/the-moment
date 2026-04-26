@@ -14,7 +14,8 @@ const (
 	StateAttention     = "ATTENTION" // Filament runout / change required
 	StateOffline       = "offline"   // Cannot reach printer
 	StateNotConfigured = "not_configured"
-	StateVirtual       = "virtual"   // Virtual test printer — no hardware
+	StateVirtual       = "virtual"    // Virtual test printer — no hardware
+	StateOctoPrint     = "octoprint"  // OctoPrint push-only printer
 )
 
 // Default configuration values
@@ -42,6 +43,13 @@ const (
 	ConfigKeyAutoAssignPreviousSpoolEnabled  = "auto_assign_previous_spool_enabled"
 	ConfigKeyAutoAssignPreviousSpoolLocation = "auto_assign_previous_spool_location"
 	ConfigKeyTheMomentAPIKey                = "the_moment_api_key"
+	ConfigKeyOctoPrintDebug                 = "octoprint_debug"
+
+	// NFC workflow location names stored in Spoolman.
+	// nfc_trash_location: where finished/empty spools go so the tag can be re-programmed.
+	// nfc_inventory_location: default storage when a spool is displaced from a toolhead.
+	ConfigKeyNFCTrashLocation    = "nfc_trash_location"
+	ConfigKeyNFCInventoryLocation = "nfc_inventory_location"
 
 	// Cost calculation config keys
 	ConfigKeyCostElectricityRate = "cost_electricity_rate" // $/kWh
@@ -82,3 +90,9 @@ const (
 // MaxToolheads is the upper bound for toolhead slots.
 // Set to 16 to cover INDX 8-head plus future expansion.
 const MaxToolheads = 16
+
+// Printer type identifiers stored in printer_configs.printer_type.
+const (
+	PrinterTypePrusaLink = "prusalink"
+	PrinterTypeOctoPrint = "octoprint"
+)

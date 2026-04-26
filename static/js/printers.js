@@ -71,12 +71,23 @@ function buildRealPrinterCard(printerId, printer) {
             'class="toolhead-name-input" data-printer-id="' + printerId + '" data-toolhead-id="' + i + '" ' +
             'style="flex:1;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;"></div>';
     }
-    return '<h3>' + escapeHtml(printer.name || 'Unknown') + '</h3>' +
+    var isOctoPrint = (printer.printer_type === 'octoprint');
+    var typeBadge = isOctoPrint
+        ? '<span style="background:#3a4f6b;color:#90caf9;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">OctoPrint</span>'
+        : '<span style="background:#3a5a3a;color:#a5d6a7;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">PrusaLink</span>';
+    var apiKeyLine = isOctoPrint
+        ? (printer.api_key ? '<div><strong>API Key:</strong> ••••••••</div>' : '')
+        : '<div><strong>API Key:</strong> ' + (printer.api_key ? '••••••••' : 'Not configured') + '</div>';
+    var octoPrintHint = isOctoPrint
+        ? '<div style="color:#90caf9;font-size:0.85em;margin-top:4px;">Receives data via push from OctoPrint plugin</div>'
+        : '';
+    return '<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;">' +
+        '<h3 style="margin:0;">' + escapeHtml(printer.name || 'Unknown') + '</h3>' + typeBadge + '</div>' +
         '<div class="printer-info">' +
         '<div><strong>Model:</strong> ' + escapeHtml(printer.model || 'Unknown') +
         ' (' + (printer.toolheads || 1) + ' toolhead' + (printer.toolheads > 1 ? 's' : '') + ')</div>' +
         '<div><strong>Address:</strong> ' + escapeHtml(printer.ip_address || 'Not configured') + '</div>' +
-        '<div><strong>API Key:</strong> ' + (printer.api_key ? '••••••••' : 'Not configured') + '</div>' +
+        apiKeyLine + octoPrintHint +
         '</div>' +
         '<div class="printer-actions">' +
         '<button class="btn btn-small" onclick="editPrinter(\'' + printerId + '\')">✏️ Edit</button>' +
@@ -548,9 +559,28 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ─── Real Printer Modals ──────────────────────────────────────────────────────
 
+function onPrinterTypeChange(type, prefix) {
+    var label    = document.getElementById(prefix + 'APIKeyLabel');
+    var hint     = document.getElementById(prefix + 'APIKeyHint');
+    var modelHint = document.getElementById(prefix + 'ModelHint');
+    var ipHint   = document.getElementById(prefix + 'IPHint');
+    if (type === 'octoprint') {
+        if (label)     label.textContent     = 'API Key (optional)';
+        if (hint)      hint.textContent      = 'Leave blank if your OctoPrint does not require an API key';
+        if (modelHint) modelHint.textContent = 'Informational only — not used for OctoPrint';
+        if (ipHint)    ipHint.textContent    = 'Hostname or IP address of your OctoPrint server';
+    } else {
+        if (label)     label.textContent     = 'API Key';
+        if (hint)      hint.textContent      = 'Found in PrusaLink settings on your printer';
+        if (modelHint) modelHint.textContent = 'Select your printer model (auto-detected for PrusaLink)';
+        if (ipHint)    ipHint.textContent    = 'Hostname or IP address of your printer';
+    }
+}
+
 function showAddPrinterForm() {
     document.getElementById('addPrinterModal').style.display = 'block';
     document.getElementById('addPrinterForm').reset();
+    onPrinterTypeChange('prusalink', 'printer');
     setTimeout(function() {
         var b = document.querySelector('#addPrinterForm button[type="submit"]');
         if (b) { b.disabled = false; b.textContent = 'Add Printer'; }
@@ -599,9 +629,26 @@ document.getElementById('addPrinterForm').addEventListener('submit', function(e)
     var fd = new FormData(this);
     var btn = this.querySelector('button[type="submit"]');
     var orig = btn ? btn.textContent : '';
-    if (btn) { btn.disabled = true; btn.textContent = 'Detecting model…'; }
-    detectModelAndAddPrinter(fd.get('name'), fd.get('ip_address'), fd.get('api_key'),
-        parseInt(fd.get('toolheads')), btn, orig);
+    var printerType = fd.get('printer_type') || 'prusalink';
+    var name = fd.get('name');
+    var ip = fd.get('ip_address');
+    var key = fd.get('api_key');
+    var toolheads = parseInt(fd.get('toolheads'));
+    var model = fd.get('model') || 'Other';
+
+    if (printerType === 'octoprint') {
+        if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
+        addPrinter({ name: name, model: model, ip_address: ip, api_key: key,
+            toolheads: toolheads, printer_type: printerType })
+            .then(function() { closeAddPrinterModal(); loadPrinters(); })
+            .catch(function(err) {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+                alert('Error: ' + err.message);
+            });
+    } else {
+        if (btn) { btn.disabled = true; btn.textContent = 'Detecting model…'; }
+        detectModelAndAddPrinter(name, ip, key, toolheads, printerType, btn, orig);
+    }
 });
 
 document.getElementById('editPrinterForm').addEventListener('submit', function(e) {
@@ -619,7 +666,8 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
         body: JSON.stringify({
             name: fd.get('name'), model: fd.get('model'),
             ip_address: fd.get('ip_address'), api_key: fd.get('api_key'),
-            toolheads: parseInt(fd.get('toolheads'))
+            toolheads: parseInt(fd.get('toolheads')),
+            printer_type: fd.get('printer_type') || 'prusalink'
         })
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) throw new Error(data.error);
@@ -631,7 +679,7 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
     });
 });
 
-function detectModelAndAddPrinter(name, ip, key, toolheads, btn, orig) {
+function detectModelAndAddPrinter(name, ip, key, toolheads, printerType, btn, orig) {
     fetch('/api/detect_printer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -639,7 +687,8 @@ function detectModelAndAddPrinter(name, ip, key, toolheads, btn, orig) {
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) throw new Error(data.error);
         return addPrinter({ name: name, model: data.model || 'Unknown',
-            ip_address: ip, api_key: key, toolheads: toolheads });
+            ip_address: ip, api_key: key, toolheads: toolheads,
+            printer_type: printerType || 'prusalink' });
     }).then(function() {
         closeAddPrinterModal();
         loadPrinters();
@@ -659,6 +708,10 @@ function editPrinter(printerId) {
         document.getElementById('editPrinterIP').value = p.ip_address || '';
         document.getElementById('editPrinterAPIKey').value = p.api_key || '';
         document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
+        var typeEl = document.getElementById('editPrinterType');
+        var printerType = p.printer_type || 'prusalink';
+        if (typeEl) { typeEl.value = printerType; }
+        onPrinterTypeChange(printerType, 'editPrinter');
         document.getElementById('editPrinterModal').style.display = 'block';
     }).catch(function() { alert('Error loading printer data'); });
 }
@@ -786,11 +839,3 @@ function clearOrphanedMappings() {
         });
 }
 
-function escapeHtml(str) {
-    if (!str) return '';
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}

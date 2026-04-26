@@ -9,9 +9,13 @@ Tracks:
   - Spool IDs via the OctoPrint-SpoolManager or Spoolman plugin (optional)
 
 Settings (configured in OctoPrint Settings → The Moment):
-  - url        The Moment base URL, e.g. http://192.168.1.10:5000
-  - api_key    API key set in The Moment (leave blank if not configured)
-  - printer_id Identifier sent in every payload, e.g. "ender3-v3-se"
+  - url             The Moment base URL, e.g. http://192.168.1.10:5000
+  - api_key         API key set in The Moment (leave blank if not configured)
+  - printer_id      Identifier sent in every payload, e.g. "ender3-v3-se"
+  - spoolman_managed  True when the OctoPrint Spoolman/SpoolManager plugin is
+                    installed and deducts filament from Spoolman automatically.
+                    When False, The Moment will deduct from Spoolman instead.
+  - debug_mode      Enable verbose logging to OctoPrint's system log
 """
 
 import datetime
@@ -45,6 +49,7 @@ class TheMomentPlugin(
     octoprint.plugin.EventHandlerPlugin,
     octoprint.plugin.TemplatePlugin,
     octoprint.plugin.AssetPlugin,
+    octoprint.plugin.SimpleApiPlugin,
 ):
     def __init__(self):
         self._logger = logging.getLogger(__name__)
@@ -69,16 +74,95 @@ class TheMomentPlugin(
         self._current_spools: dict[int, int] = {}
         # Filament position (mm) per tool at the moment tracking began / last resumed
         self._segment_start_mm: dict[int, float] = {}
+        # Last polled filament position — used as fallback if PRINT_DONE reads zero
+        self._last_filament_mm: dict[int, float] = {}
         self._lock = threading.Lock()
+        # Background polling thread for filament position
+        self._stop_polling: threading.Event | None = None
+        self._polling_thread: threading.Thread | None = None
+
+    # ── Debug logging ────────────────────────────────────────────────────────
+
+    def _debug_log(self, msg: str, *args):
+        """Log only when debug_mode is enabled. Always uses INFO so OctoPrint
+        shows it without requiring the user to change log levels."""
+        try:
+            if self._settings.get_boolean(["debug_mode"]):
+                self._logger.info("[DEBUG] " + msg, *args)
+        except Exception:
+            pass  # settings not yet initialised during startup
 
     # ── OctoPrint SettingsPlugin ─────────────────────────────────────────────
 
     def get_settings_defaults(self):
         return dict(
-            url="http://localhost:5000",
+            url="",
             api_key="",
             printer_id="ender3",
+            # True = OctoPrint Spoolman/SpoolManager plugin deducts filament from
+            # Spoolman automatically; The Moment will NOT deduct a second time.
+            # False = No Spoolman plugin is installed; The Moment will deduct.
+            spoolman_managed=True,
+            debug_mode=False,
         )
+
+    # ── OctoPrint SimpleApiPlugin ────────────────────────────────────────────
+
+    def get_api_commands(self):
+        return {"test_connection": []}
+
+    def on_api_command(self, command, data):
+        if command == "test_connection":
+            return self._test_connection()
+
+    def _test_connection(self):
+        """Send GET /api/octoprint/ping to The Moment and relay the result."""
+        url = (self._settings.get(["url"]) or "").rstrip("/")
+        api_key = self._settings.get(["api_key"]) or ""
+
+        if not url:
+            self._logger.warning("Test connection failed: URL is not configured")
+            return flask.jsonify({"success": False, "message": "URL is not configured."})
+
+        endpoint = url + "/api/octoprint/ping"
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+
+        self._debug_log("Test connection → %s", endpoint)
+        try:
+            resp = requests.get(endpoint, headers=headers, timeout=5)
+            self._debug_log("Test connection response: HTTP %d — %s", resp.status_code, resp.text[:200])
+            if resp.status_code == 200:
+                data = resp.json()
+                self._logger.info("Test connection succeeded: %s", data.get("message", "ok"))
+                return flask.jsonify({
+                    "success": True,
+                    "message": data.get("message", "Connected successfully."),
+                    "server_time": data.get("timestamp", ""),
+                    "server_version": data.get("version", ""),
+                })
+            elif resp.status_code == 401:
+                self._logger.warning("Test connection failed: unauthorized — check API key")
+                return flask.jsonify({
+                    "success": False,
+                    "message": "Unauthorized — check your API key in The Moment settings.",
+                })
+            else:
+                self._logger.warning("Test connection failed: HTTP %d", resp.status_code)
+                return flask.jsonify({
+                    "success": False,
+                    "message": "The Moment returned HTTP {}: {}".format(resp.status_code, resp.text[:120]),
+                })
+        except requests.exceptions.ConnectionError:
+            self._logger.warning("Test connection failed: could not reach %s", url)
+            return flask.jsonify({
+                "success": False,
+                "message": "Could not connect to {}. Is The Moment running?".format(url),
+            })
+        except Exception as exc:
+            self._logger.error("Test connection error: %s", exc)
+            return flask.jsonify({"success": False, "message": "Error: {}".format(exc)})
 
     # ── OctoPrint TemplatePlugin ─────────────────────────────────────────────
 
@@ -86,6 +170,9 @@ class TheMomentPlugin(
         return [
             dict(type="settings", name="The Moment", template="tab_the_moment.jinja2", custom_bindings=False)
         ]
+
+    def get_template_vars(self):
+        return {"the_moment_plugin_version": self._plugin_version}
 
     # ── OctoPrint AssetPlugin ────────────────────────────────────────────────
 
@@ -207,10 +294,44 @@ class TheMomentPlugin(
                 ))
         return entries
 
+    # ── Filament position polling ─────────────────────────────────────────────
+
+    def _start_filament_polling(self):
+        """Start a background thread that samples filament position every 30 s.
+
+        OctoPrint sometimes clears job data before PRINT_DONE fires, which would
+        make the final reading appear as zero.  The polling thread keeps a
+        rolling snapshot so _on_print_ended can fall back to the last good value.
+        """
+        self._stop_polling = threading.Event()
+        self._polling_thread = threading.Thread(
+            target=self._filament_poll_loop, daemon=True, name="tm-filament-poll"
+        )
+        self._polling_thread.start()
+
+    def _stop_filament_polling(self):
+        if self._stop_polling is not None:
+            self._stop_polling.set()
+        self._polling_thread = None
+        self._stop_polling = None
+
+    def _filament_poll_loop(self):
+        """Poll every 30 s and keep _last_filament_mm up to date."""
+        while not self._stop_polling.wait(30):
+            if self._print_started_at is None:
+                break
+            reading = self._get_filament_position_mm()
+            if any(v > 0 for v in reading.values()):
+                with self._lock:
+                    self._last_filament_mm = reading
+                self._debug_log("Filament poll snapshot: %s", reading)
+
     # ── Event handling ───────────────────────────────────────────────────────
 
     def on_event(self, event, payload):
         Events = octoprint.events.Events
+
+        self._debug_log("Event received: %s  payload=%s", event, payload)
 
         if event == Events.PRINT_STARTED:
             self._on_print_started(payload)
@@ -238,10 +359,16 @@ class TheMomentPlugin(
             self._current_file = payload.get("name", "")
             self._current_spools = self._get_current_spools()
             start_mm = self._get_filament_position_mm()
+            self._last_filament_mm = dict(start_mm)  # prime the fallback
             self._open_new_segments(start_mm, self._current_spools)
             self._logger.info(
                 "Print started: %s  spools=%s", self._current_file, self._current_spools
             )
+            self._debug_log(
+                "Print started detail — session=%s file=%r spools=%s start_mm=%s",
+                self._session_id, self._current_file, self._current_spools, start_mm,
+            )
+        self._start_filament_polling()
 
     def _on_print_paused(self, payload):
         with self._lock:
@@ -249,6 +376,9 @@ class TheMomentPlugin(
                 return
             now = datetime.datetime.utcnow()
             current_mm = self._get_filament_position_mm()
+            # Update fallback snapshot before closing segments
+            if any(v > 0 for v in current_mm.values()):
+                self._last_filament_mm = dict(current_mm)
             self._close_open_segments(current_mm)
 
             reason = self._classify_pause_reason(payload)
@@ -259,6 +389,7 @@ class TheMomentPlugin(
                 reason=reason,
             )
             self._logger.info("Print paused: reason=%s", reason)
+            self._debug_log("Pause detail — time=%s reason=%s filament_mm=%s", _iso(now), reason, current_mm)
 
     def _on_print_resumed(self, payload):
         with self._lock:
@@ -275,9 +406,12 @@ class TheMomentPlugin(
             # New spools may have been loaded during the pause (filament change/runout)
             new_spools = self._get_current_spools()
             resume_mm = self._get_filament_position_mm()
+            if any(v > 0 for v in resume_mm.values()):
+                self._last_filament_mm = dict(resume_mm)
             self._open_new_segments(resume_mm, new_spools)
             self._current_spools = new_spools
             self._logger.info("Print resumed: spools=%s", new_spools)
+            self._debug_log("Resume detail — time=%s new_spools=%s resume_mm=%s", _iso(now), new_spools, resume_mm)
 
     def _on_print_ended(self, payload, status: str, cancel_reason):
         with self._lock:
@@ -295,11 +429,24 @@ class TheMomentPlugin(
                 self._active_pause = None
 
             final_mm = self._get_filament_position_mm()
+
+            # OctoPrint sometimes clears job data before PRINT_DONE fires, producing
+            # an all-zero reading.  Fall back to the last polled snapshot so we still
+            # have an accurate segment length.
+            if not any(v > 0 for v in final_mm.values()) and self._last_filament_mm:
+                self._logger.info(
+                    "Final filament reading was zero — using last polled snapshot: %s",
+                    self._last_filament_mm,
+                )
+                final_mm = self._last_filament_mm
+
             filament_entries = self._build_filament_payload(final_mm)
 
             total_sec = (ended_at - self._print_started_at).total_seconds()
             pause_sec = sum(p["duration_sec"] for p in self._pauses)
             print_sec = max(0.0, total_sec - pause_sec)
+
+            spoolman_managed = self._settings.get_boolean(["spoolman_managed"])
 
             body = dict(
                 session_id=self._session_id,
@@ -324,16 +471,22 @@ class TheMomentPlugin(
                 ],
                 cancel_reason=cancel_reason,
                 filament=filament_entries,
+                # Tell The Moment whether OctoPrint is already deducting from Spoolman.
+                # True  = OctoPrint Spoolman/SpoolManager plugin handles inventory;
+                #         The Moment must NOT deduct again.
+                # False = No Spoolman plugin active; The Moment should deduct.
+                spoolman_managed=spoolman_managed,
                 time_precision="exact",
                 filament_precision="measured",
             )
 
             self._logger.info(
-                "Print ended: status=%s file=%s duration=%.0fs filament=%s",
-                status, self._current_file, total_sec, filament_entries,
+                "Print ended: status=%s file=%s duration=%.0fs filament=%s spoolman_managed=%s",
+                status, self._current_file, total_sec, filament_entries, spoolman_managed,
             )
             self._reset_state()
 
+        self._stop_filament_polling()
         # Send outside the lock to avoid holding it during network I/O
         self._send(body)
 
@@ -362,21 +515,29 @@ class TheMomentPlugin(
         if api_key:
             headers["X-API-Key"] = api_key
 
+        import json as _json
+        self._debug_log(
+            "Sending print payload to %s — %s",
+            endpoint, _json.dumps(body, default=str),
+        )
+
         try:
             resp = requests.post(endpoint, json=body, headers=headers, timeout=10)
             if resp.status_code == 201:
                 self._logger.info("Sent print record to The Moment (id=%s)", resp.json().get("id"))
+                self._debug_log("Response: HTTP 201 — %s", resp.text[:500])
             else:
                 self._logger.warning(
                     "The Moment returned %s: %s", resp.status_code, resp.text[:200]
                 )
+                self._debug_log("Full response body: %s", resp.text)
         except Exception as exc:
             self._logger.error("Failed to send print record to The Moment: %s", exc)
 
 
 __plugin_name__ = "The Moment"
 __plugin_identifier__ = "the_moment"
-__plugin_version__ = "1.0.0"
+__plugin_version__ = "1.1.0"
 __plugin_description__ = "Sends print events to The Moment for unified print history and cost tracking."
 __plugin_pythoncompat__ = ">=3.7,<4"
 __plugin_implementation__ = TheMomentPlugin()

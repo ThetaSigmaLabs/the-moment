@@ -149,6 +149,7 @@ go build -o the-moment .
 The Moment ships an OctoPrint plugin (`octoprint-plugin/`) that pushes print events to The Moment API so non-Prusa printers share the same history and cost tracking.
 
 **What the plugin sends:**
+
 - Print start, finish, cancel, and fail events
 - Pause events with timestamps and reasons
 - Per-tool filament usage (split by spool when a filament change occurs mid-print)
@@ -156,6 +157,7 @@ The Moment ships an OctoPrint plugin (`octoprint-plugin/`) that pushes print eve
 - A UUID `session_id` so all tool rows for one job group correctly in history
 
 **Plugin setup:**
+
 1. Copy or install the plugin from `octoprint-plugin/`
 2. In OctoPrint Settings → **The Moment**, set:
    - **URL**: `http://<your-the-moment-host>:5000`
@@ -208,6 +210,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Cost Settings
 
 **Global settings** (Settings → Cost Settings):
+
 - Electricity rate ($/kWh)
 - Default printer wattage (W)
 - Maintenance rate ($/hour)
@@ -216,6 +219,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 - Currency (ISO code)
 
 **Per-printer overrides** (Settings → Cost Settings → Per-Printer Overrides):
+
 - Print wattage — overrides global default for this printer
 - Preheat wattage + time — one-time electricity charge per print
 - High-temp extra wattage — automatically applied when Spoolman material is ABS, ASA, PA, or PC
@@ -338,35 +342,43 @@ the-moment/
 ## Troubleshooting
 
 ### Printers not accessible
+
 - Verify the IP/hostname in Settings → Printers
 - Ensure PrusaLink is enabled on the printer
 - Check network connectivity and firewall rules
 
 ### Spoolman connection failed
+
 - Confirm Spoolman is running and accessible at the configured URL
 - Use Settings → Basic Configuration → Test Connection
 
 ### Filament usage not tracked
+
 - Confirm spools are mapped to toolheads before printing
 - Check that prints are completing, not just pausing
 - Verify PrusaLink is returning filament usage data (check logs)
 
 ### OctoPrint plugin not sending
+
 - Confirm the URL in OctoPrint Settings → The Moment includes the correct host and port
 - Check the OctoPrint log (`octoprint.log`) for connection errors
 - Ensure The Moment is reachable from the OctoPrint host
 
 ### WebSocket connection issues
+
 - Check the browser console for WebSocket errors
 - The interface falls back to periodic polling if WebSocket fails
 - Ensure no reverse proxy is stripping the `Upgrade` header
 
 ### Stuck spool assignments after deleting a printer
+
 - Settings → Printers → Check for Stuck Assignments
 - Release them with "Release All Stuck Spools"
 
 ### Logs
+
 The service logs to stdout. Key events to look for:
+
 - Printer status updates and job completions
 - Filament usage calculations and Spoolman update confirmations
 - Cost calculation results (including high-temp flag)

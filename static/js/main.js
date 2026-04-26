@@ -257,6 +257,30 @@ function loadAdvancedSettings() {
         .catch(error => {
             console.error('Error loading advanced settings:', error);
         });
+
+    // Load NFC location config
+    fetch('/api/nfc/config')
+        .then(r => r.json())
+        .then(data => {
+            var inv = document.getElementById('nfcInventoryLocation');
+            var trash = document.getElementById('nfcTrashLocation');
+            if (inv)   inv.value   = data.inventory_location || '';
+            if (trash) trash.value = data.trash_location     || '';
+        })
+        .catch(function() {});
+}
+
+function saveNFCConfig() {
+    var inv   = (document.getElementById('nfcInventoryLocation')  || {}).value || '';
+    var trash = (document.getElementById('nfcTrashLocation')       || {}).value || '';
+    fetch('/api/nfc/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inventory_location: inv, trash_location: trash })
+    })
+    .then(r => r.json())
+    .then(function() { alert('NFC locations saved.'); })
+    .catch(function(e) { alert('Failed to save NFC config: ' + e); });
 }
 
 function saveAdvancedSettings() {

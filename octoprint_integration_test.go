@@ -347,3 +347,99 @@ func TestSessionsEndpoint_GroupsBySessionID(t *testing.T) {
 	}
 	t.Logf("✅ GET /api/sessions → %d sessions; shared tool_count=%v", wrapper.Count, shared["tool_count"])
 }
+
+// ─── Ping / connectivity tests ────────────────────────────────────────────────
+
+// TestOctoPrintPing_NoAPIKey verifies that GET /api/octoprint/ping returns 200
+// when no API key is configured on the server.
+func TestOctoPrintPing_NoAPIKey(t *testing.T) {
+	serverURL, cleanup := testServer(t)
+	defer cleanup()
+
+	resp, body := get(t, serverURL+"/api/octoprint/ping")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("response not JSON: %v — body: %s", err, body)
+	}
+	if result["status"] != "ok" {
+		t.Errorf("expected status='ok', got %v", result["status"])
+	}
+	if result["server"] != "The Moment" {
+		t.Errorf("expected server='The Moment', got %v", result["server"])
+	}
+	if result["timestamp"] == nil || result["timestamp"] == "" {
+		t.Error("expected non-empty timestamp in ping response")
+	}
+	t.Logf("✅ GET /api/octoprint/ping → 200, status=%v", result["status"])
+}
+
+// TestOctoPrintPing_WithAPIKey verifies that the ping endpoint respects API key auth
+// in the same way as POST /api/prints.
+func TestOctoPrintPing_WithAPIKey(t *testing.T) {
+	serverURL, cleanup := testServer(t)
+	defer cleanup()
+
+	// Configure an API key on the server.
+	post(t, serverURL+"/api/config", map[string]string{
+		ConfigKeyTheMomentAPIKey: "ping-secret",
+	})
+
+	// No key → 401
+	resp, body := get(t, serverURL+"/api/octoprint/ping")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 without key, got %d: %s", resp.StatusCode, body)
+	}
+
+	// Wrong key → 401
+	req, _ := http.NewRequest(http.MethodGet, serverURL+"/api/octoprint/ping", nil)
+	req.Header.Set("X-API-Key", "wrong-key")
+	wrongResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET with wrong key failed: %v", err)
+	}
+	wrongResp.Body.Close()
+	if wrongResp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong key, got %d", wrongResp.StatusCode)
+	}
+
+	// Correct key → 200
+	req2, _ := http.NewRequest(http.MethodGet, serverURL+"/api/octoprint/ping", nil)
+	req2.Header.Set("X-API-Key", "ping-secret")
+	goodResp, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("GET with correct key failed: %v", err)
+	}
+	defer goodResp.Body.Close()
+	if goodResp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 with correct key, got %d", goodResp.StatusCode)
+	}
+	t.Logf("✅ Ping auth: 401 no key, 401 wrong key, 200 correct key")
+}
+
+// TestOctoPrintDebugMode verifies that the server logs a debug line when
+// ConfigKeyOctoPrintDebug is enabled and accepts a print payload normally.
+func TestOctoPrintDebugMode(t *testing.T) {
+	serverURL, cleanup := testServer(t)
+	defer cleanup()
+
+	// Enable server-side debug logging.
+	post(t, serverURL+"/api/config", map[string]string{
+		ConfigKeyOctoPrintDebug: "true",
+	})
+
+	payload := map[string]interface{}{
+		"printer_id": "debug-printer",
+		"file_name":  "debug_test.gcode",
+		"status":     "completed",
+		"ended_at":   "2026-04-24T10:00:00Z",
+		"filament":   []interface{}{},
+	}
+	resp, body := post(t, serverURL+"/api/prints", payload)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 with debug mode on, got %d: %s", resp.StatusCode, body)
+	}
+	t.Logf("✅ POST /api/prints succeeds with debug mode enabled")
+}

@@ -274,17 +274,31 @@ function populateModal(r) {
     // Filament usages (OctoPrint multi-spool / multi-tool detail)
     var fuSection = document.getElementById('historyFilamentUsages');
     if (fuSection) {
-        if (r.filament_usages && r.filament_usages.length > 1) {
+        // Show the table whenever there are per-segment records, even for single-tool prints,
+        // so the user can reassign the spool after the fact.
+        if (r.filament_usages && r.filament_usages.length > 0) {
             var fuHTML = '<div style="margin-top:12px;"><div style="color:#888;font-size:0.8em;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Filament by tool</div>';
             fuHTML += '<table style="width:100%;font-size:0.85em;border-collapse:collapse;">';
-            fuHTML += '<tr style="color:#666;font-size:0.78em;"><th style="text-align:left;padding:3px 6px;">Tool</th><th style="text-align:left;padding:3px 6px;">Load</th><th style="text-align:left;padding:3px 6px;">Spool</th><th style="text-align:right;padding:3px 6px;">mm</th><th style="text-align:right;padding:3px 6px;">grams</th></tr>';
+            fuHTML += '<tr style="color:#666;font-size:0.78em;">' +
+                '<th style="text-align:left;padding:3px 6px;">Tool</th>' +
+                '<th style="text-align:left;padding:3px 6px;">Load</th>' +
+                '<th style="text-align:left;padding:3px 6px;">Spool</th>' +
+                '<th style="text-align:right;padding:3px 6px;">mm</th>' +
+                '<th style="text-align:right;padding:3px 6px;">grams</th>' +
+                '<th style="padding:3px 6px;"></th>' +
+                '</tr>';
             r.filament_usages.forEach(function(fu) {
-                fuHTML += '<tr style="border-top:1px solid #2a2a2a;">' +
+                var spoolLabel = fu.spool_id > 0 ? '#' + fu.spool_id : '—';
+                fuHTML += '<tr style="border-top:1px solid #2a2a2a;" id="fu-row-' + fu.id + '">' +
                     '<td style="padding:4px 6px;">T' + fu.tool_index + '</td>' +
                     '<td style="padding:4px 6px;color:#888;">#' + fu.change_number + '</td>' +
-                    '<td style="padding:4px 6px;color:#888;">' + (fu.spool_id > 0 ? '#' + fu.spool_id : '—') + '</td>' +
+                    '<td style="padding:4px 6px;color:#888;" id="fu-spool-' + fu.id + '">' + _esc(spoolLabel) + '</td>' +
                     '<td style="padding:4px 6px;text-align:right;">' + fu.filament_used_mm.toFixed(0) + '</td>' +
                     '<td style="padding:4px 6px;text-align:right;color:#c8b8ff;">' + fu.filament_used_grams.toFixed(2) + ' g</td>' +
+                    '<td style="padding:4px 6px;">' +
+                        '<button class="btn btn-small btn-secondary" style="padding:2px 7px;font-size:0.78em;" ' +
+                        'onclick="openReassignPicker(' + fu.id + ',' + r.id + ',' + fu.filament_used_grams + ')">↔ Reassign</button>' +
+                    '</td>' +
                     '</tr>';
             });
             fuHTML += '</table></div>';
@@ -507,6 +521,67 @@ function _sourceBadge(source) {
 function _sourceLabel(source) {
     var labels = { octoprint: 'OctoPrint', virtual: 'Virtual printer', prusalink: 'PrusaLink' };
     return labels[source] || source || 'PrusaLink';
+}
+
+// ─── Filament segment reassignment ───────────────────────────────────────────
+
+var _reassignSegmentID = 0;
+var _reassignPrintID   = 0;
+
+function openReassignPicker(segmentID, printID, gramsUsed) {
+    _reassignSegmentID = segmentID;
+    _reassignPrintID   = printID;
+
+    var picker = document.getElementById('reassignPicker');
+    var sel    = document.getElementById('reassignSpoolSelect');
+    if (!picker || !sel) return;
+
+    sel.innerHTML = '<option value="">Loading…</option>';
+    picker.style.display = 'block';
+
+    fetch('/api/spools')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var spools = data.spools || data || [];
+            sel.innerHTML = '<option value="0">— no spool (clear) —</option>';
+            spools.forEach(function(s) {
+                var opt = document.createElement('option');
+                opt.value = s.id;
+                opt.textContent = '#' + s.id + ' · ' + (s.material || '') + ' ' + (s.name || '') + ' (' + (s.remaining_weight || 0).toFixed(0) + 'g left)';
+                sel.appendChild(opt);
+            });
+        })
+        .catch(function() {
+            sel.innerHTML = '<option value="">Failed to load spools</option>';
+        });
+}
+
+function confirmReassign() {
+    var sel     = document.getElementById('reassignSpoolSelect');
+    var newID   = parseInt(sel ? sel.value : '0', 10) || 0;
+    var picker  = document.getElementById('reassignPicker');
+
+    fetch('/api/prints/' + _reassignPrintID + '/filament/' + _reassignSegmentID + '/reassign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spool_id: newID })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) { alert('Reassign failed: ' + data.error); return; }
+        // Update the spool label in the row without reloading.
+        var cell = document.getElementById('fu-spool-' + _reassignSegmentID);
+        if (cell) cell.textContent = newID > 0 ? '#' + newID : '—';
+        if (picker) picker.style.display = 'none';
+        // Reload cost row to reflect updated price.
+        if (_activeEntry) recalcHistoryCost();
+    })
+    .catch(function(e) { alert('Request failed: ' + e); });
+}
+
+function cancelReassign() {
+    var picker = document.getElementById('reassignPicker');
+    if (picker) picker.style.display = 'none';
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────

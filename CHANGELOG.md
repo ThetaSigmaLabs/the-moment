@@ -10,7 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Fork FilaBridge (needo37/filabridge) as The Moment under new maintainer (maudy2u)
-- Rename project, update module path, env vars, and binary name
+- Rename project, update module path, env vars, and binary name, OctoPrint Plugin, Virtual Printer
+-**The problem**: LogOctoPrintRecord was inserting into pending_spoolman_updates for every OctoPrint filament entry with a real spool ID. The OctoPrint Spoolman plugin had already done the same deduction, so Spoolman subtracted each gram twice.
+
+**The fix**: Removed the pending_spoolman_updates block entirely from LogOctoPrintRecord (bridge.go). The responsibility boundary is now clean:
+
+|| Source | Who owns Spoolman inventory |What The Moment does ||
+PrusaLink |The Moment |Maps toolheads → spools, updates Spoolman via processFilamentUsage
+Virtual printer |The Moment |Parses G-code, updates Spoolman via LogPrintUsageFull
+OctoPrint |OctoPrint |Spoolman plugin History + cost only — no Spoolman writes
+**Test added**: TestLogOctoPrintRecord_NoSpoolmanUpdate sends a payload with real spool IDs (42 and 99) and asserts pending_spoolman_updates stays empty. This test would have caught the bug before the fix, and will catch any regression that re-introduces it.
 
 ## [v0.2.4] - 2025-12-08
 

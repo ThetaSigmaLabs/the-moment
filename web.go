@@ -12,6 +12,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	neturl "net/url"
 	"sort"
@@ -145,6 +146,12 @@ func (ws *WebServer) setupRoutes() {
 	// Main dashboard
 	ws.router.GET("/", ws.dashboardHandler)
 
+	// Browser pages for NFC spool-UUID (OpenPrintTag) workflow — mobile-friendly
+	ws.router.GET("/nfc/spool/:uuid", ws.nfcSpoolScanHandler)
+	ws.router.POST("/nfc/spool/:uuid/assign", ws.nfcSpoolAssignHandler)
+	ws.router.GET("/nfc/spool/:uuid/displaced", ws.nfcSpoolDisplacedHandler)
+	ws.router.POST("/nfc/spool/:uuid/complete", ws.nfcSpoolCompleteHandler)
+
 	// API routes
 	api := ws.router.Group("/api")
 	{
@@ -184,8 +191,12 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/orphaned-mappings", ws.getOrphanedMappingsHandler)
 		api.DELETE("/orphaned-mappings", ws.clearOrphanedMappingsHandler)
 
-		// OctoPrint push endpoint
+		// Version metadata (no auth required)
+		api.GET("/version", ws.versionHandler)
+
+		// OctoPrint push endpoint and diagnostics
 		api.POST("/prints", ws.receivePrintHandler)
+		api.GET("/octoprint/ping", ws.octoprintPingHandler)
 
 		// Print history and sessions
 		api.GET("/sessions", ws.getSessionsHandler)
@@ -206,6 +217,15 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/nfc/assign", ws.nfcAssignHandler)
 		api.GET("/nfc/urls", ws.nfcUrlsHandler)
 		api.GET("/nfc/session/status", ws.nfcSessionStatusHandler)
+
+		// NFC tag management (spool UUID / OpenPrintTag workflow)
+		api.POST("/nfc/spool/:id/tag", ws.nfcAssignTagHandler)
+		api.DELETE("/nfc/spool/:id/tag", ws.nfcRemoveTagHandler)
+		api.GET("/nfc/config", ws.nfcConfigHandler)
+		api.POST("/nfc/config", ws.nfcSaveConfigHandler)
+
+		// Post-print spool segment reassignment
+		api.POST("/prints/:id/filament/:segment_id/reassign", ws.reassignFilamentHandler)
 		api.GET("/locations", ws.getLocationsHandler)
 		api.GET("/locations/:name/status", ws.getLocationStatusHandler)
 		api.POST("/locations", ws.createLocationHandler)
@@ -438,6 +458,7 @@ func (ws *WebServer) dashboardHandler(c *gin.Context) {
 		"SpoolmanConnected": spoolmanConnected,
 		"SpoolmanError":     spoolmanError,
 		"SpoolmanBaseURL":   ws.bridge.config.SpoolmanURL,
+		"AppVersion":        AppVersion,
 	})
 }
 
@@ -738,13 +759,18 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 		if printerConfig.APIKey != "" {
 			maskedKey = maskedCredential
 		}
+		printerType := printerConfig.PrinterType
+		if printerType == "" {
+			printerType = PrinterTypePrusaLink
+		}
 		printerData := map[string]interface{}{
-			"name":       printerConfig.Name,
-			"model":      printerConfig.Model,
-			"ip_address": printerConfig.IPAddress,
-			"api_key":    maskedKey,
-			"toolheads":  printerConfig.Toolheads,
-			"is_virtual": printerConfig.IsVirtual,
+			"name":         printerConfig.Name,
+			"model":        printerConfig.Model,
+			"ip_address":   printerConfig.IPAddress,
+			"api_key":      maskedKey,
+			"toolheads":    printerConfig.Toolheads,
+			"is_virtual":   printerConfig.IsVirtual,
+			"printer_type": printerType,
 		}
 
 		// Include uploaded file list for virtual printers so the card renders immediately
@@ -1710,6 +1736,12 @@ func (ws *WebServer) receivePrintHandler(c *gin.Context) {
 		payload.StartedAt = payload.EndedAt.Add(-time.Duration(payload.TotalDurationSec) * time.Second)
 	}
 
+	if debugMode, _ := ws.bridge.GetConfigValue(ConfigKeyOctoPrintDebug); debugMode == "true" {
+		log.Printf("🔍 [OctoPrint debug] print from %s — printer=%q file=%q status=%q tools=%d pauses=%d total_sec=%.0f",
+			c.ClientIP(), payload.PrinterID, payload.FileName, payload.Status,
+			len(payload.Filament), len(payload.Pauses), payload.TotalDurationSec)
+	}
+
 	printID, err := ws.bridge.LogOctoPrintRecord(payload)
 	if err != nil {
 		log.Printf("Error logging OctoPrint record: %v", err)
@@ -1718,6 +1750,32 @@ func (ws *WebServer) receivePrintHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"id": printID})
+}
+
+// versionHandler returns The Moment's version. No auth required.
+// GET /api/version
+func (ws *WebServer) versionHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"version": AppVersion, "name": "The Moment"})
+}
+
+// octoprintPingHandler lets the OctoPrint plugin verify connectivity and API-key
+// correctness before a real print is sent.
+// GET /api/octoprint/ping
+func (ws *WebServer) octoprintPingHandler(c *gin.Context) {
+	if storedKey, _ := ws.bridge.GetConfigValue(ConfigKeyTheMomentAPIKey); storedKey != "" {
+		if c.GetHeader("X-API-Key") != storedKey {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or missing API key"})
+			return
+		}
+	}
+	log.Printf("🏓 OctoPrint ping from %s", c.ClientIP())
+	c.JSON(http.StatusOK, gin.H{
+		"status":    "ok",
+		"server":    "The Moment",
+		"version":   AppVersion,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"message":   "Connection successful. Prints will appear in The Moment's Print History tab.",
+	})
 }
 
 // ─── Print History Handlers ──────────────────────────────────────────────────
@@ -1989,9 +2047,15 @@ func (ws *WebServer) reloadBridgeConfig() error {
 	return nil
 }
 
-// Start starts the web server
-func (ws *WebServer) Start(port string) error {
-	return ws.router.Run(":" + port)
+// Start starts the web server bound to host:port. Pass "0.0.0.0" to listen on all interfaces.
+func (ws *WebServer) Start(host, port string) error {
+	return ws.router.Run(host + ":" + port)
+}
+
+// StartListener starts the web server on an already-bound net.Listener.
+// Useful for tests (bind to :0, get assigned port) and socket activation.
+func (ws *WebServer) StartListener(l net.Listener) error {
+	return ws.router.RunListener(l)
 }
 
 // nfcAssignHandler handles NFC tag scans
@@ -2110,17 +2174,31 @@ func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 		colorHex := ""
 		if spool.Filament != nil && spool.Filament.ColorHex != "" {
 			colorHex = spool.Filament.ColorHex
-			// Ensure it starts with #
 			if !strings.HasPrefix(colorHex, "#") {
 				colorHex = "#" + colorHex
 			}
 		}
 
-		// Generate QR code
-		qrCode, err := qrcode.Encode(url, qrcode.Medium, 256)
+		// Extract NFC UUID if one has been assigned.
+		nfcID := ""
+		tagURL := ""
+		if spool.Extra != nil {
+			if v, ok := spool.Extra[nfcIDKey]; ok {
+				if s, ok := v.(string); ok && s != "" {
+					nfcID = s
+					tagURL = fmt.Sprintf("http://%s/nfc/spool/%s", c.Request.Host, s)
+				}
+			}
+		}
+
+		// Generate QR code (use UUID tag URL when available, otherwise the legacy assign URL).
+		qrTarget := url
+		if tagURL != "" {
+			qrTarget = tagURL
+		}
+		qrCode, err := qrcode.Encode(qrTarget, qrcode.Medium, 256)
 		if err != nil {
 			log.Printf("Error generating QR code for spool %d: %v", spool.ID, err)
-			// Continue without QR code if generation fails
 			urls = append(urls, gin.H{
 				"type":             "spool",
 				"spool_id":         spool.ID,
@@ -2130,6 +2208,8 @@ func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 				"color_hex":        colorHex,
 				"remaining_weight": spool.RemainingWeight,
 				"url":              url,
+				"nfc_id":           nfcID,
+				"tag_url":          tagURL,
 				"qr_code_base64":   "",
 			})
 			continue
@@ -2145,6 +2225,8 @@ func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 			"color_hex":        colorHex,
 			"remaining_weight": spool.RemainingWeight,
 			"url":              url,
+			"nfc_id":           nfcID,
+			"tag_url":          tagURL,
 			"qr_code_base64":   qrCodeBase64,
 		})
 	}
@@ -2567,4 +2649,377 @@ func (ws *WebServer) deleteLocationHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Location archived successfully"})
+}
+
+// ─── NFC spool-UUID (OpenPrintTag) browser handlers ──────────────────────────
+
+// nfcSpoolScanHandler renders the mobile scan page for a UUID-tagged spool.
+// GET /nfc/spool/:uuid
+func (ws *WebServer) nfcSpoolScanHandler(c *gin.Context) {
+	nfcUUID := c.Param("uuid")
+
+	spool, err := ws.bridge.spoolman.GetSpoolByNFCTag(nfcUUID)
+	if err != nil || spool == nil {
+		c.HTML(http.StatusNotFound, "nfc_error.html", gin.H{
+			"Error": "No spool is associated with this NFC tag. Use The Moment's NFC tab to assign a spool.",
+		})
+		return
+	}
+
+	// Build printer + toolhead list with current spool mappings.
+	printerConfigs, _ := ws.bridge.GetAllPrinterConfigs()
+	allMappings, _ := ws.bridge.GetAllToolheadMappings()
+
+	type toolheadEntry struct {
+		ID           int
+		DisplayName  string
+		CurrentSpool int
+	}
+	type printerEntry struct {
+		Name      string
+		Toolheads []toolheadEntry
+	}
+	var printers []printerEntry
+	for _, pc := range printerConfigs {
+		if pc.IsVirtual {
+			continue
+		}
+		var ths []toolheadEntry
+		for i := 0; i < pc.Toolheads; i++ {
+			curSpool := 0
+			if pm, ok := allMappings[pc.Name]; ok {
+				if m, ok := pm[i]; ok {
+					curSpool = m.SpoolID
+				}
+			}
+			ths = append(ths, toolheadEntry{ID: i, DisplayName: fmt.Sprintf("Toolhead %d", i), CurrentSpool: curSpool})
+		}
+		printers = append(printers, printerEntry{Name: pc.Name, Toolheads: ths})
+	}
+
+	locations, _ := ws.bridge.spoolman.GetLocations()
+	var locNames []string
+	for _, l := range locations {
+		if !l.Archived && strings.TrimSpace(l.Name) != "" {
+			locNames = append(locNames, l.Name)
+		}
+	}
+
+	trashLoc, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTrashLocation)
+	invLoc, _ := ws.bridge.GetConfigValue(ConfigKeyNFCInventoryLocation)
+
+	colorHex := ""
+	if spool.Filament != nil && spool.Filament.ColorHex != "" {
+		colorHex = spool.Filament.ColorHex
+		if !strings.HasPrefix(colorHex, "#") {
+			colorHex = "#" + colorHex
+		}
+	}
+	if colorHex == "" {
+		colorHex = "#888888"
+	}
+
+	c.HTML(http.StatusOK, "nfc_spool_uuid.html", gin.H{
+		"NfcUUID":           nfcUUID,
+		"SpoolID":           spool.ID,
+		"SpoolName":         spool.Name,
+		"Material":          spool.Material,
+		"Brand":             spool.Brand,
+		"ColorHex":          colorHex,
+		"RemainingWeight":   fmt.Sprintf("%.0f", spool.RemainingWeight),
+		"InitialWeight":     fmt.Sprintf("%.0f", spool.InitialWeight),
+		"CurrentLocation":   spool.Location,
+		"Printers":          printers,
+		"Locations":         locNames,
+		"TrashLocation":     trashLoc,
+		"InventoryLocation": invLoc,
+	})
+}
+
+// nfcSpoolAssignHandler processes the assignment form from the scan page.
+// POST /nfc/spool/:uuid/assign
+func (ws *WebServer) nfcSpoolAssignHandler(c *gin.Context) {
+	nfcUUID := c.Param("uuid")
+
+	spool, err := ws.bridge.spoolman.GetSpoolByNFCTag(nfcUUID)
+	if err != nil || spool == nil {
+		c.HTML(http.StatusBadRequest, "nfc_error.html", gin.H{"Error": "Spool not found for this tag."})
+		return
+	}
+
+	targetType := c.PostForm("target_type") // "toolhead" | "location" | "trash"
+	trashLoc, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTrashLocation)
+	invLoc, _ := ws.bridge.GetConfigValue(ConfigKeyNFCInventoryLocation)
+
+	switch targetType {
+	case "toolhead":
+		printerName := c.PostForm("printer_name")
+		toolheadIDStr := c.PostForm("toolhead_id")
+		toolheadID, _ := strconv.Atoi(toolheadIDStr)
+
+		// Check if toolhead already has a spool.
+		existingSpoolID, _ := ws.bridge.GetToolheadMapping(printerName, toolheadID)
+		if existingSpoolID > 0 && existingSpoolID != spool.ID {
+			// Displacement needed — redirect to the displaced spool page.
+			existingSpool, _ := ws.bridge.spoolman.GetSpoolByID(existingSpoolID)
+			oldName := fmt.Sprintf("Spool #%d", existingSpoolID)
+			if existingSpool != nil && existingSpool.Name != "" {
+				oldName = existingSpool.Name
+			}
+			redirectURL := fmt.Sprintf("/nfc/spool/%s/displaced?old_id=%d&old_name=%s&printer=%s&toolhead=%d&new_spool=%d&inventory=%s&trash=%s",
+				nfcUUID,
+				existingSpoolID,
+				neturl.QueryEscape(oldName),
+				neturl.QueryEscape(printerName),
+				toolheadID,
+				spool.ID,
+				neturl.QueryEscape(invLoc),
+				neturl.QueryEscape(trashLoc),
+			)
+			c.Redirect(http.StatusSeeOther, redirectURL)
+			return
+		}
+
+		// No displacement — assign directly.
+		locationName := fmt.Sprintf("%s - Toolhead %d", printerName, toolheadID)
+		if err := ws.bridge.AssignSpoolToLocation(spool.ID, printerName, toolheadID, locationName, true); err != nil {
+			c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Assignment failed: " + err.Error()})
+			return
+		}
+		ws.BroadcastStatus()
+		c.HTML(http.StatusOK, "nfc_success.html", gin.H{
+			"SpoolID": spool.ID, "PrinterName": printerName, "ToolheadID": toolheadID,
+			"IsPrinterLocation": true, "LocationName": locationName,
+		})
+
+	case "location":
+		locationName := c.PostForm("location_name")
+		if locationName == "" {
+			c.HTML(http.StatusBadRequest, "nfc_error.html", gin.H{"Error": "Location name is required."})
+			return
+		}
+		if err := ws.bridge.AssignSpoolToLocation(spool.ID, "", 0, locationName, false); err != nil {
+			c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Assignment failed: " + err.Error()})
+			return
+		}
+		ws.BroadcastStatus()
+		c.HTML(http.StatusOK, "nfc_success.html", gin.H{
+			"SpoolID": spool.ID, "IsPrinterLocation": false, "LocationName": locationName,
+		})
+
+	case "trash":
+		if trashLoc == "" {
+			c.HTML(http.StatusBadRequest, "nfc_error.html", gin.H{"Error": "No Trash location configured. Set it in The Moment Settings → Advanced → NFC Locations."})
+			return
+		}
+		if err := ws.bridge.AssignSpoolToLocation(spool.ID, "", 0, trashLoc, false); err != nil {
+			c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Failed to move spool to trash: " + err.Error()})
+			return
+		}
+		ws.BroadcastStatus()
+		c.HTML(http.StatusOK, "nfc_success.html", gin.H{
+			"SpoolID": spool.ID, "IsPrinterLocation": false, "LocationName": trashLoc,
+		})
+
+	default:
+		c.HTML(http.StatusBadRequest, "nfc_error.html", gin.H{"Error": "Invalid target type."})
+	}
+}
+
+// nfcSpoolDisplacedHandler shows the displaced-spool destination picker.
+// GET /nfc/spool/:uuid/displaced?old_id=X&old_name=Y&printer=Z&toolhead=N&new_spool=M&inventory=...&trash=...
+func (ws *WebServer) nfcSpoolDisplacedHandler(c *gin.Context) {
+	nfcUUID := c.Param("uuid")
+	oldIDStr := c.Query("old_id")
+	oldName := c.Query("old_name")
+	printerName := c.Query("printer")
+	toolheadIDStr := c.Query("toolhead")
+	newSpoolIDStr := c.Query("new_spool")
+	invLoc := c.Query("inventory")
+	trashLoc := c.Query("trash")
+
+	locations, _ := ws.bridge.spoolman.GetLocations()
+	var locNames []string
+	for _, l := range locations {
+		if !l.Archived && strings.TrimSpace(l.Name) != "" {
+			locNames = append(locNames, l.Name)
+		}
+	}
+
+	c.HTML(http.StatusOK, "nfc_displaced.html", gin.H{
+		"NfcUUID":           nfcUUID,
+		"OldSpoolID":        oldIDStr,
+		"OldSpoolName":      oldName,
+		"PrinterName":       printerName,
+		"ToolheadID":        toolheadIDStr,
+		"NewSpoolID":        newSpoolIDStr,
+		"InventoryLocation": invLoc,
+		"TrashLocation":     trashLoc,
+		"Locations":         locNames,
+	})
+}
+
+// nfcSpoolCompleteHandler finalises the two-step NFC assignment (new spool + displaced spool).
+// POST /nfc/spool/:uuid/complete
+func (ws *WebServer) nfcSpoolCompleteHandler(c *gin.Context) {
+	nfcUUID := c.Param("uuid")
+
+	newSpoolID, _ := strconv.Atoi(c.PostForm("new_spool_id"))
+	printerName := c.PostForm("printer_name")
+	toolheadID, _ := strconv.Atoi(c.PostForm("toolhead_id"))
+	displacedSpoolID, _ := strconv.Atoi(c.PostForm("displaced_spool_id"))
+	displacedLocation := c.PostForm("displaced_location")
+
+	if newSpoolID == 0 {
+		c.HTML(http.StatusBadRequest, "nfc_error.html", gin.H{"Error": "Missing spool information."})
+		return
+	}
+
+	// Move displaced spool to chosen location first.
+	if displacedSpoolID > 0 && displacedLocation != "" {
+		if err := ws.bridge.AssignSpoolToLocation(displacedSpoolID, "", 0, displacedLocation, false); err != nil {
+			log.Printf("nfcSpoolCompleteHandler: failed to relocate displaced spool %d: %v", displacedSpoolID, err)
+		}
+	}
+
+	// Assign the new spool to the toolhead.
+	locationName := fmt.Sprintf("%s - Toolhead %d", printerName, toolheadID)
+	if err := ws.bridge.AssignSpoolToLocation(newSpoolID, printerName, toolheadID, locationName, true); err != nil {
+		c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Final assignment failed: " + err.Error()})
+		return
+	}
+
+	ws.BroadcastStatus()
+	log.Printf("✅ NFC UUID %s: spool %d → %s toolhead %d; displaced spool %d → %s",
+		nfcUUID, newSpoolID, printerName, toolheadID, displacedSpoolID, displacedLocation)
+
+	c.HTML(http.StatusOK, "nfc_success.html", gin.H{
+		"SpoolID":           newSpoolID,
+		"PrinterName":       printerName,
+		"ToolheadID":        toolheadID,
+		"IsPrinterLocation": true,
+		"LocationName":      locationName,
+	})
+}
+
+// ─── NFC tag management API ───────────────────────────────────────────────────
+
+// nfcAssignTagHandler writes or generates a UUID for a spool and returns the tag URL + QR code.
+// POST /api/nfc/spool/:id/tag
+// Body (optional): {"nfc_id": "your-uuid"}  — omit to auto-generate.
+func (ws *WebServer) nfcAssignTagHandler(c *gin.Context) {
+	spoolID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || spoolID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid spool ID"})
+		return
+	}
+
+	var body struct {
+		NfcID string `json:"nfc_id"`
+	}
+	_ = c.ShouldBindJSON(&body) // optional body
+
+	nfcUUID := body.NfcID
+	if nfcUUID == "" {
+		nfcUUID = newSessionID() // reuse existing UUID v4 generator
+	}
+
+	if err := ws.bridge.spoolman.SetSpoolNFCTag(spoolID, nfcUUID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	tagURL := fmt.Sprintf("http://%s/nfc/spool/%s", c.Request.Host, nfcUUID)
+	qrBytes, _ := qrcode.Encode(tagURL, qrcode.Medium, 256)
+	qrB64 := base64.StdEncoding.EncodeToString(qrBytes)
+
+	log.Printf("🏷️  NFC tag assigned to spool %d: uuid=%s url=%s", spoolID, nfcUUID, tagURL)
+	c.JSON(http.StatusOK, gin.H{
+		"spool_id":       spoolID,
+		"nfc_id":         nfcUUID,
+		"tag_url":        tagURL,
+		"qr_code_base64": qrB64,
+	})
+}
+
+// nfcRemoveTagHandler clears the NFC UUID from a spool's extra fields.
+// DELETE /api/nfc/spool/:id/tag
+func (ws *WebServer) nfcRemoveTagHandler(c *gin.Context) {
+	spoolID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || spoolID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid spool ID"})
+		return
+	}
+	if err := ws.bridge.spoolman.ClearSpoolNFCTag(spoolID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	log.Printf("🏷️  NFC tag removed from spool %d", spoolID)
+	c.JSON(http.StatusOK, gin.H{"message": "NFC tag removed"})
+}
+
+// nfcConfigHandler returns the configured NFC trash and inventory location names.
+// GET /api/nfc/config
+func (ws *WebServer) nfcConfigHandler(c *gin.Context) {
+	trash, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTrashLocation)
+	inv, _ := ws.bridge.GetConfigValue(ConfigKeyNFCInventoryLocation)
+	c.JSON(http.StatusOK, gin.H{
+		"trash_location":     trash,
+		"inventory_location": inv,
+	})
+}
+
+// nfcSaveConfigHandler saves the NFC trash and inventory location names.
+// POST /api/nfc/config
+func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
+	var body struct {
+		TrashLocation     string `json:"trash_location"`
+		InventoryLocation string `json:"inventory_location"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.SetConfigValue(ConfigKeyNFCTrashLocation, body.TrashLocation); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.SetConfigValue(ConfigKeyNFCInventoryLocation, body.InventoryLocation); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "NFC config saved"})
+}
+
+// ─── Post-print filament segment reassignment ─────────────────────────────────
+
+// reassignFilamentHandler moves a print's filament segment to a different spool.
+// POST /api/prints/:id/filament/:segment_id/reassign
+// Body: {"spool_id": 42}
+func (ws *WebServer) reassignFilamentHandler(c *gin.Context) {
+	printID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || printID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid print ID"})
+		return
+	}
+	segmentID, err := strconv.Atoi(c.Param("segment_id"))
+	if err != nil || segmentID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid segment ID"})
+		return
+	}
+
+	var body struct {
+		SpoolID int `json:"spool_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := ws.bridge.ReassignFilamentSegment(printID, segmentID, body.SpoolID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "segment reassigned", "new_spool_id": body.SpoolID})
 }

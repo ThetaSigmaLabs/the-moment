@@ -12,6 +12,7 @@
         <button class="settings-tab" onclick="switchSettingsTab('printers', this)">🖨️ Printers</button>
         <button class="settings-tab" onclick="switchSettingsTab('cost', this)">💰 Cost Settings</button>
         <button class="settings-tab" onclick="switchSettingsTab('advanced', this)">⚙️ Advanced Settings</button>
+        <button class="settings-tab" onclick="switchSettingsTab('about', this)">ℹ️ About</button>
     </div>
     
     <!-- Getting Started Tab -->
@@ -178,6 +179,27 @@
         </div>
     </div>
 
+    <!-- About Tab -->
+    <div id="about-tab" class="settings-tab-content">
+        <div class="config-section">
+            <h3>ℹ️ About</h3>
+            <table style="border-collapse:collapse;font-size:0.95em;">
+                <tr>
+                    <td style="padding:6px 24px 6px 0;color:#aaa;white-space:nowrap;">The Moment</td>
+                    <td style="padding:6px 0;font-family:monospace;">v{{.AppVersion}}</td>
+                </tr>
+                <tr>
+                    <td style="padding:6px 24px 6px 0;color:#aaa;white-space:nowrap;">OctoPrint Plugin</td>
+                    <td style="padding:6px 0;font-family:monospace;" id="about-octoprint-plugin-version">—</td>
+                </tr>
+            </table>
+            <p style="margin-top:16px;font-size:0.85em;color:#666;">
+                The OctoPrint plugin version is shown after a successful connection test
+                (Settings → OctoPrint in OctoPrint's own settings panel).
+            </p>
+        </div>
+    </div>
+
     <!-- Advanced Settings Tab -->
     <div id="advanced-tab" class="settings-tab-content">
         <div class="config-section">
@@ -217,6 +239,34 @@
             </div>
         </div>
         
+        <!-- NFC Locations Section -->
+        <div class="config-section" style="margin-top: 30px;">
+            <h3>🏷️ NFC Spool Locations</h3>
+            <div class="help-text">
+                These Spoolman location names are used by the NFC spool-tag workflow.
+                When a spool is displaced from a toolhead the old spool moves to <strong>Inventory</strong> automatically.
+                When a spool is finished, tapping its tag and choosing Trash moves it to <strong>Trash</strong> so the tag can be re-programmed.
+                Both locations are created in Spoolman automatically the first time they are used.
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="nfcInventoryLocation">Inventory Location</label>
+                    <input type="text" id="nfcInventoryLocation" placeholder="e.g. Inventory"
+                           style="width:100%;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;">
+                    <small>Where spools go when removed from a toolhead via NFC.</small>
+                </div>
+                <div class="form-group">
+                    <label for="nfcTrashLocation">Trash Location</label>
+                    <input type="text" id="nfcTrashLocation" placeholder="e.g. Trash"
+                           style="width:100%;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;">
+                    <small>Where finished/empty spools go. Tag is ready for re-programming.</small>
+                </div>
+            </div>
+            <div style="margin-top: 16px; text-align: center;">
+                <button class="btn" onclick="saveNFCConfig()">💾 Save NFC Locations</button>
+            </div>
+        </div>
+
         <!-- Spool Assignment Settings Section -->
         <div class="config-section" style="margin-top: 30px;">
             <h3>🔄 Spool Assignment Settings</h3>

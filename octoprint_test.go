@@ -77,7 +77,8 @@ func TestAssembleCostBreakdown_TimeCosts(t *testing.T) {
 // ─── Multi-spool filament summation ──────────────────────────────────────────
 
 // TestLogOctoPrintRecord_MultiToolhead verifies that a two-toolhead print stores
-// separate filament-usage rows and queues two Spoolman updates.
+// separate filament-usage rows (one per tool). Spoolman is NOT updated — the
+// OctoPrint Spoolman plugin owns inventory for OctoPrint printers.
 func TestLogOctoPrintRecord_MultiToolhead(t *testing.T) {
 	bridge := testBridge(t)
 
@@ -130,8 +131,8 @@ func TestLogOctoPrintRecord_MultiToolhead(t *testing.T) {
 }
 
 // TestLogOctoPrintRecord_FilamentChange verifies that sending two filament entries
-// for the same tool (filament change mid-print) correctly sums the total and queues
-// separate Spoolman updates per spool.
+// for the same tool (filament change mid-print) correctly sums the total and stores
+// both segments as separate filament-usage rows. Spoolman is NOT updated.
 func TestLogOctoPrintRecord_FilamentChange(t *testing.T) {
 	bridge := testBridge(t)
 
@@ -296,6 +297,47 @@ func TestGetPrintHistory_PrusaLinkDefaults(t *testing.T) {
 	assertEqual(t, "source default", "prusalink", r.Source)
 	assertEqual(t, "time_precision default", "approximate", r.TimePrecision)
 	assertEqual(t, "filament_precision default", "estimated", r.FilamentPrecision)
+}
+
+// ─── Spoolman isolation ───────────────────────────────────────────────────────
+
+// TestLogOctoPrintRecord_NoSpoolmanUpdate verifies that LogOctoPrintRecord never
+// writes to pending_spoolman_updates, even when real spool IDs are provided.
+// Inventory is the OctoPrint Spoolman plugin's responsibility; The Moment must
+// not double-decrement by also updating it.
+func TestLogOctoPrintRecord_NoSpoolmanUpdate(t *testing.T) {
+	bridge := testBridge(t)
+
+	payload := OctoPrintPayload{
+		Source:            "octoprint",
+		PrinterID:         "ender3-v3-se",
+		FileName:          "real_spools.gcode",
+		Status:            "completed",
+		StartedAt:         time.Now().Add(-60 * time.Minute),
+		EndedAt:           time.Now(),
+		TotalDurationSec:  3600,
+		PrintDurationSec:  3600,
+		TimePrecision:     "exact",
+		FilamentPrecision: "measured",
+		// Real spool IDs — would trigger Spoolman updates in the old (broken) code.
+		Filament: []OctoPrintPayloadFilament{
+			{ToolIndex: 0, ChangeNumber: 0, SpoolID: 42, FilamentUsedMM: 3000, FilamentUsedG: 9.0},
+			{ToolIndex: 1, ChangeNumber: 0, SpoolID: 99, FilamentUsedMM: 1500, FilamentUsedG: 4.5},
+		},
+	}
+
+	if _, err := bridge.LogOctoPrintRecord(payload); err != nil {
+		t.Fatalf("LogOctoPrintRecord failed: %v", err)
+	}
+
+	var count int
+	if err := bridge.db.QueryRow(`SELECT COUNT(*) FROM pending_spoolman_updates`).Scan(&count); err != nil {
+		t.Fatalf("failed to query pending_spoolman_updates: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 pending Spoolman updates for OctoPrint record, got %d — double-decrement risk", count)
+	}
+	t.Logf("✅ pending_spoolman_updates is empty — Spoolman inventory left to OctoPrint plugin")
 }
 
 // ─── session_id and change_number ────────────────────────────────────────────

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spool Management — The Moment</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 16px;
+            color: #f0f0f0;
+        }
+        .card {
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .spool-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+        .color-dot {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            border: 3px solid rgba(255,255,255,0.3);
+        }
+        .spool-title { font-size: 1.15em; font-weight: 600; }
+        .spool-sub { font-size: 0.85em; color: #aaa; margin-top: 2px; }
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            font-size: 0.88em;
+        }
+        .detail-row:last-child { border-bottom: none; }
+        .detail-label { color: #aaa; }
+        .detail-value { font-weight: 500; }
+        .weight-bar {
+            height: 6px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+            margin-top: 10px;
+            overflow: hidden;
+        }
+        .weight-fill {
+            height: 100%;
+            border-radius: 3px;
+            background: linear-gradient(90deg, #4ade80, #22c55e);
+        }
+        h2 { font-size: 1em; font-weight: 600; margin-bottom: 14px; color: #c8b8ff; }
+        label { display: block; font-size: 0.82em; color: #aaa; margin-bottom: 4px; }
+        select, input[type=text] {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.08);
+            color: #f0f0f0;
+            font-size: 0.95em;
+            margin-bottom: 12px;
+            appearance: auto;
+        }
+        select option { background: #1a1a2e; color: #f0f0f0; }
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            border-radius: 10px;
+            border: none;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-primary { background: #7c3aed; color: white; }
+        .btn-danger  { background: #dc2626; color: white; }
+        .btn-secondary { background: rgba(255,255,255,0.1); color: #f0f0f0; margin-top: 8px; }
+        .target-section { display: none; }
+        .target-section.active { display: block; }
+        .radio-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+        .radio-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.15);
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .radio-option input[type=radio] { width: auto; margin: 0; accent-color: #7c3aed; }
+        .radio-option:has(input:checked) { border-color: #7c3aed; background: rgba(124,58,237,0.15); }
+        .radio-label { font-size: 0.9em; }
+        .radio-label small { display: block; color: #aaa; font-size: 0.8em; margin-top: 2px; }
+        .page-title { font-size: 1.3em; font-weight: 700; margin-bottom: 16px; }
+    </style>
+</head>
+<body>
+    <p class="page-title">🏷️ Spool Scanned</p>
+
+    <!-- Spool info card -->
+    <div class="card">
+        <div class="spool-header">
+            <div class="color-dot" style="background:{{.ColorHex}};"></div>
+            <div>
+                <div class="spool-title">{{.SpoolName}}</div>
+                <div class="spool-sub">{{.Material}} · {{.Brand}}</div>
+            </div>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Remaining</span>
+            <span class="detail-value">{{.RemainingWeight}} g</span>
+        </div>
+        {{if .CurrentLocation}}
+        <div class="detail-row">
+            <span class="detail-label">Current location</span>
+            <span class="detail-value">{{.CurrentLocation}}</span>
+        </div>
+        {{end}}
+        {{if .InitialWeight}}
+        <div class="weight-bar">
+            <div class="weight-fill" id="weightFill"></div>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- Assignment form -->
+    <form method="POST" action="/nfc/spool/{{.NfcUUID}}/assign" id="assignForm">
+        <div class="card">
+            <h2>Assign to…</h2>
+
+            <div class="radio-group">
+                {{range .Printers}}
+                {{$printer := .}}
+                {{range .Toolheads}}
+                <label class="radio-option">
+                    <input type="radio" name="__target_select" value="toolhead_{{$printer.Name}}_{{.ID}}"
+                           onchange="selectTarget('toolhead','{{$printer.Name}}','{{.ID}}')">
+                    <div class="radio-label">
+                        🖨️ {{$printer.Name}} — {{.DisplayName}}
+                        {{if gt .CurrentSpool 0}}<small>Currently: spool #{{.CurrentSpool}}</small>{{end}}
+                    </div>
+                </label>
+                {{end}}
+                {{end}}
+
+                {{range .Locations}}
+                <label class="radio-option">
+                    <input type="radio" name="__target_select" value="loc_{{.}}"
+                           onchange="selectTarget('location','{{.}}','')">
+                    <div class="radio-label">📍 {{.}}</div>
+                </label>
+                {{end}}
+
+                {{if .TrashLocation}}
+                <label class="radio-option">
+                    <input type="radio" name="__target_select" value="trash"
+                           onchange="selectTarget('trash','','')">
+                    <div class="radio-label">
+                        🗑️ Trash ({{.TrashLocation}})
+                        <small>Spool is done — tag ready for re-programming</small>
+                    </div>
+                </label>
+                {{end}}
+            </div>
+
+            <!-- Hidden fields updated by JS -->
+            <input type="hidden" name="target_type"   id="target_type">
+            <input type="hidden" name="printer_name"  id="printer_name">
+            <input type="hidden" name="toolhead_id"   id="toolhead_id">
+            <input type="hidden" name="location_name" id="location_name">
+
+            <button type="submit" class="btn btn-primary" id="assignBtn" disabled>Assign Spool</button>
+        </div>
+    </form>
+
+    <script>
+    // Set weight bar width
+    var rem = {{.RemainingWeight}};
+    var ini = {{.InitialWeight}};
+    var fill = document.getElementById('weightFill');
+    if (fill && ini > 0) {
+        fill.style.width = Math.min(100, Math.round(rem / ini * 100)) + '%';
+    }
+
+    function selectTarget(type, printer, toolhead) {
+        document.getElementById('target_type').value   = type;
+        document.getElementById('printer_name').value  = printer;
+        document.getElementById('toolhead_id').value   = toolhead;
+        document.getElementById('location_name').value = (type === 'location') ? printer : '';
+        document.getElementById('assignBtn').disabled  = false;
+        if (type === 'trash') {
+            document.getElementById('assignBtn').className = 'btn btn-danger';
+            document.getElementById('assignBtn').textContent = '🗑️ Move to Trash';
+        } else {
+            document.getElementById('assignBtn').className = 'btn btn-primary';
+            document.getElementById('assignBtn').textContent = 'Assign Spool';
+        }
+    }
+    </script>
+</body>
+</html>
