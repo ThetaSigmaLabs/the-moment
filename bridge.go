@@ -10,9 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -80,7 +80,7 @@ type PrintHistory struct {
 	SessionID string `json:"session_id"`
 
 	// Source and precision metadata (OctoPrint records fill these fully)
-	Source            string `json:"source"`             // "prusalink" | "octoprint"
+	Source            string  `json:"source"` // "prusalink" | "octoprint"
 	TotalDurationSec  float64 `json:"total_duration_sec"`
 	PrintDurationSec  float64 `json:"print_duration_sec"`
 	PauseDurationSec  float64 `json:"pause_duration_sec"`
@@ -92,6 +92,9 @@ type PrintHistory struct {
 	// Per-tool filament and pause detail (populated only on single-record fetch)
 	FilamentUsages []PrintFilamentUsage `json:"filament_usages,omitempty"`
 	Pauses         []PrintPause         `json:"pauses,omitempty"`
+
+	// Quality tags (outcome + issue labels)
+	Tags []PrintQualityTag `json:"tags,omitempty"`
 }
 
 // PrintFilamentUsage is per-tool filament data stored for a unified print record.
@@ -119,24 +122,39 @@ type PrintPause struct {
 	Reason      string    `json:"reason"` // filament_change | runout | user | unknown
 }
 
+// PrintQualityTag is a single outcome or issue label attached to a print.
+type PrintQualityTag struct {
+	ID         int64  `json:"id"`
+	PrintID    int64  `json:"print_id"`
+	Tag        string `json:"tag"`
+	CustomText string `json:"custom_text,omitempty"`
+}
+
+// PrintTagsPayload is the body for POST /api/history/:id/tags.
+type PrintTagsPayload struct {
+	Outcome    string   `json:"outcome"`    // "success" | "acceptable" | "failed" | ""
+	Issues     []string `json:"issues"`     // predefined and/or "custom"
+	CustomText string   `json:"custom_text"`
+}
+
 // OctoPrintPayload is the request body sent by the OctoPrint plugin.
 type OctoPrintPayload struct {
-	SessionID         string                    `json:"session_id"` // optional; generated server-side if absent
-	Source            string                    `json:"source"`
-	PrinterID         string                    `json:"printer_id"`
-	FileName          string                    `json:"file_name"`
-	Status            string                    `json:"status"`
-	StartedAt         time.Time                 `json:"started_at"`
-	EndedAt           time.Time                 `json:"ended_at"`
-	TotalDurationSec  float64                   `json:"total_duration_sec"`
-	PrintDurationSec  float64                   `json:"print_duration_sec"`
-	PauseDurationSec  float64                   `json:"pause_duration_sec"`
-	PauseCount        int                       `json:"pause_count"`
-	Pauses            []OctoPrintPayloadPause   `json:"pauses"`
-	CancelReason      *string                   `json:"cancel_reason"`
+	SessionID         string                     `json:"session_id"` // optional; generated server-side if absent
+	Source            string                     `json:"source"`
+	PrinterID         string                     `json:"printer_id"`
+	FileName          string                     `json:"file_name"`
+	Status            string                     `json:"status"`
+	StartedAt         time.Time                  `json:"started_at"`
+	EndedAt           time.Time                  `json:"ended_at"`
+	TotalDurationSec  float64                    `json:"total_duration_sec"`
+	PrintDurationSec  float64                    `json:"print_duration_sec"`
+	PauseDurationSec  float64                    `json:"pause_duration_sec"`
+	PauseCount        int                        `json:"pause_count"`
+	Pauses            []OctoPrintPayloadPause    `json:"pauses"`
+	CancelReason      *string                    `json:"cancel_reason"`
 	Filament          []OctoPrintPayloadFilament `json:"filament"`
-	TimePrecision     string                    `json:"time_precision"`
-	FilamentPrecision string                    `json:"filament_precision"`
+	TimePrecision     string                     `json:"time_precision"`
+	FilamentPrecision string                     `json:"filament_precision"`
 	// SpoolmanManaged: true (or nil/omitted) = the OctoPrint Spoolman/SpoolManager
 	// plugin already deducted filament; The Moment must NOT deduct again.
 	// false = no Spoolman plugin active; The Moment deducts from Spoolman.
@@ -166,18 +184,18 @@ type OctoPrintPayloadFilament struct {
 // print job. Multi-toolhead PrusaLink prints produce N rows per session; OctoPrint
 // produces one row. Legacy rows (empty session_id) each form their own session.
 type PrintSession struct {
-	SessionID    string         `json:"session_id"`
-	JobName      string         `json:"job_name"`
-	PrinterName  string         `json:"printer_name"`
-	Status       string         `json:"status"`
-	Source       string         `json:"source"`
-	PrintStarted time.Time      `json:"print_started"`
-	PrintFinished time.Time     `json:"print_finished"`
-	TotalFilamentG float64      `json:"total_filament_grams"`
-	TotalCost    float64        `json:"total_cost"`
-	Currency     string         `json:"currency"`
-	ToolCount    int            `json:"tool_count"`
-	Records      []PrintHistory `json:"records"`
+	SessionID      string         `json:"session_id"`
+	JobName        string         `json:"job_name"`
+	PrinterName    string         `json:"printer_name"`
+	Status         string         `json:"status"`
+	Source         string         `json:"source"`
+	PrintStarted   time.Time      `json:"print_started"`
+	PrintFinished  time.Time      `json:"print_finished"`
+	TotalFilamentG float64        `json:"total_filament_grams"`
+	TotalCost      float64        `json:"total_cost"`
+	Currency       string         `json:"currency"`
+	ToolCount      int            `json:"tool_count"`
+	Records        []PrintHistory `json:"records"`
 }
 
 // PrintError represents a failed print processing attempt
@@ -207,7 +225,7 @@ type PrinterData struct {
 func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 	bridge := &FilamentBridge{
 		config:           config,
-		spoolman:         NewSpoolmanClient(DefaultSpoolmanURL, SpoolmanTimeout, "", ""), // Default URL and timeout, will be updated
+		spoolman:         NewSpoolmanClient(DefaultSpoolmanURL, SpoolmanTimeout),
 		wasPrinting:      make(map[string]bool),
 		currentJobFile:   make(map[string]string),
 		processingPrints: make(map[string]bool),
@@ -243,7 +261,7 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	// Update Spoolman URL and timeout if config is provided
 	if config != nil && config.SpoolmanURL != "" {
-		bridge.spoolman = NewSpoolmanClient(config.SpoolmanURL, config.SpoolmanTimeout, config.SpoolmanUsername, config.SpoolmanPassword)
+		bridge.spoolman = NewSpoolmanClient(config.SpoolmanURL, config.SpoolmanTimeout)
 	}
 
 	return bridge, nil
@@ -368,6 +386,15 @@ func (b *FilamentBridge) initDatabase() error {
 			attempts INTEGER DEFAULT 0,
 			last_error TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS print_quality_tags (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			print_id INTEGER NOT NULL,
+			tag TEXT NOT NULL,
+			custom_text TEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY (print_id) REFERENCES print_history(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_print_quality_tags_print_id ON print_quality_tags(print_id)`,
 	}
 
 	for _, query := range createTables {
@@ -632,16 +659,14 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 		ConfigKeyPrinterIPs:                      "", // Comma-separated list of printer IP addresses
 		ConfigKeyAPIKey:                          "", // PrusaLink API key for authentication
 		ConfigKeySpoolmanURL:                     DefaultSpoolmanURL,
-		ConfigKeySpoolmanUsername:                "", // Spoolman basic auth username (optional)
-		ConfigKeySpoolmanPassword:                "", // Spoolman basic auth password (optional)
 		ConfigKeyPollInterval:                    fmt.Sprintf("%d", DefaultPollInterval),
 		ConfigKeyWebPort:                         DefaultWebPort,
 		ConfigKeyPrusaLinkTimeout:                fmt.Sprintf("%d", PrusaLinkTimeout),
 		ConfigKeyPrusaLinkFileDownloadTimeout:    fmt.Sprintf("%d", PrusaLinkFileDownloadTimeout),
 		ConfigKeySpoolmanTimeout:                 fmt.Sprintf("%d", SpoolmanTimeout),
-		ConfigKeyAutoAssignPreviousSpoolEnabled:  "false", // Enable auto-assignment of previous spool to default location
-		ConfigKeyAutoAssignPreviousSpoolLocation: "",      // Default location name for auto-assigned previous spools
-		ConfigKeyNFCTrashLocation:                "Trash",    // Location for empty/done spools (tag ready to re-program)
+		ConfigKeyAutoAssignPreviousSpoolEnabled:  "false",     // Enable auto-assignment of previous spool to default location
+		ConfigKeyAutoAssignPreviousSpoolLocation: "",          // Default location name for auto-assigned previous spools
+		ConfigKeyNFCTrashLocation:                "Trash",     // Location for empty/done spools (tag ready to re-program)
 		ConfigKeyNFCInventoryLocation:            "Inventory", // Default storage when spool displaced from toolhead
 	}
 
@@ -674,8 +699,6 @@ func getConfigDescription(key string) string {
 		ConfigKeyPrinterIPs:                      "Comma-separated list of printer IP addresses for PrusaLink",
 		ConfigKeyAPIKey:                          "PrusaLink API key for authentication",
 		ConfigKeySpoolmanURL:                     "URL of Spoolman instance",
-		ConfigKeySpoolmanUsername:                "Spoolman basic auth username (optional, leave empty if not using basic auth)",
-		ConfigKeySpoolmanPassword:                "Spoolman basic auth password (optional, leave empty if not using basic auth)",
 		ConfigKeyPollInterval:                    "Polling interval in seconds",
 		ConfigKeyWebPort:                         "Port for web interface",
 		ConfigKeyPrusaLinkTimeout:                "PrusaLink API timeout in seconds",
@@ -1026,7 +1049,7 @@ func (b *FilamentBridge) ReloadConfig() error {
 	b.mutex.Lock()
 	b.config = config
 	if config.SpoolmanURL != "" {
-		b.spoolman = NewSpoolmanClient(config.SpoolmanURL, config.SpoolmanTimeout, config.SpoolmanUsername, config.SpoolmanPassword)
+		b.spoolman = NewSpoolmanClient(config.SpoolmanURL, config.SpoolmanTimeout)
 	}
 	b.mutex.Unlock()
 
@@ -1051,7 +1074,7 @@ func (b *FilamentBridge) UpdateConfig(config *Config) error {
 	defer b.mutex.Unlock()
 
 	b.config = config
-	b.spoolman = NewSpoolmanClient(config.SpoolmanURL, config.SpoolmanTimeout, config.SpoolmanUsername, config.SpoolmanPassword)
+	b.spoolman = NewSpoolmanClient(config.SpoolmanURL, config.SpoolmanTimeout)
 
 	return nil
 }
@@ -1246,14 +1269,6 @@ func (b *FilamentBridge) UnmapToolhead(printerName string, toolheadID int) error
 
 	log.Printf("Unmapped %s toolhead %d", printerName, toolheadID)
 	return nil
-}
-
-// LogPrintUsage logs filament usage for a print job.
-// printTimeMinutes and thumbnailBase64 are optional — pass 0 and "" if unavailable.
-// sessionID groups rows from the same physical print; pass newSessionID() at the
-// call site so all toolheads in one print share the same ID.
-func (b *FilamentBridge) LogPrintUsage(printerName string, toolheadID int, spoolID int, filamentUsed float64, jobName string, sessionID string) error {
-	return b.LogPrintUsageFull(printerName, toolheadID, spoolID, filamentUsed, jobName, 0, "completed", "", sessionID, "prusalink")
 }
 
 // LogPrintUsageFull is the full version with print time, status, thumbnail, session, and source.
@@ -2443,6 +2458,23 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 	if records == nil {
 		records = []PrintHistory{}
 	}
+
+	// Bulk-fetch quality tags for all returned records.
+	if len(records) > 0 {
+		ids := make([]int, len(records))
+		for i, r := range records {
+			ids[i] = r.ID
+		}
+		tagMap := b.bulkFetchQualityTags(ids)
+		for i, r := range records {
+			if tags, ok := tagMap[r.ID]; ok {
+				records[i].Tags = tags
+			} else {
+				records[i].Tags = []PrintQualityTag{}
+			}
+		}
+	}
+
 	return records, nil
 }
 
@@ -2513,6 +2545,9 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 			}
 		}
 	}
+
+	// Fetch quality tags.
+	r.Tags, _ = b.GetPrintQualityTags(int64(id))
 
 	return &r, nil
 }
@@ -2603,8 +2638,8 @@ func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 strin
 	// Thumbnail: OrcaSlicer / PrusaSlicer embed JPG base64 in comment lines:
 	//   "; thumbnail_JPG begin 96x96 3656"  ...lines...  "; thumbnail_JPG end"
 	thumbStartRe := regexp.MustCompile(`; thumbnail_(?:JPG|PNG) begin [0-9x]+ [0-9]+`)
-	thumbEndRe   := regexp.MustCompile(`; thumbnail_(?:JPG|PNG) end`)
-	lineRe       := regexp.MustCompile(`(?m)^; ?`)
+	thumbEndRe := regexp.MustCompile(`; thumbnail_(?:JPG|PNG) end`)
+	lineRe := regexp.MustCompile(`(?m)^; ?`)
 
 	startIdx := thumbStartRe.FindStringIndex(text)
 	if startIdx != nil {
@@ -2879,6 +2914,90 @@ func (b *FilamentBridge) ReassignFilamentSegment(printID, segmentID, newSpoolID 
 	log.Printf("🔄 Filament segment %d (print %d T%d.%d) reassigned spool %d → %d (%.2fg)",
 		segmentID, printID, toolIndex, changeNumber, oldSpoolID, newSpoolID, gramsUsed)
 	return nil
+}
+
+// GetPrintQualityTags returns all quality tags for a single print record.
+func (b *FilamentBridge) GetPrintQualityTags(printID int64) ([]PrintQualityTag, error) {
+	rows, err := b.db.Query(
+		`SELECT id, print_id, tag, COALESCE(custom_text,'') FROM print_quality_tags WHERE print_id = ? ORDER BY id`,
+		printID,
+	)
+	if err != nil {
+		return []PrintQualityTag{}, nil
+	}
+	defer rows.Close()
+	var tags []PrintQualityTag
+	for rows.Next() {
+		var t PrintQualityTag
+		if rows.Scan(&t.ID, &t.PrintID, &t.Tag, &t.CustomText) == nil {
+			tags = append(tags, t)
+		}
+	}
+	if tags == nil {
+		tags = []PrintQualityTag{}
+	}
+	return tags, nil
+}
+
+// SetPrintQualityTags replaces all quality tags for a print with the given payload.
+func (b *FilamentBridge) SetPrintQualityTags(printID int64, payload PrintTagsPayload) error {
+	tx, err := b.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM print_quality_tags WHERE print_id = ?`, printID); err != nil {
+		return err
+	}
+
+	if payload.Outcome != "" {
+		if _, err := tx.Exec(`INSERT INTO print_quality_tags (print_id, tag) VALUES (?, ?)`, printID, payload.Outcome); err != nil {
+			return err
+		}
+	}
+
+	for _, issue := range payload.Issues {
+		customText := ""
+		if issue == "custom" {
+			customText = payload.CustomText
+		}
+		if _, err := tx.Exec(`INSERT INTO print_quality_tags (print_id, tag, custom_text) VALUES (?, ?, ?)`, printID, issue, customText); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+// bulkFetchQualityTags fetches quality tags for a set of print IDs in one query.
+func (b *FilamentBridge) bulkFetchQualityTags(ids []int) map[int][]PrintQualityTag {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := b.db.Query(
+		`SELECT print_id, id, tag, COALESCE(custom_text,'') FROM print_quality_tags WHERE print_id IN (`+placeholders+`) ORDER BY print_id, id`,
+		args...,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	tagMap := make(map[int][]PrintQualityTag)
+	for rows.Next() {
+		var pid int
+		var t PrintQualityTag
+		if rows.Scan(&pid, &t.ID, &t.PrintID, &t.Tag, &t.CustomText) == nil {
+			tagMap[pid] = append(tagMap[pid], t)
+		}
+	}
+	return tagMap
 }
 
 // Close closes the database connection

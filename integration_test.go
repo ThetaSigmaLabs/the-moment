@@ -361,10 +361,9 @@ func TestAPI_CredentialMasking(t *testing.T) {
 		t.Fatalf("failed to add printer: %d %s", resp.StatusCode, body)
 	}
 
-	// ── seed: store Spoolman password ─────────────────────────────────────────
+	// ── seed: store TheMoment API key in config ───────────────────────────────
 	configPayload := map[string]string{
-		ConfigKeySpoolmanUsername: "admin",
-		ConfigKeySpoolmanPassword: realPassword,
+		ConfigKeyTheMomentAPIKey: realPassword,
 	}
 	resp, body = post(t, serverURL+"/api/config", configPayload)
 	if resp.StatusCode != http.StatusOK {
@@ -381,15 +380,15 @@ func TestAPI_CredentialMasking(t *testing.T) {
 	}
 	t.Logf("✅ /api/printers response: %s", printerBody)
 
-	// ── GET /api/config must not expose the real password ─────────────────────
+	// ── GET /api/config must not expose the real API key ─────────────────────
 	_, configBody := get(t, serverURL+"/api/config")
 	if strings.Contains(string(configBody), realPassword) {
-		t.Errorf("GET /api/config exposed real password in response: %s", configBody)
+		t.Errorf("GET /api/config exposed real credential in response: %s", configBody)
 	}
 	if !strings.Contains(string(configBody), maskedCredential) {
 		t.Errorf("GET /api/config should contain masked sentinel %q: %s", maskedCredential, configBody)
 	}
-	t.Logf("✅ /api/config response does not expose password")
+	t.Logf("✅ /api/config response does not expose credential")
 }
 
 // TestAPI_CredentialSentinelPreservation verifies that submitting the masked
@@ -422,7 +421,7 @@ func TestAPI_CredentialSentinelPreservation(t *testing.T) {
 	}
 
 	configPayload := map[string]string{
-		ConfigKeySpoolmanPassword: realPassword,
+		ConfigKeyTheMomentAPIKey: realPassword,
 	}
 	resp, body = post(t, serverURL+"/api/config", configPayload)
 	if resp.StatusCode != http.StatusOK {
@@ -445,7 +444,7 @@ func TestAPI_CredentialSentinelPreservation(t *testing.T) {
 
 	// ── update config with the sentinel echoed back ───────────────────────────
 	resp, body = post(t, serverURL+"/api/config", map[string]string{
-		ConfigKeySpoolmanPassword: maskedCredential,
+		ConfigKeyTheMomentAPIKey: maskedCredential,
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("failed to update config with sentinel: %d %s", resp.StatusCode, body)
@@ -453,34 +452,21 @@ func TestAPI_CredentialSentinelPreservation(t *testing.T) {
 
 	// ── verify real credentials were preserved in the DB ─────────────────────
 	_, printerBody := get(t, serverURL+"/api/printers")
-	// The GET is masked, so probe the DB directly via the bridge used by testServer.
-	// We do this by fetching /api/status which doesn't expose keys, so instead we
-	// rely on the fact that if the key had been overwritten with "***" the printer
-	// connection would fail — but that's hard to assert in a unit test.
-	// Instead: verify the GET still returns the masked sentinel (not empty string),
-	// which means the key is non-empty in the DB (i.e. was preserved).
 	if !strings.Contains(string(printerBody), maskedCredential) {
 		t.Errorf("after echoing sentinel, api_key became empty (overwritten or lost): %s", printerBody)
 	}
 	t.Logf("✅ printer api_key preserved after sentinel round-trip: %s", printerBody)
 
 	_, configBody := get(t, serverURL+"/api/config")
-	if strings.Contains(string(configBody), maskedCredential) {
-		// Password is masked — good. But also make sure it's not empty
-		// (which would mean we accidentally cleared it)
-	}
-	// A stronger check: verify the real password is still in the DB by
-	// directly querying the bridge. We can do this by checking the config
-	// endpoint doesn't return empty for spoolman_password.
 	var configMap map[string]string
 	if err := json.Unmarshal(configBody, &configMap); err != nil {
 		t.Fatalf("config response not valid JSON: %s", configBody)
 	}
-	if configMap[ConfigKeySpoolmanPassword] == "" {
-		t.Errorf("spoolman_password was cleared after echoing sentinel back")
+	if configMap[ConfigKeyTheMomentAPIKey] == "" {
+		t.Errorf("the_moment_api_key was cleared after echoing sentinel back")
 	}
-	if configMap[ConfigKeySpoolmanPassword] == realPassword {
-		t.Errorf("spoolman_password is still unmasked in GET response: %s", configBody)
+	if configMap[ConfigKeyTheMomentAPIKey] == realPassword {
+		t.Errorf("the_moment_api_key is still unmasked in GET response: %s", configBody)
 	}
-	t.Logf("✅ spoolman_password preserved (masked) after sentinel round-trip: %s", configBody)
+	t.Logf("✅ the_moment_api_key preserved (masked) after sentinel round-trip: %s", configBody)
 }

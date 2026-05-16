@@ -38,8 +38,6 @@ const (
 	ConfigKeyPrusaLinkTimeout                = "prusalink_timeout"
 	ConfigKeyPrusaLinkFileDownloadTimeout    = "prusalink_file_download_timeout"
 	ConfigKeySpoolmanTimeout                 = "spoolman_timeout"
-	ConfigKeySpoolmanUsername                = "spoolman_username"
-	ConfigKeySpoolmanPassword                = "spoolman_password"
 	ConfigKeyAutoAssignPreviousSpoolEnabled  = "auto_assign_previous_spool_enabled"
 	ConfigKeyAutoAssignPreviousSpoolLocation = "auto_assign_previous_spool_location"
 	ConfigKeyTheMomentAPIKey                = "the_moment_api_key"

@@ -127,6 +127,10 @@ function buildSessionRow(s, i, key, multi, expanded) {
     var statusBadge = _statusBadge(s.status);
     var sourceBadge = _sourceBadge(s.source);
 
+    // Quality tags: use first record's tags
+    var tags = (s.records && s.records[0]) ? (s.records[0].tags || []) : [];
+    var qualityCell = _renderTagBadges(tags);
+
     // Thumbnail: use first record's thumbnail if available
     var thumbSrc = '';
     if (s.records && s.records.length > 0) {
@@ -177,6 +181,7 @@ function buildSessionRow(s, i, key, multi, expanded) {
         '<td style="padding:9px 12px;text-align:right;white-space:nowrap;' + (s.total_cost > 0 ? 'color:#c8b8ff;' : 'color:#555;') + '">' + cost + '</td>' +
         '<td style="padding:9px 12px;color:#888;font-size:0.85em;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + note + '</td>' +
         '<td style="padding:9px 12px;text-align:center;">' + statusBadge + '</td>' +
+        '<td style="padding:9px 12px;text-align:center;">' + qualityCell + '</td>' +
         '<td style="padding:9px 12px;text-align:center;">' + thumbCell + '</td>' +
         '</tr>';
 }
@@ -198,6 +203,7 @@ function buildSubRow(r) {
         '<td style="padding:6px 12px;text-align:right;color:#666;font-size:0.82em;">' + cost + '</td>' +
         '<td style="padding:6px 12px;font-size:0.82em;color:#555;">' + _esc((r.notes || '').substring(0, 40)) + '</td>' +
         '<td style="padding:6px 12px;text-align:center;">' + _statusBadge(r.status) + '</td>' +
+        '<td style="padding:6px 12px;text-align:center;">' + _renderTagBadges(r.tags || []) + '</td>' +
         '<td style="padding:6px 12px;text-align:center;">' +
         (r.thumbnail_base64 ? '<img src="' + _esc(r.thumbnail_base64) + '" style="width:30px;height:30px;object-fit:cover;border-radius:3px;display:block;margin:auto;">' : '') +
         '</td>' +
@@ -345,6 +351,9 @@ function populateModal(r) {
     }
 
     document.getElementById('historyNoteInput').value = r.notes || '';
+
+    // Populate tag editor
+    _populateTagEditor(r.tags || []);
 }
 
 function closeHistoryModal() {
@@ -582,6 +591,148 @@ function confirmReassign() {
 function cancelReassign() {
     var picker = document.getElementById('reassignPicker');
     if (picker) picker.style.display = 'none';
+}
+
+// ─── Quality Tags ─────────────────────────────────────────────────────────────
+
+var _OUTCOME_TAGS = ['success', 'acceptable', 'failed'];
+var _ISSUE_LABELS = {
+    'bed-adhesion':      'Bed Adhesion',
+    'warping':           'Warping',
+    'stringing':         'Stringing',
+    'spaghetti':         'Spaghetti',
+    'layer-shift':       'Layer Shift',
+    'layer-delamination':'Layer Delam.',
+    'under-extrusion':   'Under-Extrusion',
+    'over-extrusion':    'Over-Extrusion',
+    'seam-blobbing':     'Seam Blobbing',
+    'vfa':               'VFA',
+    'ghosting':          'Ghosting',
+    'elephant-foot':     'Elephant Foot',
+    'filament-jam':      'Filament Jam',
+    'nozzle-clog':       'Nozzle Clog',
+    'thermal-issue':     'Thermal Issue',
+    'power-failure':     'Power Failure',
+    'user-cancelled':    'Cancelled',
+    'custom':            null   // rendered with custom_text
+};
+
+var _OUTCOME_ICONS = { success: '✅', acceptable: '👍', failed: '❌' };
+
+function _renderTagBadges(tags) {
+    if (!tags || tags.length === 0) return '<span style="color:#444;font-size:0.8em;">—</span>';
+    var html = '';
+    var outcome = tags.find(function(t) { return _OUTCOME_TAGS.indexOf(t.tag) !== -1; });
+    if (outcome) {
+        html += '<span class="tag-outcome-badge ' + _esc(outcome.tag) + '">' +
+            (_OUTCOME_ICONS[outcome.tag] || '') + ' ' + _esc(outcome.tag) + '</span> ';
+    }
+    var issues = tags.filter(function(t) { return _OUTCOME_TAGS.indexOf(t.tag) === -1; });
+    if (issues.length > 0) {
+        var first = issues[0];
+        var label = first.tag === 'custom' ? _esc(first.custom_text || 'Custom') : (_ISSUE_LABELS[first.tag] || _esc(first.tag));
+        html += '<span class="tag-issue-badge">' + label + '</span>';
+        if (issues.length > 1) {
+            html += '<span class="tag-issue-badge">+' + (issues.length - 1) + '</span>';
+        }
+    }
+    return html || '<span style="color:#444;font-size:0.8em;">—</span>';
+}
+
+var _currentOutcome = '';
+
+function _populateTagEditor(tags) {
+    _currentOutcome = '';
+    // Reset outcome buttons
+    _OUTCOME_TAGS.forEach(function(o) {
+        var btn = document.getElementById('tagOutcome' + o.charAt(0).toUpperCase() + o.slice(1));
+        if (btn) { btn.className = 'tag-outcome-btn'; btn.style.background = 'transparent'; btn.style.color = '#aaa'; btn.style.borderColor = '#444'; }
+    });
+    // Reset checkboxes
+    document.querySelectorAll('input[name="tag-issue"]').forEach(function(cb) { cb.checked = false; });
+    var customInput = document.getElementById('tagCustomText');
+    if (customInput) { customInput.value = ''; customInput.style.display = 'none'; }
+
+    tags.forEach(function(t) {
+        if (_OUTCOME_TAGS.indexOf(t.tag) !== -1) {
+            _currentOutcome = t.tag;
+            _applyOutcomeStyle(t.tag);
+        } else {
+            var cb = document.querySelector('input[name="tag-issue"][value="' + t.tag + '"]');
+            if (cb) {
+                cb.checked = true;
+                if (t.tag === 'custom' && customInput) {
+                    customInput.value = t.custom_text || '';
+                    customInput.style.display = 'block';
+                }
+            }
+        }
+    });
+}
+
+function _applyOutcomeStyle(outcome) {
+    _OUTCOME_TAGS.forEach(function(o) {
+        var btn = document.getElementById('tagOutcome' + o.charAt(0).toUpperCase() + o.slice(1));
+        if (!btn) return;
+        if (o === outcome) {
+            btn.className = 'tag-outcome-btn active-' + o;
+        } else {
+            btn.className = 'tag-outcome-btn';
+            btn.style.background = 'transparent';
+            btn.style.color = '#aaa';
+            btn.style.borderColor = '#444';
+        }
+    });
+}
+
+function toggleOutcome(outcome) {
+    _currentOutcome = (_currentOutcome === outcome) ? '' : outcome;
+    if (_currentOutcome) {
+        _applyOutcomeStyle(_currentOutcome);
+    } else {
+        _OUTCOME_TAGS.forEach(function(o) {
+            var btn = document.getElementById('tagOutcome' + o.charAt(0).toUpperCase() + o.slice(1));
+            if (btn) { btn.className = 'tag-outcome-btn'; btn.style.background = 'transparent'; btn.style.color = '#aaa'; btn.style.borderColor = '#444'; }
+        });
+    }
+}
+
+function toggleCustomText() {
+    var cb = document.getElementById('tagIssueCustomCheck');
+    var input = document.getElementById('tagCustomText');
+    if (!cb || !input) return;
+    input.style.display = cb.checked ? 'block' : 'none';
+    if (cb.checked) input.focus();
+}
+
+function saveHistoryTags() {
+    if (!_activeEntry) return;
+    var issues = [];
+    document.querySelectorAll('input[name="tag-issue"]:checked').forEach(function(cb) {
+        issues.push(cb.value);
+    });
+    var customText = (document.getElementById('tagCustomText') || {}).value || '';
+    var payload = { outcome: _currentOutcome, issues: issues, custom_text: customText };
+
+    fetch('/api/history/' + _activeEntry.id + '/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) { alert('Error: ' + data.error); return; }
+        var newTags = data.tags || [];
+        _activeEntry.tags = newTags;
+        // Propagate into _allSessions so the table updates without reload
+        _allSessions.forEach(function(s) {
+            (s.records || []).forEach(function(r) {
+                if (r.id === _activeEntry.id) r.tags = newTags;
+            });
+        });
+        renderTable();
+    })
+    .catch(function(err) { alert('Error saving tags: ' + err.message); });
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────

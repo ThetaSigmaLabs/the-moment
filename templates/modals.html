@@ -305,6 +305,63 @@
             <div id="historyDetailCostRows" style="font-size:0.88em;"></div>
         </div>
 
+        <!-- Quality tags editor -->
+        <div style="border-top:1px solid #333;padding-top:14px;margin-top:14px;">
+            <label style="font-size:0.85em;color:#aaa;display:block;margin-bottom:10px;">Quality / Outcome</label>
+
+            <!-- Outcome toggle -->
+            <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+                <button id="tagOutcomeSuccess"  class="tag-outcome-btn" data-outcome="success"
+                        onclick="toggleOutcome('success')"
+                        style="padding:5px 14px;border-radius:20px;border:1px solid #444;
+                               background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                    ✅ Success
+                </button>
+                <button id="tagOutcomeAcceptable" class="tag-outcome-btn" data-outcome="acceptable"
+                        onclick="toggleOutcome('acceptable')"
+                        style="padding:5px 14px;border-radius:20px;border:1px solid #444;
+                               background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                    👍 Acceptable
+                </button>
+                <button id="tagOutcomeFailed" class="tag-outcome-btn" data-outcome="failed"
+                        onclick="toggleOutcome('failed')"
+                        style="padding:5px 14px;border-radius:20px;border:1px solid #444;
+                               background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                    ❌ Failed
+                </button>
+            </div>
+
+            <!-- Issue checkboxes -->
+            <label style="font-size:0.8em;color:#888;display:block;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">Issues observed</label>
+            <div class="tag-issue-grid">
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="bed-adhesion"> Bed Adhesion</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="warping"> Warping</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="stringing"> Stringing</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="spaghetti"> Spaghetti</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-shift"> Layer Shift</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-delamination"> Layer Delamination</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="under-extrusion"> Under-Extrusion</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="over-extrusion"> Over-Extrusion</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="seam-blobbing"> Seam Blobbing</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="vfa"> VFA (Salmon Skin)</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="ghosting"> Ghosting / Ringing</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="elephant-foot"> Elephant Foot</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="filament-jam"> Filament Jam</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="nozzle-clog"> Nozzle Clog</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="thermal-issue"> Thermal Issue</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="power-failure"> Power Failure</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="user-cancelled"> User Cancelled</label>
+                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="custom" id="tagIssueCustomCheck" onchange="toggleCustomText()"> Custom…</label>
+            </div>
+            <input type="text" id="tagCustomText" placeholder="Describe the issue…"
+                   style="display:none;width:100%;box-sizing:border-box;margin-top:8px;
+                          background:rgba(255,255,255,0.05);border:1px solid #555;border-radius:6px;
+                          color:#fff;padding:7px 10px;font-size:0.88em;">
+            <div style="margin-top:10px;">
+                <button class="btn btn-small" onclick="saveHistoryTags()">💾 Save Tags</button>
+            </div>
+        </div>
+
         <!-- Note editor -->
         <div style="border-top:1px solid #333;padding-top:14px;margin-top:14px;">
             <label style="font-size:0.85em;color:#aaa;display:block;margin-bottom:6px;">Note</label>

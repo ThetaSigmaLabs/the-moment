@@ -48,7 +48,7 @@ COPY --from=builder /app/static ./static
 RUN mkdir -p /app/data
 
 # Expose port
-EXPOSE 5000
+EXPOSE ${THE_MOMENT_PORT:-5000}
 
 # Set environment variables
 ENV GIN_MODE=release

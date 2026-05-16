@@ -59,6 +59,7 @@
 
 .form-group input, .form-group select {
     width: 100%;
+    box-sizing: border-box;
     padding: 12px;
     border: 2px solid rgba(255,255,255,0.2);
     border-radius: 8px;
@@ -225,3 +226,57 @@
 .edit-spool-btn.hidden {
     display: none;
 }
+
+/* ─── Quality Tag Badges ──────────────────────────────────────────────────── */
+
+.tag-outcome-badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 12px;
+    font-size: 0.78em;
+    white-space: nowrap;
+    font-weight: 500;
+}
+.tag-outcome-badge.success    { background: #1b4332; color: #6ee7a0; }
+.tag-outcome-badge.acceptable { background: #2a2a00; color: #e6c84a; }
+.tag-outcome-badge.failed     { background: #3d0000; color: #ff7070; }
+
+.tag-issue-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 0.72em;
+    white-space: nowrap;
+    background: #2a2a3d;
+    color: #9ab;
+    margin: 1px 2px;
+}
+
+/* Tag editor in modal */
+.tag-issue-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 16px;
+    font-size: 0.85em;
+}
+
+.tag-issue-check {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+    color: #ccc;
+    cursor: pointer;
+    user-select: none;
+}
+
+.tag-issue-check input[type="checkbox"] {
+    accent-color: #7ab8f5;
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+}
+
+.tag-outcome-btn.active-success    { background: #1b4332 !important; color: #6ee7a0 !important; border-color: #2d6a4f !important; }
+.tag-outcome-btn.active-acceptable { background: #2a2a00 !important; color: #e6c84a !important; border-color: #5a5a00 !important; }
+.tag-outcome-btn.active-failed     { background: #3d0000 !important; color: #ff7070 !important; border-color: #7a0000 !important; }

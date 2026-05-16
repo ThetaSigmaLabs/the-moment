@@ -51,6 +51,21 @@ func main() {
 		}
 	}
 
+	// Override Spoolman URL: env var takes priority when the stored value is still
+	// the hardcoded default (fresh install or never customised via UI).
+	// This lets the Docker Compose SPOOLMAN_URL env var wire up the internal service
+	// name (http://spoolman:8000) automatically without user action.
+	if envSpoolman := os.Getenv("SPOOLMAN_URL"); envSpoolman != "" && config.SpoolmanURL == DefaultSpoolmanURL {
+		config.SpoolmanURL = envSpoolman
+		if err := bridge.SetConfigValue(ConfigKeySpoolmanURL, envSpoolman); err != nil {
+			log.Printf("Warning: could not persist SPOOLMAN_URL env override: %v", err)
+		}
+		if err := bridge.UpdateConfig(config); err != nil {
+			log.Printf("Warning: could not apply SPOOLMAN_URL env override to bridge: %v", err)
+		}
+		log.Printf("Spoolman URL set from SPOOLMAN_URL env var: %s", envSpoolman)
+	}
+
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)

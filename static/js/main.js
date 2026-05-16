@@ -111,22 +111,14 @@ function loadConfiguration() {
                         <small>URL where Spoolman is running</small>
                     </div>
                     <div class="form-group">
-                        <label><strong>Spoolman Username (optional):</strong></label>
-                        <input type="text" id="spoolman_username" value="${config.spoolman_username || ''}" placeholder="Leave empty if not using basic auth">
-                        <small>Username for Spoolman basic authentication (optional)</small>
-                    </div>
-                    <div class="form-group">
-                        <label><strong>Spoolman Password (optional):</strong></label>
-                        <input type="password" id="spoolman_password" value="${config.spoolman_password || ''}" placeholder="Leave empty if not using basic auth">
-                        <small>Password for Spoolman basic authentication (optional)</small>
-                    </div>
-                    <div class="form-group">
                         <label><strong>Poll Interval (seconds):</strong></label>
                         <input type="number" id="poll_interval" value="${config.poll_interval || '30'}" min="10" max="300">
                         <small>How often to check printer status</small>
                     </div>
-                    <div style="margin-top: 20px; text-align: center;">
+                    <div style="margin-top: 20px; text-align: center; display: flex; gap: 10px; justify-content: center; align-items: center;">
+                        <button class="btn btn-secondary" onclick="testSpoolmanURL()">🔌 Test URL</button>
                         <button class="btn" onclick="saveConfiguration()">💾 Save Configuration</button>
+                        <span id="spoolman-test-result" style="font-size: 0.9em;"></span>
                     </div>
                 </div>
             `;
@@ -140,8 +132,6 @@ function loadConfiguration() {
 function saveConfiguration() {
     const config = {
         spoolman_url: document.getElementById('spoolman_url').value,
-        spoolman_username: document.getElementById('spoolman_username').value,
-        spoolman_password: document.getElementById('spoolman_password').value,
         poll_interval: document.getElementById('poll_interval').value
     };
 
@@ -161,6 +151,40 @@ function saveConfiguration() {
         })
         .catch(error => {
             alert('Error saving configuration: ' + error.message);
+        });
+}
+
+function testSpoolmanURL() {
+    const url = document.getElementById('spoolman_url').value.trim();
+    const resultEl = document.getElementById('spoolman-test-result');
+
+    if (!url) {
+        resultEl.style.color = '#f0a500';
+        resultEl.textContent = '⚠️ Enter a URL first';
+        return;
+    }
+
+    resultEl.style.color = '#aaa';
+    resultEl.textContent = 'Testing…';
+
+    fetch('/api/spoolman/test-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+    })
+        .then(response => response.json())
+        .then(data => {
+            if (data.connected) {
+                resultEl.style.color = '#4caf50';
+                resultEl.textContent = '✅ Connected';
+            } else {
+                resultEl.style.color = '#f44336';
+                resultEl.textContent = '❌ ' + (data.error || 'Connection failed');
+            }
+        })
+        .catch(error => {
+            resultEl.style.color = '#f44336';
+            resultEl.textContent = '❌ ' + error.message;
         });
 }
 

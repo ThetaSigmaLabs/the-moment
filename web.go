@@ -161,6 +161,7 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/map_toolhead", ws.mapToolheadHandler)
 		api.GET("/available_spools", ws.availableSpoolsHandler)
 		api.GET("/spoolman/test", ws.testSpoolmanConnectionHandler)
+		api.POST("/spoolman/test-url", ws.testSpoolmanURLHandler)
 		api.GET("/spoolman/debug", ws.debugSpoolmanHandler)
 		api.POST("/test/print_complete", ws.testPrintCompleteHandler)
 		api.GET("/config", ws.getConfigHandler)
@@ -204,6 +205,8 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/history/:id", ws.getHistoryEntryHandler)
 		api.PATCH("/history/:id/note", ws.updateHistoryNoteHandler)
 		api.DELETE("/history/:id", ws.deleteHistoryEntryHandler)
+		api.GET("/history/:id/tags", ws.getHistoryTagsHandler)
+		api.POST("/history/:id/tags", ws.setHistoryTagsHandler)
 
 		// Cost settings and calculation
 		api.GET("/cost-settings", ws.getCostSettingsHandler)
@@ -654,9 +657,6 @@ func (ws *WebServer) getConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	if config[ConfigKeySpoolmanPassword] != "" {
-		config[ConfigKeySpoolmanPassword] = maskedCredential
-	}
 	if config[ConfigKeyTheMomentAPIKey] != "" {
 		config[ConfigKeyTheMomentAPIKey] = maskedCredential
 	}
@@ -673,7 +673,7 @@ func (ws *WebServer) updateConfigHandler(c *gin.Context) {
 
 	// Update each config value, skipping credential sentinels (unchanged masked values)
 	for key, value := range config {
-		if value == maskedCredential && (key == ConfigKeySpoolmanPassword || key == ConfigKeyTheMomentAPIKey) {
+		if value == maskedCredential && key == ConfigKeyTheMomentAPIKey {
 			continue
 		}
 		if err := ws.bridge.SetConfigValue(key, value); err != nil {
@@ -1123,6 +1123,27 @@ func (ws *WebServer) testSpoolmanConnectionHandler(c *gin.Context) {
 		return
 	}
 
+	c.JSON(http.StatusOK, gin.H{"message": "Connection successful", "connected": true})
+}
+
+// testSpoolmanURLHandler tests a Spoolman connection using the provided URL (before saving)
+func (ws *WebServer) testSpoolmanURLHandler(c *gin.Context) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body", "connected": false})
+		return
+	}
+	if req.URL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url is required", "connected": false})
+		return
+	}
+	client := NewSpoolmanClient(req.URL, 10)
+	if err := client.TestConnection(); err != nil {
+		c.JSON(http.StatusOK, gin.H{"error": err.Error(), "connected": false})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "Connection successful", "connected": true})
 }
 
@@ -1861,6 +1882,43 @@ func (ws *WebServer) deleteHistoryEntryHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Record deleted"})
+}
+
+// getHistoryTagsHandler returns quality tags for a print history record.
+// GET /api/history/:id/tags
+func (ws *WebServer) getHistoryTagsHandler(c *gin.Context) {
+	var id int64
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	tags, err := ws.bridge.GetPrintQualityTags(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tags": tags})
+}
+
+// setHistoryTagsHandler replaces quality tags for a print history record.
+// POST /api/history/:id/tags
+func (ws *WebServer) setHistoryTagsHandler(c *gin.Context) {
+	var id int64
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var payload PrintTagsPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.SetPrintQualityTags(id, payload); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	tags, _ := ws.bridge.GetPrintQualityTags(id)
+	c.JSON(http.StatusOK, gin.H{"tags": tags})
 }
 
 // ─── Cost Settings & Calculation Handlers ────────────────────────────────────

@@ -6,7 +6,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,8 +19,6 @@ import (
 type SpoolmanClient struct {
 	baseURL    string
 	httpClient *http.Client
-	username   string
-	password   string
 }
 
 // GetBaseURL returns the Spoolman base URL
@@ -91,7 +88,7 @@ type SpoolmanError struct {
 }
 
 // NewSpoolmanClient creates a new Spoolman client
-func NewSpoolmanClient(baseURL string, timeout int, username, password string) *SpoolmanClient {
+func NewSpoolmanClient(baseURL string, timeout int) *SpoolmanClient {
 	return &SpoolmanClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
@@ -102,17 +99,6 @@ func NewSpoolmanClient(baseURL string, timeout int, username, password string) *
 				IdleConnTimeout:     30 * time.Second,
 			},
 		},
-		username: username,
-		password: password,
-	}
-}
-
-// addAuthHeader adds Basic Authentication header to the request if both username and password are provided
-func (c *SpoolmanClient) addAuthHeader(req *http.Request) {
-	if c.username != "" && c.password != "" {
-		auth := c.username + ":" + c.password
-		encoded := base64.StdEncoding.EncodeToString([]byte(auth))
-		req.Header.Set("Authorization", "Basic "+encoded)
 	}
 }
 
@@ -180,7 +166,6 @@ func (c *SpoolmanClient) GetAllSpools() ([]SpoolmanSpool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -234,7 +219,6 @@ func (c *SpoolmanClient) GetAllFilaments() ([]SpoolmanFilament, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -280,7 +264,6 @@ func (c *SpoolmanClient) UpdateSpool(spoolID int, data map[string]interface{}) e
 		return fmt.Errorf("error creating PUT request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -302,7 +285,6 @@ func (c *SpoolmanClient) UpdateSpoolUsage(spoolID int, filamentUsed float64) err
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -350,7 +332,6 @@ func (c *SpoolmanClient) TestConnection() error {
 	if err != nil {
 		return fmt.Errorf("error creating request: %w", err)
 	}
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -379,7 +360,6 @@ func (c *SpoolmanClient) GetLocations() ([]SpoolmanLocation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -510,7 +490,6 @@ func (c *SpoolmanClient) RenameLocation(oldName, newName string) error {
 		return fmt.Errorf("error creating PATCH request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -548,7 +527,6 @@ func (c *SpoolmanClient) UpdateLocation(locationID int, newName string) error {
 		return fmt.Errorf("error creating PATCH request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -580,7 +558,6 @@ func (c *SpoolmanClient) ArchiveLocation(locationID int) error {
 		return fmt.Errorf("error creating PATCH request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -638,7 +615,6 @@ func (c *SpoolmanClient) updateSpoolLocationText(spoolID int, locationName strin
 		return fmt.Errorf("error creating PATCH request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.addAuthHeader(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -691,7 +667,6 @@ func (c *SpoolmanClient) GetSpoolByID(spoolID int) (*SpoolmanSpool, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.addAuthHeader(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("getting spool %d: %w", spoolID, err)
@@ -746,7 +721,6 @@ func (c *SpoolmanClient) GetSpoolByNFCTag(nfcUUID string) (*SpoolmanSpool, error
 	if err != nil {
 		return nil, err
 	}
-	c.addAuthHeader(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching spools for NFC lookup: %w", err)
