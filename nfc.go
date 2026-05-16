@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -335,6 +336,62 @@ func (b *FilamentBridge) AssignSpoolToLocation(spoolID int, printerName string, 
 	}
 
 	return nil
+}
+
+// ─── NDEF tag generation ──────────────────────────────────────────────────────
+
+var nonAlphanumHyphen = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// PrinterSlug converts a printer name to a URL-safe slug.
+// Lowercases, replaces spaces with hyphens, strips non-alphanumeric characters.
+func PrinterSlug(name string) string {
+	s := strings.ToLower(name)
+	s = strings.ReplaceAll(s, " ", "-")
+	s = nonAlphanumHyphen.ReplaceAllString(s, "")
+	return s
+}
+
+// buildNDEFURI constructs a minimal NDEF message containing one Well-Known URI record.
+// The URI prefix 0x03 covers "http://" so only the remainder is stored in payload.
+func buildNDEFURI(uri string) ([]byte, error) {
+	const prefixCode = 0x03 // "http://"
+	const httpPrefix = "http://"
+
+	if !strings.HasPrefix(uri, httpPrefix) {
+		return nil, fmt.Errorf("URI must start with http://")
+	}
+	uriRemainder := []byte(uri[len(httpPrefix):])
+
+	// Payload = prefix byte + URI remainder
+	payload := append([]byte{prefixCode}, uriRemainder...)
+	payloadLen := len(payload)
+
+	if payloadLen > 255 {
+		return nil, fmt.Errorf("URI too long for short NDEF record (%d bytes)", payloadLen)
+	}
+
+	// NDEF short record: MB=1, ME=1, SR=1, TNF=0x01 (Well Known) → flags byte = 0xD1
+	// Byte layout: [flags] [type_length=1] [payload_length] [type='U'=0x55] [payload...]
+	record := make([]byte, 0, 4+payloadLen)
+	record = append(record, 0xD1)          // MB | ME | SR | TNF_WELL_KNOWN
+	record = append(record, 0x01)          // type length = 1
+	record = append(record, byte(payloadLen))
+	record = append(record, 0x55)          // type = 'U'
+	record = append(record, payload...)
+	return record, nil
+}
+
+// BuildSpoolTagNDEF builds a single NDEF URI record pointing to /nfc/s/{spoolID}.
+// Returns raw bytes suitable for NFC Tools "Write Dump".
+func BuildSpoolTagNDEF(spoolID int, host string) ([]byte, error) {
+	uri := fmt.Sprintf("http://%s/nfc/s/%d", host, spoolID)
+	return buildNDEFURI(uri)
+}
+
+// BuildLocationTagNDEF builds a single NDEF URI record pointing to /nfc/location/{slug}/{index}.
+func BuildLocationTagNDEF(printerSlug string, toolheadIndex int, host string) ([]byte, error) {
+	uri := fmt.Sprintf("http://%s/nfc/location/%s/%d", host, printerSlug, toolheadIndex)
+	return buildNDEFURI(uri)
 }
 
 // clearSpoolFromAllToolheads removes a spool from all toolhead mappings

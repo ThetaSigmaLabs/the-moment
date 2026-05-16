@@ -44,4 +44,16 @@ Thumbs.db
 # Data directories
 data/
 
+# Environment files (use .env.example as template)
+.env
 
+# Claude Code local settings
+.claude/
+
+# Build artifacts
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

@@ -43,7 +43,8 @@ type FilamentBridge struct {
 	monitoringActive map[string]bool       // Guard against overlapping monitor goroutines per printer
 	printErrors      map[string]PrintError // Store print processing errors
 	errorMutex       sync.RWMutex
-	previousState    map[string]string // Last seen printer state per printer
+	previousState    map[string]string    // Last seen printer state per printer
+	printStartTime   map[string]time.Time // When each printer's current job was first detected
 	mutex            sync.RWMutex
 }
 
@@ -232,6 +233,7 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		monitoringActive: make(map[string]bool),
 		printErrors:      make(map[string]PrintError),
 		previousState:    make(map[string]string),
+		printStartTime:   make(map[string]time.Time),
 	}
 
 	// Initialize database
@@ -257,6 +259,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migratePrinterCostSettings(); err != nil {
 		return nil, fmt.Errorf("failed to migrate printer cost settings: %w", err)
+	}
+
+	if err := bridge.migrateNFCAssignments(); err != nil {
+		return nil, fmt.Errorf("failed to migrate NFC assignments: %w", err)
 	}
 
 	// Update Spoolman URL and timeout if config is provided
@@ -512,6 +518,242 @@ func (b *FilamentBridge) migratePrinterCostSettings() error {
 			updated_at           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`)
 	return err
+}
+
+// migrateNFCAssignments creates tables for toolhead spool assignments and print spool events.
+func (b *FilamentBridge) migrateNFCAssignments() error {
+	tables := []string{
+		`CREATE TABLE IF NOT EXISTS toolhead_spool_assignments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			printer_id TEXT NOT NULL,
+			toolhead_index INTEGER NOT NULL,
+			spoolman_spool_id INTEGER NOT NULL,
+			assigned_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			unassigned_at DATETIME,
+			assignment_reason TEXT NOT NULL DEFAULT 'manual'
+		)`,
+		`CREATE TABLE IF NOT EXISTS print_spool_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			print_history_id INTEGER NOT NULL,
+			toolhead_index INTEGER NOT NULL,
+			old_spoolman_spool_id INTEGER,
+			new_spoolman_spool_id INTEGER NOT NULL,
+			event_type TEXT NOT NULL,
+			event_time DATETIME NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (print_history_id) REFERENCES print_history(id) ON DELETE CASCADE
+		)`,
+	}
+	for _, q := range tables {
+		if _, err := b.db.Exec(q); err != nil {
+			return fmt.Errorf("failed to create NFC assignment table: %w", err)
+		}
+	}
+	return nil
+}
+
+// ToolheadSpoolAssignment represents a spool-to-toolhead assignment record.
+type ToolheadSpoolAssignment struct {
+	ID               int
+	PrinterID        string
+	ToolheadIndex    int
+	SpoolmanSpoolID  int
+	AssignedAt       time.Time
+	UnassignedAt     *time.Time
+	AssignmentReason string
+}
+
+// PrintSpoolEvent represents a spool event tied to a print record.
+type PrintSpoolEvent struct {
+	ID                 int
+	PrintHistoryID     int
+	ToolheadIndex      int
+	OldSpoolmanSpoolID *int
+	NewSpoolmanSpoolID int
+	EventType          string
+	EventTime          time.Time
+}
+
+// GetCurrentAssignment returns the active assignment for a printer/toolhead slot, or nil if none.
+func (b *FilamentBridge) GetCurrentAssignment(printerID string, toolheadIndex int) (*ToolheadSpoolAssignment, error) {
+	row := b.db.QueryRow(`
+		SELECT id, printer_id, toolhead_index, spoolman_spool_id, assigned_at, assignment_reason
+		FROM toolhead_spool_assignments
+		WHERE printer_id = ? AND toolhead_index = ? AND unassigned_at IS NULL
+	`, printerID, toolheadIndex)
+
+	var a ToolheadSpoolAssignment
+	err := row.Scan(&a.ID, &a.PrinterID, &a.ToolheadIndex, &a.SpoolmanSpoolID, &a.AssignedAt, &a.AssignmentReason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("GetCurrentAssignment: %w", err)
+	}
+	return &a, nil
+}
+
+// GetAllCurrentAssignments returns all active assignments for a printer.
+func (b *FilamentBridge) GetAllCurrentAssignments(printerID string) ([]ToolheadSpoolAssignment, error) {
+	rows, err := b.db.Query(`
+		SELECT id, printer_id, toolhead_index, spoolman_spool_id, assigned_at, assignment_reason
+		FROM toolhead_spool_assignments
+		WHERE printer_id = ? AND unassigned_at IS NULL
+		ORDER BY toolhead_index
+	`, printerID)
+	if err != nil {
+		return nil, fmt.Errorf("GetAllCurrentAssignments: %w", err)
+	}
+	defer rows.Close()
+
+	var assignments []ToolheadSpoolAssignment
+	for rows.Next() {
+		var a ToolheadSpoolAssignment
+		if err := rows.Scan(&a.ID, &a.PrinterID, &a.ToolheadIndex, &a.SpoolmanSpoolID, &a.AssignedAt, &a.AssignmentReason); err != nil {
+			return nil, fmt.Errorf("GetAllCurrentAssignments scan: %w", err)
+		}
+		assignments = append(assignments, a)
+	}
+	return assignments, rows.Err()
+}
+
+// SetAssignment closes any existing open assignment for the slot, then inserts a new one.
+// assigned_at is stored as a Go time.Time so sub-second comparisons in
+// SnapshotAssignmentsForPrint are reliable (SQLite's datetime('now') has only
+// second precision and uses a different string format).
+func (b *FilamentBridge) SetAssignment(printerID string, toolheadIndex int, spoolmanSpoolID int, reason string) error {
+	if err := b.CloseAssignment(printerID, toolheadIndex); err != nil {
+		return err
+	}
+	_, err := b.db.Exec(`
+		INSERT INTO toolhead_spool_assignments
+			(printer_id, toolhead_index, spoolman_spool_id, assignment_reason, assigned_at)
+		VALUES (?, ?, ?, ?, ?)
+	`, printerID, toolheadIndex, spoolmanSpoolID, reason, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("SetAssignment insert: %w", err)
+	}
+	return nil
+}
+
+// CloseAssignment marks the active assignment for a slot as unassigned.
+func (b *FilamentBridge) CloseAssignment(printerID string, toolheadIndex int) error {
+	_, err := b.db.Exec(`
+		UPDATE toolhead_spool_assignments
+		SET unassigned_at = ?
+		WHERE printer_id = ? AND toolhead_index = ? AND unassigned_at IS NULL
+	`, time.Now().UTC(), printerID, toolheadIndex)
+	if err != nil {
+		return fmt.Errorf("CloseAssignment: %w", err)
+	}
+	return nil
+}
+
+// GetPrintSpoolEvents returns all spool events for a given print history ID.
+func (b *FilamentBridge) GetPrintSpoolEvents(printHistoryID int) ([]PrintSpoolEvent, error) {
+	rows, err := b.db.Query(`
+		SELECT id, print_history_id, toolhead_index, old_spoolman_spool_id, new_spoolman_spool_id, event_type, event_time
+		FROM print_spool_events
+		WHERE print_history_id = ?
+		ORDER BY event_time
+	`, printHistoryID)
+	if err != nil {
+		return nil, fmt.Errorf("GetPrintSpoolEvents: %w", err)
+	}
+	defer rows.Close()
+
+	var events []PrintSpoolEvent
+	for rows.Next() {
+		var e PrintSpoolEvent
+		var oldID sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.PrintHistoryID, &e.ToolheadIndex, &oldID, &e.NewSpoolmanSpoolID, &e.EventType, &e.EventTime); err != nil {
+			return nil, fmt.Errorf("GetPrintSpoolEvents scan: %w", err)
+		}
+		if oldID.Valid {
+			v := int(oldID.Int64)
+			e.OldSpoolmanSpoolID = &v
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// AddPrintSpoolEvent inserts a spool event for a print.
+func (b *FilamentBridge) AddPrintSpoolEvent(event PrintSpoolEvent) error {
+	_, err := b.db.Exec(`
+		INSERT INTO print_spool_events (print_history_id, toolhead_index, old_spoolman_spool_id, new_spoolman_spool_id, event_type)
+		VALUES (?, ?, ?, ?, ?)
+	`, event.PrintHistoryID, event.ToolheadIndex, event.OldSpoolmanSpoolID, event.NewSpoolmanSpoolID, event.EventType)
+	if err != nil {
+		return fmt.Errorf("AddPrintSpoolEvent: %w", err)
+	}
+	return nil
+}
+
+// SnapshotAssignmentsForPrint records spool assignments as 'start' events for a print
+// history record. atTime is the moment the print was first detected; assignments active
+// at that instant are captured. Pass a zero Time to snapshot current assignments instead
+// (used when the original start time is unavailable, e.g. retried G-code downloads).
+func (b *FilamentBridge) SnapshotAssignmentsForPrint(printHistoryID int, printerID string, atTime time.Time) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if atTime.IsZero() {
+		rows, err = b.db.Query(`
+			SELECT toolhead_index, spoolman_spool_id
+			FROM toolhead_spool_assignments
+			WHERE printer_id = ? AND unassigned_at IS NULL
+			ORDER BY toolhead_index
+		`, printerID)
+	} else {
+		// Use julianday() so SQLite compares as REAL (floating-point Julian day number)
+		// rather than as TEXT. Direct TEXT comparison of two same-format T+Z timestamps
+		// produces incorrect results in go-sqlite3 v1.14.x due to implicit type coercion
+		// with DATETIME (NUMERIC affinity) columns. julianday() parses the ISO 8601 string
+		// and returns a double — comparison is then precise and unambiguous.
+		atStr := atTime.UTC().Format(time.RFC3339Nano)
+		rows, err = b.db.Query(`
+			SELECT toolhead_index, spoolman_spool_id
+			FROM toolhead_spool_assignments
+			WHERE printer_id = ?
+			  AND julianday(assigned_at) <= julianday(?)
+			  AND (unassigned_at IS NULL OR julianday(unassigned_at) > julianday(?))
+			ORDER BY toolhead_index
+		`, printerID, atStr, atStr)
+	}
+	if err != nil {
+		return fmt.Errorf("SnapshotAssignmentsForPrint query: %w", err)
+	}
+
+	// Collect all rows before closing the cursor; inserting while a read cursor is
+	// open causes "database is locked" with SQLite's default journal mode.
+	type slot struct{ toolhead, spool int }
+	var slots []slot
+	for rows.Next() {
+		var s slot
+		if err := rows.Scan(&s.toolhead, &s.spool); err != nil {
+			rows.Close()
+			return fmt.Errorf("SnapshotAssignmentsForPrint scan: %w", err)
+		}
+		slots = append(slots, s)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("SnapshotAssignmentsForPrint rows.Close: %w", err)
+	}
+
+	for _, s := range slots {
+		event := PrintSpoolEvent{
+			PrintHistoryID:     printHistoryID,
+			ToolheadIndex:      s.toolhead,
+			OldSpoolmanSpoolID: nil,
+			NewSpoolmanSpoolID: s.spool,
+			EventType:          "start",
+		}
+		if err := b.AddPrintSpoolEvent(event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // migrateSessionSupport adds the session_id column to print_history and the
@@ -1274,9 +1516,10 @@ func (b *FilamentBridge) UnmapToolhead(printerName string, toolheadID int) error
 // LogPrintUsageFull is the full version with print time, status, thumbnail, session, and source.
 // source should be "prusalink", "virtual", or "octoprint".
 // Cost is automatically calculated and saved after the insert (outside the mutex).
+// Returns the new print_history row ID so callers can link spool events to it.
 func (b *FilamentBridge) LogPrintUsageFull(printerName string, toolheadID int, spoolID int,
 	filamentUsed float64, jobName string, printTimeMinutes float64, status string, thumbnailBase64 string,
-	sessionID string, source string) error {
+	sessionID string, source string) (int, error) {
 	b.mutex.Lock()
 
 	if status == "" {
@@ -1312,7 +1555,7 @@ func (b *FilamentBridge) LogPrintUsageFull(printerName string, toolheadID int, s
 	)
 	if err != nil {
 		b.mutex.Unlock()
-		return fmt.Errorf("failed to log print usage: %w", err)
+		return 0, fmt.Errorf("failed to log print usage: %w", err)
 	}
 	printID64, _ := res.LastInsertId()
 	log.Printf("📋 Logged print history: %s on %s (%.2fg, %.0fmin)",
@@ -1328,7 +1571,7 @@ func (b *FilamentBridge) LogPrintUsageFull(printerName string, toolheadID int, s
 		}
 	}
 
-	return nil
+	return int(printID64), nil
 }
 
 // MonitorPrinters monitors all printers for print status changes
@@ -1430,6 +1673,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		b.mutex.Lock()
 		if currentJobFilename != "" && storedJobFile == "" {
 			b.currentJobFile[printerID] = currentJobFilename
+			b.printStartTime[printerID] = time.Now()
 			log.Printf("📁 Stored job filename for %s (%s): %s", config.IPAddress, printerID, currentJobFilename)
 		}
 		b.wasPrinting[printerID] = true
@@ -1476,7 +1720,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.previousState[printerID] = currentState
 			b.mutex.Unlock()
 
-			err := b.handlePrusaLinkPrintFinished(config, filenameToUse)
+			err := b.handlePrusaLinkPrintFinished(printerID, config, filenameToUse)
 
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
@@ -1515,7 +1759,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.previousState[printerID] = currentState
 			b.mutex.Unlock()
 
-			err := b.handlePrusaLinkPrintCancelled(config, filenameToUse, printProgress)
+			err := b.handlePrusaLinkPrintCancelled(printerID, config, filenameToUse, printProgress)
 
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
@@ -1544,7 +1788,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 
 // handlePrusaLinkPrintCancelled handles a cancelled print by computing partial filament usage.
 // It downloads the G-code, gets the full usage from metadata, then scales by the print progress %.
-func (b *FilamentBridge) handlePrusaLinkPrintCancelled(config PrinterConfig, filename string, progressPct float64) error {
+func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config PrinterConfig, filename string, progressPct float64) error {
 	printerName := resolvePrinterName(config)
 
 	if filename == "" {
@@ -1599,18 +1843,31 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(config PrinterConfig, fil
 		return err
 	}
 
+	b.mutex.RLock()
+	startTime := b.printStartTime[printerID]
+	b.mutex.RUnlock()
+
 	_, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
 	sessionID := newSessionID()
+	var firstPrintID int
 	for toolheadID, usedG := range partialUsage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
-		_ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename+" [CANCELLED]",
+		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename+" [CANCELLED]",
 			0, "cancelled", thumbnailB64, sessionID, "prusalink")
+		if firstPrintID == 0 && printID > 0 {
+			firstPrintID = printID
+		}
+	}
+	if firstPrintID > 0 {
+		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
+			log.Printf("Warning: failed to snapshot NFC assignments for cancelled print %d: %v", firstPrintID, err)
+		}
 	}
 
 	return nil
 }
 
-func (b *FilamentBridge) handlePrusaLinkPrintFinished(config PrinterConfig, filename string) error {
+func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config PrinterConfig, filename string) error {
 	log.Printf("Print finished via PrusaLink (%s): %s", config.IPAddress, filename)
 
 	printerName := resolvePrinterName(config)
@@ -1666,11 +1923,24 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(config PrinterConfig, file
 		return err
 	}
 
+	b.mutex.RLock()
+	startTime := b.printStartTime[printerID]
+	b.mutex.RUnlock()
+
 	sessionID := newSessionID()
+	var firstPrintID int
 	for toolheadID, usedG := range filamentUsage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
-		_ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename,
+		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename,
 			printTimeMin, "completed", thumbnailB64, sessionID, "prusalink")
+		if firstPrintID == 0 && printID > 0 {
+			firstPrintID = printID
+		}
+	}
+	if firstPrintID > 0 {
+		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
+			log.Printf("Warning: failed to snapshot NFC assignments for print %d: %v", firstPrintID, err)
+		}
 	}
 
 	return nil
@@ -2134,7 +2404,7 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 		sessionID := newSessionID()
 		for toolheadID, usedG := range filamentUsage {
 			spoolID, _ := b.GetToolheadMapping(d.printerName, toolheadID)
-			_ = b.LogPrintUsageFull(d.printerName, toolheadID, spoolID, usedG, jobName,
+			_, _ = b.LogPrintUsageFull(d.printerName, toolheadID, spoolID, usedG, jobName,
 				printTimeMin, status, thumbnailB64, sessionID, "prusalink")
 		}
 
@@ -2344,7 +2614,7 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 	sessionID := newSessionID()
 	for toolheadID, usedG := range usage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
-		_ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
+		_, _ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "virtual")
 	}
 
@@ -2830,6 +3100,10 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 		if err := b.SavePrintCost(printID, bd); err != nil {
 			log.Printf("Warning: failed to save cost for octoprint record %d: %v", printID, err)
 		}
+	}
+
+	if err := b.SnapshotAssignmentsForPrint(printID, p.PrinterID, p.StartedAt); err != nil {
+		log.Printf("Warning: failed to snapshot NFC assignments for OctoPrint print %d: %v", printID, err)
 	}
 
 	log.Printf("📋 OctoPrint record logged: %s on %s (%.2fg, %.0fmin, %s)",

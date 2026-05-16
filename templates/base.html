@@ -38,8 +38,8 @@
         <div class="content">
             <!-- Tab Navigation -->
             <ul class="tabs">
-                <li><button class="tab active" onclick="switchTab('status')">📊 Filament Status</button></li>
-                <li><button class="tab" onclick="switchTab('history')">🗂️ Print History</button></li>
+                <li><button class="tab active" onclick="switchTab('history')">🗂️ Print History</button></li>
+                <li><button class="tab" onclick="switchTab('status')">📊 Filament Status</button></li>
                 <li><button class="tab" onclick="switchTab('nfc')">📱 NFC Management</button></li>
                 <li><button class="tab" onclick="switchTab('settings')">⚙️ Settings</button></li>
             </ul>
@@ -51,12 +51,12 @@
     {{template "modals" .}}
 
     <!-- External JavaScript Files -->
-    <script src="/static/js/main.js"></script>
-    <script src="/static/js/history.js"></script>
-    <script src="/static/js/cost-calculator.js"></script>
-    <script src="/static/js/dropdowns.js"></script>
-    <script src="/static/js/printers.js"></script>
-    <script src="/static/js/websocket.js"></script>
-    <script src="/static/js/nfc.js"></script>
+    <script src="/static/js/main.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/history.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/cost-calculator.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/dropdowns.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/printers.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/websocket.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/nfc.js?v={{.AppVersion}}"></script>
 </body>
 </html>

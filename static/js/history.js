@@ -738,6 +738,8 @@ function saveHistoryTags() {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', function() {
+    loadHistory();
+
     var tabs = document.querySelectorAll('.tab');
     tabs.forEach(function(btn) {
         btn.addEventListener('click', function() {

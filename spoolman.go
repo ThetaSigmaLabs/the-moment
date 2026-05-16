@@ -748,6 +748,168 @@ func (c *SpoolmanClient) GetSpoolByNFCTag(nfcUUID string) (*SpoolmanSpool, error
 	return nil, nil // not found
 }
 
+// GetSpoolExtraField reads a custom field value from a spool's Extra map.
+// Returns empty string if the field is absent or not a string.
+func GetSpoolExtraField(spool SpoolmanSpool, fieldKey string) string {
+	if spool.Extra == nil {
+		return ""
+	}
+	v, ok := spool.Extra[fieldKey]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	return s
+}
+
+// SetSpoolExtraField writes a custom field value to a spool via Spoolman PATCH.
+// Per Spoolman's API, the value must be JSON-encoded inside the JSON body.
+func (c *SpoolmanClient) SetSpoolExtraField(spoolID int, fieldKey string, value string) error {
+	extraValue, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshaling extra field value: %w", err)
+	}
+	body := map[string]interface{}{
+		"extra": map[string]string{
+			fieldKey: string(extraValue),
+		},
+	}
+	return c.UpdateSpool(spoolID, body)
+}
+
+// SpoolmanFieldCreate is the request body for creating a Spoolman custom field.
+type SpoolmanFieldCreate struct {
+	Name         string `json:"name"`
+	FieldType    string `json:"field_type"`
+	DefaultValue string `json:"default_value"`
+}
+
+// SpoolmanFieldStatus tracks the result of an EnsureSpoolmanFields check.
+type SpoolmanFieldStatus struct {
+	Key    string
+	Entity string // "spool" or "filament"
+}
+
+// requiredSpoolmanFields lists all NFC custom fields the app needs in Spoolman.
+var requiredSpoolmanFields = []struct {
+	Key          string
+	Name         string
+	FieldType    string
+	DefaultValue string
+	Entity       string
+}{
+	{"nfc_material_class", "NFC Material Class", "text", `""`, "filament"},
+	{"nfc_min_print_temp", "NFC Min Print Temp", "integer", "0", "filament"},
+	{"nfc_max_print_temp", "NFC Max Print Temp", "integer", "0", "filament"},
+	{"nfc_min_bed_temp", "NFC Min Bed Temp", "integer", "0", "filament"},
+	{"nfc_max_bed_temp", "NFC Max Bed Temp", "integer", "0", "filament"},
+	{"nfc_country_of_origin", "NFC Country of Origin", "text", `""`, "filament"},
+	{"nfc_material_properties", "NFC Material Properties", "text", `""`, "filament"},
+	{"nfc_transmission_distance", "NFC Transmission Distance", "float", "0.0", "filament"},
+	{"nfc_nominal_length", "NFC Nominal Length", "integer", "0", "filament"},
+	{"nfc_spool_uuid", "NFC Spool UUID", "text", `""`, "spool"},
+	{"nfc_actual_weight", "NFC Actual Weight", "float", "0.0", "spool"},
+	{"nfc_manufacturing_date", "NFC Manufacturing Date", "text", `""`, "spool"},
+	{"nfc_expiration_date", "NFC Expiration Date", "text", `""`, "spool"},
+}
+
+// EnsureSpoolmanFields checks and creates all required NFC custom fields in Spoolman.
+// Returns created fields, already-existing fields, and failed fields.
+func (c *SpoolmanClient) EnsureSpoolmanFields() (created, existed, failed []SpoolmanFieldStatus) {
+	for _, f := range requiredSpoolmanFields {
+		status := SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity}
+
+		checkURL := fmt.Sprintf("%s/api/v1/field/%s/%s", c.baseURL, f.Entity, f.Key)
+		checkReq, err := http.NewRequest("GET", checkURL, nil)
+		if err != nil {
+			log.Printf("NFC field check: error building request for %s/%s: %v", f.Entity, f.Key, err)
+			failed = append(failed, status)
+			continue
+		}
+		checkResp, err := c.httpClient.Do(checkReq)
+		if err != nil {
+			log.Printf("NFC field check: error checking %s/%s: %v", f.Entity, f.Key, err)
+			failed = append(failed, status)
+			continue
+		}
+		checkResp.Body.Close()
+
+		if checkResp.StatusCode == http.StatusOK {
+			existed = append(existed, status)
+			continue
+		}
+
+		if checkResp.StatusCode != http.StatusNotFound {
+			log.Printf("NFC field check: unexpected status %d for %s/%s", checkResp.StatusCode, f.Entity, f.Key)
+			failed = append(failed, status)
+			continue
+		}
+
+		// Field does not exist — create it.
+		fieldBody := SpoolmanFieldCreate{
+			Name:         f.Name,
+			FieldType:    f.FieldType,
+			DefaultValue: f.DefaultValue,
+		}
+		bodyBytes, err := json.Marshal(fieldBody)
+		if err != nil {
+			log.Printf("NFC field create: marshal error for %s/%s: %v", f.Entity, f.Key, err)
+			failed = append(failed, status)
+			continue
+		}
+
+		createURL := fmt.Sprintf("%s/api/v1/field/%s/%s", c.baseURL, f.Entity, f.Key)
+		createReq, err := http.NewRequest("POST", createURL, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			log.Printf("NFC field create: error building request for %s/%s: %v", f.Entity, f.Key, err)
+			failed = append(failed, status)
+			continue
+		}
+		createReq.Header.Set("Content-Type", "application/json")
+
+		createResp, err := c.httpClient.Do(createReq)
+		if err != nil {
+			log.Printf("NFC field create: error creating %s/%s: %v", f.Entity, f.Key, err)
+			failed = append(failed, status)
+			continue
+		}
+		createResp.Body.Close()
+
+		if createResp.StatusCode == http.StatusCreated || createResp.StatusCode == http.StatusConflict {
+			created = append(created, status)
+		} else {
+			log.Printf("NFC field create: unexpected status %d for %s/%s", createResp.StatusCode, f.Entity, f.Key)
+			failed = append(failed, status)
+		}
+	}
+	return created, existed, failed
+}
+
+// GetSpoolmanSetupStatus checks whether all required NFC custom fields exist in Spoolman.
+func (c *SpoolmanClient) GetSpoolmanSetupStatus() (ok bool, missing []SpoolmanFieldStatus) {
+	for _, f := range requiredSpoolmanFields {
+		checkURL := fmt.Sprintf("%s/api/v1/field/%s/%s", c.baseURL, f.Entity, f.Key)
+		req, err := http.NewRequest("GET", checkURL, nil)
+		if err != nil {
+			missing = append(missing, SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity})
+			continue
+		}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			missing = append(missing, SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity})
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			missing = append(missing, SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity})
+		}
+	}
+	return len(missing) == 0, missing
+}
+
 // SubtractSpoolUsage reduces a spool's used_weight by the given amount.
 // The used_weight will not go below zero.
 func (c *SpoolmanClient) SubtractSpoolUsage(spoolID int, grams float64) error {

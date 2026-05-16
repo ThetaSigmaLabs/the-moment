@@ -70,6 +70,19 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	// Auto-register Spoolman custom fields needed for NFC workflow
+	go func() {
+		time.Sleep(2 * time.Second) // let Spoolman finish starting
+		created, existed, failed := bridge.spoolman.EnsureSpoolmanFields()
+		if len(created) > 0 {
+			log.Printf("NFC: created %d Spoolman custom field(s)", len(created))
+		}
+		if len(failed) > 0 {
+			log.Printf("NFC: failed to create %d Spoolman custom field(s) — NFC tab will show setup warning", len(failed))
+		}
+		_ = existed
+	}()
+
 	// Start NFC session cleanup background task
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute) // Clean up every minute

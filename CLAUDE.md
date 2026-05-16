@@ -27,7 +27,7 @@ This document describes the **NFC & Spoolman spool workflow** to be implemented.
 ## Printer Inventory
 
 | Printer | Interface | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Ender 3 V3 SE | OctoPrint | Marlin-based, single toolhead |
 | Prusa CORE One L | PrusaLink + PrusaConnect | Single toolhead, NFC reader coming in 2026 |
 | INDX 8-head (future) | TBD | Multi-toolhead, pre-mapped |
@@ -46,7 +46,7 @@ This document describes the **NFC & Spoolman spool workflow** to be implemented.
 
 ## Existing Codebase Structure (relevant files)
 
-```
+```text
 main.go                 — app entry point, Gin router setup
 config.go               — printer config load/save, LoadConfig, DeletePrinterConfig
 cost.go                 — CostSettings, CostBreakdown, cost API routes
@@ -85,12 +85,14 @@ Spoolman holds all filament and spool data, including OpenPrintTag-compatible fi
 These are small stickers placed at each printer toolhead position. They contain one NDEF URL record.
 
 **URL format:**
-```
+
+```text
 http://{MOMENT_HOST}/nfc/location/{printer-slug}/{toolhead-index}
 ```
 
 **Examples:**
-```
+
+```text
 http://192.168.1.50:8080/nfc/location/core-one-l/0
 http://192.168.1.50:8080/nfc/location/ender3/0
 ```
@@ -102,12 +104,14 @@ When scanned, the iPhone browser opens The Moment's web UI pre-set to assign a s
 These are stickers on physical filament spools. They contain **one NDEF URI record** pointing to The Moment.
 
 **URL format:**
-```
+
+```text
 http://{MOMENT_HOST}/nfc/spool/{spoolman-spool-id}
 ```
 
 **Example:**
-```
+
+```text
 http://192.168.1.50:8080/nfc/spool/42
 ```
 
@@ -126,6 +130,7 @@ When an iPhone scans a spool tag, the browser opens The Moment's spool assignmen
 URL-based NDEF tag binary generation. **No CBOR in Phase 1.**
 
 **Responsibilities:**
+
 - `BuildSpoolTagNDEF(spoolID int, host string) ([]byte, error)` — builds a single URI NDEF record pointing to `/nfc/spool/{spoolID}` as raw bytes suitable for NFC Tools "Write Dump"
 - `BuildLocationTagNDEF(printerSlug string, toolheadIndex int, host string) ([]byte, error)` — builds a single URI NDEF record pointing to `/nfc/location/{slug}/{index}`
 - `PrinterSlug(name string) string` — converts printer name to URL-safe slug (lowercase, spaces → hyphens, strip non-alphanumeric)
@@ -133,6 +138,7 @@ URL-based NDEF tag binary generation. **No CBOR in Phase 1.**
 **NDEF URI record format:**
 
 An NDEF URI record for `http://` URLs uses:
+
 - TNF: `0x03` (Absolute URI) or `0x01` (Well Known) with RTD `"U"` and URI prefix code `0x03` for `http://`
 - Use the Well Known + URI prefix approach for compactness
 
@@ -148,7 +154,7 @@ HTTP handlers for all NFC-related endpoints. Register these in `main.go`.
 
 **API endpoints (JSON):**
 
-```
+```text
 GET  /api/nfc/spool-tag/:spoolman_id
      → Generates and returns a URL-only NDEF .bin file for a spool tag
      → Sets Content-Disposition: attachment; filename="spool-{id}.bin"
@@ -194,7 +200,7 @@ POST /api/nfc/prints/:print_history_id/spool-swap
 
 **Web pages (HTML — served by Gin, open in iPhone browser via NFC scan):**
 
-```
+```text
 GET  /nfc/location/:printer_slug/:toolhead_index
      → Renders a mobile-optimised HTML page
      → Shows: "Assigning Toolhead {index} on {printer name}"
@@ -277,6 +283,7 @@ func SetSpoolExtraField(spoolID int, fieldKey string, value string) error
 ```
 
 **SpoolmanSpool struct** must include:
+
 ```go
 type SpoolmanSpool struct {
     ID             int                    `json:"id"`
@@ -343,7 +350,7 @@ The Moment needs these Spoolman custom fields to exist before the NFC workflow f
 
 #### API Endpoints
 
-```
+```text
 GET /api/nfc/spoolman-setup-status
     → Checks whether all required custom fields exist in Spoolman
     → Returns: {ok: bool, missing: [{key, entity}]}
@@ -361,7 +368,7 @@ This function runs before the HTTP server starts accepting requests. It calls `G
 
 Algorithm for each required field:
 
-```
+```text
 1. GET {SPOOLMAN_URL}/api/v1/field/{entity_type}/{field_key}
    - HTTP 200 → field exists, skip
    - HTTP 404 → field missing, proceed to step 2
@@ -384,7 +391,7 @@ Algorithm for each required field:
 **Body fields:**
 
 | Field | Required | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `name` | yes | Display name shown in Spoolman UI |
 | `field_type` | yes | `"text"`, `"integer"`, `"float"` confirmed. `"boolean"` likely exists but unconfirmed — test against your instance before using |
 | `default_value` | yes | **Must be JSON-encoded inside the JSON body.** See encoding rules below |
@@ -438,7 +445,7 @@ field := SpoolmanFieldCreate{
 
 **Setting a custom field value on an existing spool or filament:**
 
-```
+```text
 PATCH /api/v1/spool/{id}
 Body: {"extra": {"nfc_spool_uuid": "\"some-uuid-value\""}}
 ```
@@ -459,7 +466,7 @@ body := map[string]interface{}{
 #### Required Spoolman Custom Fields
 
 | Key | Display Name | Type | Entity | Default | Description |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | `nfc_material_class` | NFC Material Class | text | Filament | `""` | `"FFF"` or `"SLA"` |
 | `nfc_min_print_temp` | NFC Min Print Temp | integer | Filament | `0` | Min nozzle °C |
 | `nfc_max_print_temp` | NFC Max Print Temp | integer | Filament | `0` | Max nozzle °C |
@@ -540,20 +547,23 @@ These curl commands are also useful for testing The Moment's setup logic — run
 
 Add a new tab to the main dashboard. It contains three sections:
 
-**Section 1: Spoolman Spool List**
+#### Section 1: Spoolman Spool List
+
 - Table: Spool ID, Filament Name, Vendor, Material, Colour (swatch), Remaining Weight, UUID, Actions
 - Actions per row: "Generate Spool Tag" (downloads `.bin`), "View in Spoolman" (external link)
 - Filter/search by material, vendor
 - Shows setup warning if Spoolman custom fields are not created
 
-**Section 2: Current Toolhead Assignments**
+#### Section 2: Current Toolhead Assignments
+
 - One card per printer
 - Each card shows toolhead slots with current spool assignment (name + colour swatch) or "Empty"
 - "Assign" button per slot → opens assignment modal (spool picker)
 - "Generate Location Tag" button per slot (downloads `.bin`)
 - Real-time update via WebSocket when assignments change
 
-**Section 3: Spool Assignment History**
+#### Section 3: Spool Assignment History
+
 - Recent assignment/swap log: when, which printer, which toolhead, which spool, reason
 
 ---
@@ -564,7 +574,7 @@ These pages are opened when an iPhone scans a tag. Keep them simple — minimal 
 
 **`/nfc/location/:printer_slug/:toolhead_index`**
 
-```
+```text
 ┌─────────────────────────────┐
 │  🖨 Core One L              │
 │  Toolhead 0                  │
@@ -586,7 +596,7 @@ Tapping a spool POSTs the assignment and shows a success screen.
 
 **`/nfc/spool/:spoolman_id`**
 
-```
+```text
 ┌─────────────────────────────┐
 │  🟠 Prusament PLA Orange    │
 │  743g remaining              │
@@ -605,7 +615,7 @@ Tapping a spool POSTs the assignment and shows a success screen.
 
 ### Go Module Dependencies to Add
 
-```
+```text
 github.com/google/uuid   — UUID v4 generation for nfc_spool_uuid
 ```
 
@@ -620,6 +630,7 @@ Check `go.mod` first — `github.com/google/uuid` may already be present.
 These patterns are already established in the codebase. Follow them exactly.
 
 **Error handling:**
+
 ```go
 if err != nil {
     c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -636,6 +647,20 @@ if err != nil {
 **WebSocket broadcast:** Use the existing WebSocket hub to push real-time updates to the frontend when assignments change.
 
 **Printer slug:** Derive from printer name — lowercase, spaces replaced with hyphens, non-alphanumeric characters removed. Add a helper `PrinterSlug(name string) string`.
+
+**SQLite DATETIME timestamp comparisons — use `julianday()`:** `DATETIME` columns have NUMERIC affinity. Direct TEXT comparison of two same-format ISO 8601 timestamps (e.g. `"2026-05-16T12:14:05.321069Z"`) produces incorrect results with go-sqlite3 v1.14.x — all rows evaluate as `<= pivot` regardless of actual value. Always wrap both sides in `julianday()` for any WHERE clause that compares stored timestamps:
+
+```sql
+-- WRONG — broken with go-sqlite3 DATETIME columns
+AND assigned_at <= ?
+AND (unassigned_at IS NULL OR unassigned_at > ?)
+
+-- CORRECT
+AND julianday(assigned_at) <= julianday(?)
+AND (unassigned_at IS NULL OR julianday(unassigned_at) > julianday(?))
+```
+
+Pass the parameter as `atTime.UTC().Format(time.RFC3339Nano)`. SQLite's `julianday()` accepts the `Z` UTC suffix. This applies to any new query comparing `assigned_at`, `unassigned_at`, or any other `DATETIME` column against a Go `time.Time`-derived value.
 
 ---
 
@@ -715,12 +740,14 @@ Until INBXX Semi-Smart V2 ships, all tag reading and writing happens via iPhone.
 **Tag hardware:** Replace NTAG213 spool tags with ICODE SLIX2 (ISO 15693 / NFC-V). These have a longer read range (needed for hardware readers to detect spools without precise alignment) and are the tag type INBXX will target.
 
 **Tag format:** Spool tags gain a second NDEF record. The message becomes:
+
 - Record 1: MIME type `application/vnd.openprinttag`, payload = OpenPrintTag CBOR binary
 - Record 2: URI → `http://{MOMENT_HOST}/nfc/spool/{spoolman-spool-id}` (unchanged from Phase 1)
 
 Location tags remain NTAG213 URL-only — INBXX does not read location tags.
 
 **New work in `nfc.go`:**
+
 - `SpoolToOpenPrintTag(spool SpoolmanSpool) (OpenPrintTagData, error)` — maps Spoolman spool + `nfc_*` custom fields to OpenPrintTag data structure
 - `EncodeOpenPrintTagCBOR(data OpenPrintTagData) ([]byte, error)` — encodes as CBOR per spec
 - Update `BuildSpoolTagNDEF` to accept optional CBOR bytes and produce a dual-record message
@@ -730,7 +757,7 @@ Location tags remain NTAG213 URL-only — INBXX does not read location tags.
 **OpenPrintTag field mapping** (Spoolman → CBOR):
 
 | OpenPrintTag Field | Source |
-|---|---|
+| --- | --- |
 | `materialName` | `filament.name` |
 | `brandName` | `filament.vendor.name` |
 | `materialType` | `filament.material` (integer enum per spec) |
@@ -753,12 +780,14 @@ Location tags remain NTAG213 URL-only — INBXX does not read location tags.
 | `materialProperties` | custom field `nfc_material_properties` (JSON array) |
 
 **Data flow when INBXX reads a tag:**
+
 1. INBXX reads CBOR record → extracts `nfc_spool_uuid`
 2. INBXX calls Spoolman `GET /api/v1/spool?extra[nfc_spool_uuid]={uuid}` to find the spool
 3. INBXX sets that spool as active for the slot that was scanned
 4. The Moment reads the active assignment from Spoolman when a print starts
 
 Alternatively (Option B — more control):
+
 1. INBXX POSTs to The Moment's `/api/nfc/inbxx-scan` webhook with slot number and UUID
 2. The Moment maps the INBXX slot to a toolhead index and updates assignments directly
 

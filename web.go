@@ -148,6 +148,9 @@ func (ws *WebServer) setupRoutes() {
 
 	// Browser pages for NFC spool-UUID (OpenPrintTag) workflow — mobile-friendly
 	ws.router.GET("/nfc/spool/:uuid", ws.nfcSpoolScanHandler)
+	// NFC Phase 1 — ID-based mobile pages
+	ws.router.GET("/nfc/location/:printer_slug/:toolhead_index", ws.nfcLocationPageHandler)
+	ws.router.GET("/nfc/s/:spoolman_id", ws.nfcSpoolIDPageHandler)
 	ws.router.POST("/nfc/spool/:uuid/assign", ws.nfcSpoolAssignHandler)
 	ws.router.GET("/nfc/spool/:uuid/displaced", ws.nfcSpoolDisplacedHandler)
 	ws.router.POST("/nfc/spool/:uuid/complete", ws.nfcSpoolCompleteHandler)
@@ -226,6 +229,20 @@ func (ws *WebServer) setupRoutes() {
 		api.DELETE("/nfc/spool/:id/tag", ws.nfcRemoveTagHandler)
 		api.GET("/nfc/config", ws.nfcConfigHandler)
 		api.POST("/nfc/config", ws.nfcSaveConfigHandler)
+
+		// NFC Phase 1 — toolhead spool assignments
+		api.GET("/nfc/spool-tag/:spoolman_id", ws.nfcSpoolTagHandler)
+		api.GET("/nfc/location-tag/:printer_slug/:toolhead_index", ws.nfcLocationTagHandler)
+		api.GET("/nfc/spools", ws.nfcSpoolsHandler)
+		api.GET("/nfc/spools/:spoolman_id", ws.nfcSpoolDetailHandler)
+		api.PATCH("/nfc/spools/:spoolman_id/use", ws.nfcSpoolUseHandler)
+		api.GET("/nfc/assignments", ws.nfcAssignmentsHandler)
+		api.POST("/nfc/assignments", ws.nfcCreateAssignmentHandler)
+		api.DELETE("/nfc/assignments/:printer_id/:toolhead_index", ws.nfcDeleteAssignmentHandler)
+		api.GET("/nfc/prints/:print_history_id/spool-events", ws.nfcSpoolEventsHandler)
+		api.POST("/nfc/prints/:print_history_id/spool-swap", ws.nfcSpoolSwapHandler)
+		api.GET("/nfc/spoolman-setup-status", ws.nfcSetupStatusHandler)
+		api.POST("/nfc/spoolman-setup", ws.nfcSetupHandler)
 
 		// Post-print spool segment reassignment
 		api.POST("/prints/:id/filament/:segment_id/reassign", ws.reassignFilamentHandler)

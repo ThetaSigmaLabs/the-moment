@@ -5,7 +5,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN_DIR="$REPO_ROOT/octoprint-plugin"
-OUT="$REPO_ROOT/octoprint-the-moment.zip"
+OUT="$REPO_ROOT/.dev/octoprint-the-moment.zip"
 
 rm -f "$OUT"
 

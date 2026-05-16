@@ -191,7 +191,7 @@ All configuration lives in the SQLite database. For Docker, set `THE_MOMENT_DB_P
 ### Web Interface Tabs
 
 | Tab | Description |
-|-----|-------------|
+| --- | --- |
 | **Dashboard** | Live printer status, current jobs, toolhead spool assignments |
 | **Filament Status** | Assign spools to toolheads; smart search by name, material, brand |
 | **History** | Full print history with cost breakdown, notes, thumbnails; grouped by session |
@@ -238,7 +238,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Printers & Config
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `GET` | `/api/status` | Current printer status and spool mappings |
 | `GET` | `/api/printers` | List all configured printers |
 | `POST` | `/api/printers` | Add a printer |
@@ -254,7 +254,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Virtual Printer Files
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `GET` | `/api/printers/:id/files` | List uploaded G-code files |
 | `POST` | `/api/printers/:id/files` | Upload a G-code file |
 | `DELETE` | `/api/printers/:id/files/:file_id` | Delete a file |
@@ -264,7 +264,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Filament & Spools
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `GET` | `/api/spools` | All spools from Spoolman |
 | `GET` | `/api/filaments` | All filament types from Spoolman |
 | `GET` | `/api/available_spools` | Spools available for a toolhead |
@@ -275,7 +275,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### History & Sessions
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `GET` | `/api/history` | Full print history (flat, newest first) |
 | `GET` | `/api/history/:id` | Single history entry with filament usage breakdown |
 | `PATCH` | `/api/history/:id/note` | Add or update a note on a history entry |
@@ -285,7 +285,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Cost
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `GET` | `/api/cost-settings` | Get global cost settings |
 | `POST` | `/api/cost-settings` | Save global cost settings |
 | `GET` | `/api/cost-settings/printers` | Get all per-printer overrides |
@@ -296,13 +296,13 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### OctoPrint Integration
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `POST` | `/api/prints` | Receive a print record from the OctoPrint plugin |
 
 ### Print Errors, NFC & Locations
 
 | Method | Endpoint | Description |
-|--------|----------|-------------|
+| --- | --- | --- |
 | `GET` | `/api/print-errors` | Unacknowledged print errors |
 | `POST` | `/api/print-errors/:id/acknowledge` | Acknowledge a print error |
 | `GET` | `/api/nfc/assign` | Handle NFC tag scan |
@@ -318,24 +318,33 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 
 ```text
 the-moment/
-├── main.go                          # Entry point, CLI flags
+├── main.go                          # Entry point, CLI flags, startup goroutines
 ├── bridge.go                        # Core monitoring, DB, business logic
+├── web.go                           # HTTP server, all route handlers
+├── nfc.go                           # NFC NDEF binary generation, session management
+├── nfc_routes.go                    # HTTP handlers for NFC/spool assignment API
+├── spoolman.go                      # Spoolman API client
+├── prusalink.go                     # PrusaLink API client
 ├── cost.go                          # Cost calculation and per-printer overrides
 ├── config.go                        # Configuration management
 ├── constants.go                     # Application constants
-├── nfc.go                           # NFC session management and tag handling
-├── prusalink.go                     # PrusaLink API client
-├── spoolman.go                      # Spoolman API client
-├── web.go                           # HTTP server, all route handlers
-├── templates/                       # HTML templates (dashboard, history, settings, …)
+├── version.go                       # Version string
+├── templates/                       # HTML templates (dashboard, history, settings, NFC pages)
 ├── static/                          # CSS, JS, images
 │   └── js/
 │       ├── cost-calculator.js       # Cost settings UI and quick calculator
-│       └── history.js               # Print history and session grouping UI
+│       ├── history.js               # Print history and session grouping UI
+│       └── nfc.js                   # NFC & spool assignment UI
 ├── octoprint-plugin/                # OctoPrint plugin source
 │   └── octoprint_the_moment/
 │       └── __init__.py
-├── *_test.go                        # Unit and integration tests
+├── scripts/                         # Developer and packaging scripts
+│   ├── package-octoprint-plugin.sh  # Packages the OctoPrint plugin as an installable zip
+│   └── test_stack.sh                # Starts the full test stack (Spoolman + The Moment)
+├── contrib/                         # Contributed configs for related tools
+│   └── moonraker_spoolman.cfg       # Moonraker macro for Spoolman filament tracking
+├── *_test.go                        # Unit tests (go test ./...)
+├── *_integration_test.go            # Integration tests (go test -tags=integration ./...)
 └── README.md
 ```
 

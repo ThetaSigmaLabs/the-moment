@@ -17,7 +17,6 @@ package main
 // =============================================================================
 
 import (
-	"math"
 	"testing"
 	"time"
 )
@@ -509,6 +508,3 @@ func testBridge(t *testing.T) *FilamentBridge {
 	t.Cleanup(func() { bridge.Close() })
 	return bridge
 }
-
-// roundTo4 rounds to 4 decimal places — matches assembleCostBreakdown rounding.
-func roundTo4(v float64) float64 { return math.Round(v*10000) / 10000 }

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Assign Spool — The Moment</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 16px;
+            color: #f0f0f0;
+        }
+        .page-title { font-size: 1.3em; font-weight: 700; margin-bottom: 4px; }
+        .page-sub { font-size: 0.9em; color: #aaa; margin-bottom: 20px; }
+        .spool-btn {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            width: 100%;
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 14px;
+            padding: 14px 16px;
+            margin-bottom: 12px;
+            color: #f0f0f0;
+            font-size: 0.95em;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s;
+        }
+        .spool-btn:active { background: rgba(124,58,237,0.25); }
+        .color-dot {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            border: 2px solid rgba(255,255,255,0.25);
+        }
+        .spool-name { font-weight: 600; }
+        .spool-detail { font-size: 0.82em; color: #aaa; margin-top: 2px; }
+        .success-box {
+            background: rgba(74,222,128,0.15);
+            border: 1px solid rgba(74,222,128,0.4);
+            border-radius: 14px;
+            padding: 24px;
+            text-align: center;
+            display: none;
+        }
+        .success-box.visible { display: block; }
+        .success-icon { font-size: 2.5em; margin-bottom: 8px; }
+        .error-box {
+            background: rgba(220,38,38,0.15);
+            border: 1px solid rgba(220,38,38,0.4);
+            border-radius: 14px;
+            padding: 16px;
+            margin-top: 16px;
+            display: none;
+        }
+        .error-box.visible { display: block; }
+        #spool-list { }
+    </style>
+</head>
+<body>
+    <p class="page-title">Toolhead {{.ToolheadIndex}}</p>
+    <p class="page-sub">{{.PrinterName}} — tap a spool to assign it</p>
+
+    <div id="spool-list">
+        {{range .Spools}}
+        <button class="spool-btn" onclick="assign('{{$.PrinterID}}', {{$.ToolheadIndex}}, {{.ID}})">
+            <div class="color-dot" style="background:{{.ColorHex}};"></div>
+            <div>
+                <div class="spool-name">{{.Name}}</div>
+                <div class="spool-detail">{{.Material}} &middot; {{printf "%.0f" .RemainingWeight}}g left</div>
+            </div>
+        </button>
+        {{else}}
+        <p style="color:#aaa; text-align:center; margin-top:40px;">No spools available in Spoolman.</p>
+        {{end}}
+    </div>
+
+    <div id="success-box" class="success-box">
+        <div class="success-icon">✓</div>
+        <div id="success-msg" style="font-weight:600;"></div>
+    </div>
+    <div id="error-box" class="error-box">
+        <div id="error-msg"></div>
+    </div>
+
+    <script>
+    function assign(printerID, toolheadIndex, spoolID) {
+        fetch('/api/nfc/assignments', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                printer_id: printerID,
+                toolhead_index: toolheadIndex,
+                spoolman_spool_id: spoolID,
+                reason: 'nfc_scan'
+            })
+        })
+        .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+        .then(function(res) {
+            if (res.ok) {
+                document.getElementById('spool-list').style.display = 'none';
+                var box = document.getElementById('success-box');
+                box.classList.add('visible');
+                document.getElementById('success-msg').textContent = 'Spool assigned to Toolhead ' + toolheadIndex;
+            } else {
+                var eb = document.getElementById('error-box');
+                eb.classList.add('visible');
+                document.getElementById('error-msg').textContent = res.data.error || 'Assignment failed.';
+            }
+        })
+        .catch(function(e) {
+            var eb = document.getElementById('error-box');
+            eb.classList.add('visible');
+            document.getElementById('error-msg').textContent = 'Network error: ' + e.message;
+        });
+    }
+    </script>
+</body>
+</html>

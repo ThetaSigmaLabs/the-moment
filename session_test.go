@@ -29,7 +29,7 @@ func TestSession_VirtualTwoToolheads(t *testing.T) {
 
 	sid := newSessionID()
 	for toolhead := 0; toolhead < 2; toolhead++ {
-		if err := bridge.LogPrintUsageFull(
+		if _, err := bridge.LogPrintUsageFull(
 			"CoreXL", toolhead, toolhead+1, 9.5,
 			"vase_mode.gcode", 55, "completed", "", sid, "virtual",
 		); err != nil {
@@ -77,7 +77,7 @@ func TestSession_VirtualThreeToolheads(t *testing.T) {
 	sid := newSessionID()
 	grams := []float64{5.1, 7.3, 4.8}
 	for i, g := range grams {
-		if err := bridge.LogPrintUsageFull(
+		if _, err := bridge.LogPrintUsageFull(
 			"XL-5head", i, i+10, g, "multicolor.gcode", 120, "completed", "", sid, "virtual",
 		); err != nil {
 			t.Fatalf("LogPrintUsageFull T%d: %v", i, err)
@@ -107,7 +107,7 @@ func TestSession_PrusaLinkTwoToolheads(t *testing.T) {
 
 	sid := newSessionID()
 	for toolhead := 0; toolhead < 2; toolhead++ {
-		if err := bridge.LogPrintUsageFull(
+		if _, err := bridge.LogPrintUsageFull(
 			"Prusa Core One", toolhead, toolhead+1, 12.0,
 			"benchy.gcode", 60, "completed", "", sid, "prusalink",
 		); err != nil {
@@ -140,7 +140,7 @@ func TestSession_PrusaLinkSingleToolhead(t *testing.T) {
 	bridge := testBridge(t)
 
 	sid := newSessionID()
-	if err := bridge.LogPrintUsageFull(
+	if _, err := bridge.LogPrintUsageFull(
 		"MK4S", 0, 3, 8.0, "cube.gcode", 30, "completed", "", sid, "prusalink",
 	); err != nil {
 		t.Fatalf("LogPrintUsageFull: %v", err)
