@@ -60,7 +60,7 @@ services:
   # Handles: CORE One L (and any other PrusaLink-compatible printer)
   # ---------------------------------------------------------------------------
   the-moment:
-    image: ghcr.io/maudy2u/the-moment:latest
+    image: ghcr.io/thetasigmalabs/the-moment:latest
     container_name: the-moment
     restart: unless-stopped
     depends_on:

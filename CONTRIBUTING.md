@@ -113,7 +113,7 @@ This format helps us automatically generate changelogs and determine semantic ve
 1. **Clone your fork**:
 
    ```bash
-   git clone https://github.com/maudy2u/the-moment.git
+   git clone https://github.com/ThetaSigmaLabs/the-moment.git
    cd the-moment
    ```
 

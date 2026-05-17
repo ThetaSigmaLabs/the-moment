@@ -2,7 +2,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Go Version](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://golang.org/)
-[![GitHub release](https://img.shields.io/github/v/release/maudy2u/the-moment)](https://github.com/maudy2u/the-moment/releases)
+[![GitHub release](https://img.shields.io/github/v/release/ThetaSigmaLabs/the-moment)](https://github.com/ThetaSigmaLabs/the-moment/releases)
 
 A high-performance Go microservice that bridges your 3D printers and [Spoolman](https://github.com/Donkie/Spoolman) for automatic filament inventory management, complete print history, and per-print cost tracking across all your printers.
 
@@ -59,16 +59,16 @@ Running multiple 3D printers with Spoolman means manually updating filament usag
 
 ## Screenshots
 
-![The Moment Dashboard](https://github.com/maudy2u/the-moment/blob/main/.github/screenshots/dashboard.png?raw=true)
+![The Moment Dashboard](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/dashboard.png?raw=true)
 *Main dashboard showing printer status and toolhead mappings*
 
-![Spool Tags Management](https://github.com/maudy2u/the-moment/blob/main/.github/screenshots/spool_tags.png?raw=true)
+![Spool Tags Management](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/spool_tags.png?raw=true)
 *NFC Management interface for generating QR codes for individual spools*
 
-![Filament Tags Management](https://github.com/maudy2u/the-moment/blob/main/.github/screenshots/filament_tags.png?raw=true)
+![Filament Tags Management](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/filament_tags.png?raw=true)
 *Filament type QR code generation for new unopened spools*
 
-![Location Tags Management](https://github.com/maudy2u/the-moment/blob/main/.github/screenshots/location_tags.png?raw=true)
+![Location Tags Management](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/location_tags.png?raw=true)
 *Location management interface for creating printer toolhead and storage location QR codes*
 
 ## Prerequisites
@@ -96,7 +96,7 @@ Running multiple 3D printers with Spoolman means manually updating filament usag
    ```bash
    docker run -d --name the-moment -p 5000:5000 \
      -v .:/app/data \
-     ghcr.io/maudy2u/the-moment:latest
+     ghcr.io/thetasigmalabs/the-moment:latest
    ```
 
 3. **Configure**: Open `http://localhost:5000` → Settings → Printers → Add Printer
@@ -104,7 +104,7 @@ Running multiple 3D printers with Spoolman means manually updating filament usag
 **Using docker-compose (recommended for full stack):**
 
 ```bash
-git clone https://github.com/maudy2u/the-moment.git
+git clone https://github.com/ThetaSigmaLabs/the-moment.git
 cd the-moment
 docker-compose up -d
 ```
@@ -113,7 +113,7 @@ The `docker-compose.yml` sets `THE_MOMENT_DB_PATH=/app/data` so the database per
 
 ### Option 2: Pre-built Binary
 
-1. Download the latest release for your platform from the [Releases page](https://github.com/maudy2u/the-moment/releases):
+1. Download the latest release for your platform from the [Releases page](https://github.com/ThetaSigmaLabs/the-moment/releases):
    - Linux (amd64, arm64)
    - macOS (amd64/Intel, arm64/Apple Silicon)
    - Windows (amd64)
@@ -137,7 +137,7 @@ The `docker-compose.yml` sets `THE_MOMENT_DB_PATH=/app/data` so the database per
 ### Option 3: Build from Source
 
 ```bash
-git clone https://github.com/maudy2u/the-moment.git
+git clone https://github.com/ThetaSigmaLabs/the-moment.git
 cd the-moment
 go mod download
 go build -o the-moment .
