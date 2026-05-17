@@ -63,6 +63,31 @@ static/                 — frontend HTML/CSS/JS
 
 ---
 
+## OctoPrint Plugin
+
+Plugin source is in `octoprint-plugin/`. The distributable is `octoprint-the-moment.zip` at repo root.
+
+### Bumping the plugin version
+
+Two files must be updated together — both must show the same version string:
+
+1. `octoprint-plugin/octoprint_the_moment/__init__.py` — `__plugin_version__ = "x.y.z"` (line ~540)
+2. `octoprint-plugin/octoprint_the_moment/templates/tab_the_moment.jinja2` — hardcoded `v1.1.0` in the Version row
+
+> **Why hardcoded in the template?** OctoPrint does not call `get_template_vars()` for settings templates, so Jinja2 variable injection doesn't work there. The version is a literal string.
+
+After editing both files, rebuild the zip:
+
+```bash
+cd octoprint-plugin && rm -f ../octoprint-the-moment.zip && \
+  zip -r ../octoprint-the-moment.zip setup.py octoprint_the_moment/ \
+      -x "octoprint_the_moment/__pycache__/*"
+```
+
+Install via OctoPrint Plugin Manager → "Install from file".
+
+---
+
 ## Feature: NFC & Spoolman Spool Workflow
 
 ### Concept

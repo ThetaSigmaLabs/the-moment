@@ -207,6 +207,7 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/history", ws.getHistoryHandler)
 		api.GET("/history/:id", ws.getHistoryEntryHandler)
 		api.PATCH("/history/:id/note", ws.updateHistoryNoteHandler)
+		api.DELETE("/history/batch", ws.batchDeleteHistoryHandler)
 		api.DELETE("/history/:id", ws.deleteHistoryEntryHandler)
 		api.GET("/history/:id/tags", ws.getHistoryTagsHandler)
 		api.POST("/history/:id/tags", ws.setHistoryTagsHandler)
@@ -246,6 +247,14 @@ func (ws *WebServer) setupRoutes() {
 
 		// Post-print spool segment reassignment
 		api.POST("/prints/:id/filament/:segment_id/reassign", ws.reassignFilamentHandler)
+
+		// Print file attachments
+		api.POST("/history/:id/gcode", ws.uploadPrintGcodeHandler)
+		api.POST("/history/:id/attachments", ws.uploadPrintAttachmentHandler)
+		api.GET("/history/:id/attachments", ws.getPrintAttachmentsHandler)
+		api.GET("/history/attachments/:attachment_id/download", ws.downloadPrintAttachmentHandler)
+		api.DELETE("/history/attachments/:attachment_id", ws.deletePrintAttachmentHandler)
+
 		api.GET("/locations", ws.getLocationsHandler)
 		api.GET("/locations/:name/status", ws.getLocationStatusHandler)
 		api.POST("/locations", ws.createLocationHandler)
@@ -893,35 +902,32 @@ func (ws *WebServer) updatePrinterHandler(c *gin.Context) {
 		return
 	}
 
-	// Validate address
-	if err := validateAddress(printerConfig.IPAddress); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
+	if !printerConfig.IsVirtual {
+		// Validate address
+		if err := validateAddress(printerConfig.IPAddress); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 
-	// Auto-detect model if address or API key changed, or if model is currently "Unknown"
-	if printerConfig.Model == "" || printerConfig.Model == ModelUnknown {
-		log.Printf("🔍 [Auto-Detection] Detecting model for printer %s (IP: %s)", printerID, printerConfig.IPAddress)
+		// Auto-detect model if address or API key changed, or if model is currently "Unknown"
+		if printerConfig.Model == "" || printerConfig.Model == ModelUnknown {
+			log.Printf("🔍 [Auto-Detection] Detecting model for printer %s (IP: %s)", printerID, printerConfig.IPAddress)
 
-		// Create PrusaLink client for detection
-		client := NewPrusaLinkClient(printerConfig.IPAddress, printerConfig.APIKey, 10, 60) // Use default timeouts for detection
-
-		// Try to get printer info
-		printerInfo, err := client.GetPrinterInfo()
-		if err != nil {
-			log.Printf("⚠️ [Auto-Detection] Failed to detect model for %s: %v (keeping current model: %s)",
-				printerConfig.IPAddress, err, printerConfig.Model)
-		} else {
-			// Use shared model detection function
-			detectedModel := detectPrinterModel(printerInfo.Hostname)
-
-			if detectedModel != ModelUnknown {
-				log.Printf("✅ [Auto-Detection] Detected model for %s: '%s' -> %s",
-					printerConfig.IPAddress, printerInfo.Hostname, detectedModel)
-				printerConfig.Model = detectedModel
+			client := NewPrusaLinkClient(printerConfig.IPAddress, printerConfig.APIKey, 10, 60)
+			printerInfo, err := client.GetPrinterInfo()
+			if err != nil {
+				log.Printf("⚠️ [Auto-Detection] Failed to detect model for %s: %v (keeping current model: %s)",
+					printerConfig.IPAddress, err, printerConfig.Model)
 			} else {
-				log.Printf("❌ [Auto-Detection] No pattern matched for hostname '%s' from %s",
-					printerInfo.Hostname, printerConfig.IPAddress)
+				detectedModel := detectPrinterModel(printerInfo.Hostname)
+				if detectedModel != ModelUnknown {
+					log.Printf("✅ [Auto-Detection] Detected model for %s: '%s' -> %s",
+						printerConfig.IPAddress, printerInfo.Hostname, detectedModel)
+					printerConfig.Model = detectedModel
+				} else {
+					log.Printf("❌ [Auto-Detection] No pattern matched for hostname '%s' from %s",
+						printerInfo.Hostname, printerConfig.IPAddress)
+				}
 			}
 		}
 	}
@@ -1884,6 +1890,31 @@ func (ws *WebServer) updateHistoryNoteHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "Note updated"})
+}
+
+// batchDeleteHistoryHandler deletes multiple print history records by ID.
+// No Spoolman interaction — this is local history cleanup only.
+// DELETE /api/history/batch
+func (ws *WebServer) batchDeleteHistoryHandler(c *gin.Context) {
+	var body struct {
+		IDs []int `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids required"})
+		return
+	}
+	var errCount int
+	for _, id := range body.IDs {
+		if err := ws.bridge.DeletePrintHistoryEntry(id); err != nil {
+			log.Printf("batch delete history: id %d: %v", id, err)
+			errCount++
+		}
+	}
+	if errCount > 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to delete %d record(s)", errCount)})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Deleted", "count": len(body.IDs)})
 }
 
 // deleteHistoryEntryHandler deletes a print history record.
@@ -3097,4 +3128,116 @@ func (ws *WebServer) reassignFilamentHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "segment reassigned", "new_spool_id": body.SpoolID})
+}
+
+// ─── Print Attachment Handlers ────────────────────────────────────────────────
+
+// uploadPrintGcodeHandler accepts a gcode file upload from the OctoPrint plugin.
+// POST /api/history/:id/gcode
+func (ws *WebServer) uploadPrintGcodeHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if _, err := ws.bridge.GetPrintHistoryEntry(id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "print record not found"})
+		return
+	}
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file field is required"})
+		return
+	}
+	defer file.Close()
+	content, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+		return
+	}
+	if err := ws.bridge.savePrintFile(id, "gcode", header.Filename, content); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"message": "gcode saved", "filename": header.Filename, "size": len(content)})
+}
+
+// uploadPrintAttachmentHandler accepts a manually attached file (slicer project, etc.).
+// POST /api/history/:id/attachments
+func (ws *WebServer) uploadPrintAttachmentHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if _, err := ws.bridge.GetPrintHistoryEntry(id); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "print record not found"})
+		return
+	}
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file field is required"})
+		return
+	}
+	defer file.Close()
+	content, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
+		return
+	}
+	fileType := fileTypeFromName(header.Filename)
+	if err := ws.bridge.savePrintFile(id, fileType, header.Filename, content); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"message": "attachment saved", "filename": header.Filename, "file_type": fileType, "size": len(content)})
+}
+
+// getPrintAttachmentsHandler lists all attachments for a print record.
+// GET /api/history/:id/attachments
+func (ws *WebServer) getPrintAttachmentsHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	attachments, err := ws.bridge.GetPrintAttachments(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"attachments": attachments})
+}
+
+// downloadPrintAttachmentHandler streams an attachment file to the client.
+// GET /api/history/attachments/:attachment_id/download
+func (ws *WebServer) downloadPrintAttachmentHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("attachment_id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attachment id"})
+		return
+	}
+	a, err := ws.bridge.GetPrintAttachment(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
+		return
+	}
+	absPath := ws.bridge.dataDir() + "/" + a.FilePath
+	c.Header("Content-Disposition", "attachment; filename=\""+a.Filename+"\"")
+	c.File(absPath)
+}
+
+// deletePrintAttachmentHandler removes an attachment and its file from disk.
+// DELETE /api/history/attachments/:attachment_id
+func (ws *WebServer) deletePrintAttachmentHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("attachment_id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attachment id"})
+		return
+	}
+	if err := ws.bridge.DeletePrintAttachment(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "attachment deleted"})
 }

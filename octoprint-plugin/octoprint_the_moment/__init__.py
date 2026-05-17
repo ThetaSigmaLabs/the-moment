@@ -61,6 +61,8 @@ class TheMomentPlugin(
         self._print_started_at: datetime.datetime | None = None
         self._session_id: str = ""
         self._current_file: str = ""
+        self._current_file_path: str = ""
+        self._current_file_origin: str = "local"
         # Each entry: {"paused_at": datetime, "resumed_at": datetime|None,
         #              "duration_sec": float, "reason": str,
         #              "spool_snapshot": dict[int, int]}   # tool→spoolID at pause
@@ -170,9 +172,6 @@ class TheMomentPlugin(
         return [
             dict(type="settings", name="The Moment", template="tab_the_moment.jinja2", custom_bindings=False)
         ]
-
-    def get_template_vars(self):
-        return {"the_moment_plugin_version": self._plugin_version}
 
     # ── OctoPrint AssetPlugin ────────────────────────────────────────────────
 
@@ -357,6 +356,8 @@ class TheMomentPlugin(
             self._print_started_at = datetime.datetime.utcnow()
             self._session_id = str(uuid.uuid4())
             self._current_file = payload.get("name", "")
+            self._current_file_path = payload.get("path", "")
+            self._current_file_origin = payload.get("origin", "local")
             self._current_spools = self._get_current_spools()
             start_mm = self._get_filament_position_mm()
             self._last_filament_mm = dict(start_mm)  # prime the fallback
@@ -448,6 +449,13 @@ class TheMomentPlugin(
 
             spoolman_managed = self._settings.get_boolean(["spoolman_managed"])
 
+            # Extract thumbnail and capture file path before state is cleared.
+            thumbnail_b64 = self._extract_thumbnail(
+                self._current_file_origin, self._current_file_path
+            )
+            file_origin = self._current_file_origin
+            file_path = self._current_file_path
+
             body = dict(
                 session_id=self._session_id,
                 source="octoprint",
@@ -479,16 +487,20 @@ class TheMomentPlugin(
                 time_precision="exact",
                 filament_precision="measured",
             )
+            if thumbnail_b64:
+                body["thumbnail_base64"] = thumbnail_b64
 
             self._logger.info(
-                "Print ended: status=%s file=%s duration=%.0fs filament=%s spoolman_managed=%s",
+                "Print ended: status=%s file=%s duration=%.0fs filament=%s spoolman_managed=%s thumbnail=%s",
                 status, self._current_file, total_sec, filament_entries, spoolman_managed,
+                "yes" if thumbnail_b64 else "no",
             )
             self._reset_state()
 
         self._stop_filament_polling()
-        # Send outside the lock to avoid holding it during network I/O
-        self._send(body)
+        # Send outside the lock to avoid holding it during network I/O.
+        # Gcode upload runs in a background thread after the record is created.
+        self._send(body, file_origin=file_origin, file_path=file_path)
 
     # ── Pause reason classification ─────────────────────────────────────────
 
@@ -503,7 +515,73 @@ class TheMomentPlugin(
 
     # ── HTTP send ─────────────────────────────────────────────────────────────
 
-    def _send(self, body: dict):
+    def _extract_thumbnail(self, origin: str, path: str) -> str:
+        """Return the largest JPG thumbnail from a gcode file as a data URI, or ''."""
+        try:
+            disk_path = self._file_manager.path_on_disk(origin, path)
+            best_pixels, best_b64 = 0, ""
+            block_lines: list[str] = []
+            in_block = False
+            width = height = 0
+            with open(disk_path, "r", errors="replace") as fh:
+                for raw in fh:
+                    line = raw.rstrip("\n")
+                    if not line.startswith(";"):
+                        if in_block:
+                            in_block = False
+                        continue
+                    stripped = line[1:].lstrip()
+                    if stripped.startswith("thumbnail_JPG begin ") or stripped.startswith("thumbnail begin "):
+                        # e.g. "thumbnail_JPG begin 96x96 1234"
+                        in_block = True
+                        block_lines = []
+                        try:
+                            dims = stripped.split()[2]  # "96x96"
+                            width, height = (int(x) for x in dims.split("x"))
+                        except Exception:
+                            width = height = 0
+                    elif (stripped.startswith("thumbnail_JPG end") or stripped.startswith("thumbnail end")) and in_block:
+                        in_block = False
+                        b64 = "".join(block_lines)
+                        pixels = width * height
+                        if pixels > best_pixels:
+                            best_pixels = pixels
+                            prefix = "data:image/jpeg;base64," if "JPG" in line else "data:image/png;base64,"
+                            best_b64 = prefix + b64
+                    elif in_block:
+                        block_lines.append(stripped)
+            if best_b64:
+                self._logger.debug("Extracted thumbnail (%dx%d) from %s", width, height, path)
+            return best_b64
+        except Exception as exc:
+            self._logger.warning("Could not extract thumbnail from %s: %s", path, exc)
+            return ""
+
+    def _upload_gcode(self, url: str, api_key: str, print_id: int, origin: str, path: str):
+        """Upload the gcode file to The Moment in a background thread."""
+        try:
+            disk_path = self._file_manager.path_on_disk(origin, path)
+            endpoint = url + "/api/history/" + str(print_id) + "/gcode"
+            headers = {}
+            if api_key:
+                headers["X-API-Key"] = api_key
+            with open(disk_path, "rb") as fh:
+                resp = requests.post(
+                    endpoint,
+                    files={"file": (path.split("/")[-1], fh, "application/octet-stream")},
+                    headers=headers,
+                    timeout=120,
+                )
+            if resp.status_code in (200, 201):
+                self._logger.info("Uploaded gcode to The Moment for print %d", print_id)
+            else:
+                self._logger.warning(
+                    "Gcode upload returned %s: %s", resp.status_code, resp.text[:200]
+                )
+        except Exception as exc:
+            self._logger.warning("Could not upload gcode to The Moment: %s", exc)
+
+    def _send(self, body: dict, file_origin: str = "local", file_path: str = ""):
         url = (self._settings.get(["url"]) or "").rstrip("/")
         api_key = self._settings.get(["api_key"]) or ""
         if not url:
@@ -524,8 +602,17 @@ class TheMomentPlugin(
         try:
             resp = requests.post(endpoint, json=body, headers=headers, timeout=10)
             if resp.status_code == 201:
-                self._logger.info("Sent print record to The Moment (id=%s)", resp.json().get("id"))
+                print_id = resp.json().get("id")
+                self._logger.info("Sent print record to The Moment (id=%s)", print_id)
                 self._debug_log("Response: HTTP 201 — %s", resp.text[:500])
+                # Upload gcode file in background if we have a file path.
+                if print_id and file_path:
+                    t = threading.Thread(
+                        target=self._upload_gcode,
+                        args=(url, api_key, print_id, file_origin, file_path),
+                        daemon=True,
+                    )
+                    t.start()
             else:
                 self._logger.warning(
                     "The Moment returned %s: %s", resp.status_code, resp.text[:200]
@@ -539,5 +626,5 @@ __plugin_name__ = "The Moment"
 __plugin_identifier__ = "the_moment"
 __plugin_version__ = "1.1.0"
 __plugin_description__ = "Sends print events to The Moment for unified print history and cost tracking."
-__plugin_pythoncompat__ = ">=3.7,<4"
+__plugin_pythoncompat__ = ">=3.9,<4"
 __plugin_implementation__ = TheMomentPlugin()

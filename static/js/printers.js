@@ -156,6 +156,7 @@ function buildVirtualPrinterCard(printerId, printer) {
         '<div id="upload-status-' + printerId + '" style="color:#aaa;font-size:0.8em;margin-top:4px;text-align:center;">Uploading…</div>' +
         '</div>' +
         '<div class="printer-actions" style="margin-top:14px;">' +
+        '<button class="btn btn-small" onclick="editVirtualPrinter(\'' + printerId + '\')">✏️ Edit</button>' +
         '<button class="btn btn-small" onclick="toggleToolheadNames(\'' + printerId + '\')">🔤 Rename Toolheads</button>' +
         '<button class="btn btn-small" onclick="exportVirtualPrinter(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name) + '\')" title="Download complete printer snapshot as JSON">📤 Export</button>' +
         '<button class="btn btn-small btn-danger" onclick="deleteVirtualPrinter(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name) + '\')">🗑️ Delete Printer</button>' +
@@ -597,6 +598,13 @@ function closeEditPrinterModal() {
     document.getElementById('editPrinterModal').style.display = 'none';
     var b = document.querySelector('#editPrinterForm button[type="submit"]');
     if (b) { b.disabled = false; b.textContent = 'Update Printer'; }
+    // Restore virtual-hidden fields
+    document.getElementById('editPrinterIsVirtual').value = 'false';
+    document.getElementById('editPrinterIP').required = true;
+    ['editPrinterTypeGroup','editPrinterIPGroup','editPrinterAPIKeyGroup','editPrinterModelGroup'].forEach(function(id) {
+        document.getElementById(id).style.display = '';
+    });
+    document.querySelector('#editPrinterModal .modal-header h3').textContent = 'Edit Printer';
 }
 
 window.addEventListener('click', function(event) {
@@ -660,15 +668,18 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
     var orig = btn ? (btn.textContent || 'Update Printer') : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
 
+    var isVirtual = fd.get('is_virtual') === 'true';
+    var payload = isVirtual
+        ? { name: fd.get('name'), toolheads: parseInt(fd.get('toolheads')), is_virtual: true,
+            ip_address: 'virtual', model: 'Virtual Test Printer', printer_type: 'prusalink' }
+        : { name: fd.get('name'), model: fd.get('model'),
+            ip_address: fd.get('ip_address'), api_key: fd.get('api_key'),
+            toolheads: parseInt(fd.get('toolheads')),
+            printer_type: fd.get('printer_type') || 'prusalink' };
     fetch('/api/printers/' + pid, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            name: fd.get('name'), model: fd.get('model'),
-            ip_address: fd.get('ip_address'), api_key: fd.get('api_key'),
-            toolheads: parseInt(fd.get('toolheads')),
-            printer_type: fd.get('printer_type') || 'prusalink'
-        })
+        body: JSON.stringify(payload)
     }).then(function(r) { return r.json(); }).then(function(data) {
         if (data.error) throw new Error(data.error);
         closeEditPrinterModal();
@@ -712,6 +723,24 @@ function editPrinter(printerId) {
         var printerType = p.printer_type || 'prusalink';
         if (typeEl) { typeEl.value = printerType; }
         onPrinterTypeChange(printerType, 'editPrinter');
+        document.getElementById('editPrinterModal').style.display = 'block';
+    }).catch(function() { alert('Error loading printer data'); });
+}
+
+function editVirtualPrinter(printerId) {
+    fetch('/api/printers').then(function(r) { return r.json(); }).then(function(data) {
+        var p = data.printers[printerId];
+        if (!p) { alert('Printer not found'); return; }
+        document.getElementById('editPrinterId').value = printerId;
+        document.getElementById('editPrinterIsVirtual').value = 'true';
+        document.getElementById('editPrinterName').value = p.name || '';
+        document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
+        // Hide fields that don't apply to virtual printers
+        document.getElementById('editPrinterIP').required = false;
+        ['editPrinterTypeGroup','editPrinterIPGroup','editPrinterAPIKeyGroup','editPrinterModelGroup'].forEach(function(id) {
+            document.getElementById(id).style.display = 'none';
+        });
+        document.querySelector('#editPrinterModal .modal-header h3').textContent = 'Edit Virtual Printer';
         document.getElementById('editPrinterModal').style.display = 'block';
     }).catch(function() { alert('Error loading printer data'); });
 }

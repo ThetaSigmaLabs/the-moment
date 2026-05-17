@@ -41,6 +41,7 @@ type Config struct {
 	PollInterval                 time.Duration
 	LocationSyncInterval         time.Duration
 	DBFile                       string
+	DataDir                      string // root directory for file attachments
 	WebPort                      string
 	PrusaLinkTimeout             int
 	PrusaLinkFileDownloadTimeout int
@@ -99,6 +100,7 @@ func LoadConfig(bridge *FilamentBridge) (*Config, error) {
 		PollInterval:                 time.Duration(pollInterval) * time.Second,
 		LocationSyncInterval:         time.Duration(locationSyncInterval) * time.Minute,
 		DBFile:                       getDBFilePath(),
+		DataDir:                      getDataDir(),
 		WebPort:                      configValues[ConfigKeyWebPort],
 		PrusaLinkTimeout:             prusaLinkTimeout,
 		PrusaLinkFileDownloadTimeout: prusaLinkFileDownloadTimeout,
@@ -154,4 +156,12 @@ func getDBFilePath() string {
 		return filepath.Join(dbPath, DefaultDBFileName)
 	}
 	return DefaultDBFileName
+}
+
+// getDataDir returns the root directory for file attachments (gcode, slicer files, etc.)
+func getDataDir() string {
+	if d := os.Getenv("THE_MOMENT_DATA_DIR"); d != "" {
+		return d
+	}
+	return "the-moment-data"
 }

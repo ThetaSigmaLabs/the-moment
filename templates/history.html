@@ -25,9 +25,24 @@
                     <option value="cancelled">Cancelled</option>
                     <option value="failed">Failed</option>
                 </select>
+                <select id="historyPerPage" onchange="setPerPage(this.value)"
+                        style="padding:7px 10px;border-radius:6px;border:1px solid #555;
+                               background:#2a2a2a;color:#fff;font-size:0.85em;">
+                    <option value="10">10 / page</option>
+                    <option value="25">25 / page</option>
+                    <option value="50">50 / page</option>
+                    <option value="100">100 / page</option>
+                    <option value="0">All</option>
+                </select>
                 <button class="btn btn-small btn-secondary" onclick="loadHistory()" title="Refresh">↺ Refresh</button>
+                <button id="historyDeleteSelectedBtn" class="btn btn-small btn-danger"
+                        onclick="deleteSelectedSessions()"
+                        style="display:none;">🗑 Delete Selected</button>
             </div>
         </div>
+
+        <!-- Pagination top -->
+        <div id="historyPagTop"></div>
 
         <!-- Table -->
         <div style="overflow-x:auto;">
@@ -35,8 +50,14 @@
                 <thead>
                     <tr style="border-bottom:2px solid #444;color:#888;text-transform:uppercase;
                                 font-size:0.75em;letter-spacing:0.05em;">
+                        <th style="padding:10px 8px;text-align:center;width:32px;">
+                            <input type="checkbox" id="historySelectAll" title="Select all"
+                                   onchange="toggleSelectAll(this.checked)"
+                                   style="cursor:pointer;width:15px;height:15px;">
+                        </th>
                         <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
                             onclick="sortHistory('print_finished')">Date ↕</th>
+                        <th style="padding:10px 12px;text-align:center;width:52px;">🖼</th>
                         <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
                             onclick="sortHistory('printer_name')">Printer ↕</th>
                         <th style="padding:10px 12px;text-align:left;">File</th>
@@ -48,18 +69,20 @@
                         <th style="padding:10px 12px;text-align:left;">Note</th>
                         <th style="padding:10px 12px;text-align:center;">Status</th>
                         <th style="padding:10px 12px;text-align:center;white-space:nowrap;">Quality</th>
-                        <th style="padding:10px 12px;text-align:center;width:52px;">🖼</th>
                     </tr>
                 </thead>
                 <tbody id="historyBody">
                     <tr>
-                        <td colspan="10" style="text-align:center;padding:40px;color:#666;">
+                        <td colspan="11" style="text-align:center;padding:40px;color:#666;">
                             Loading print history…
                         </td>
                     </tr>
                 </tbody>
             </table>
         </div>
+
+        <!-- Pagination bottom -->
+        <div id="historyPagBottom"></div>
 
         <!-- Empty state (shown by JS) -->
         <div id="historyEmpty" style="display:none;text-align:center;padding:60px 20px;color:#555;">

@@ -9,6 +9,9 @@ var _sortField        = 'print_finished';
 var _sortAsc          = false;
 var _activeEntry      = null;
 var _expandedSessions = {};   // session key → true when expanded
+var _selectedKeys     = {};   // session key → true when selected
+var _currentPage      = 1;
+var _perPage          = parseInt(localStorage.getItem('history_per_page') || '25', 10);
 
 // ─── Load & Render ────────────────────────────────────────────────────────────
 
@@ -17,16 +20,18 @@ function loadHistory() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             _allSessions = data.sessions || [];
+            _selectedKeys = {};
             filterHistory();
         })
         .catch(function(err) {
             document.getElementById('historyBody').innerHTML =
-                '<tr><td colspan="10" style="text-align:center;padding:30px;color:#ef9a9a;">' +
+                '<tr><td colspan="11" style="text-align:center;padding:30px;color:#ef9a9a;">' +
                 'Failed to load history: ' + err.message + '</td></tr>';
         });
 }
 
 function filterHistory() {
+    _currentPage = 1;
     var search = (document.getElementById('historySearch').value || '').toLowerCase();
     var status = document.getElementById('historyStatusFilter').value;
 
@@ -49,6 +54,7 @@ function filterHistory() {
 }
 
 function sortHistory(field, skipToggle) {
+    if (!skipToggle) _currentPage = 1;
     if (field === _sortField && !skipToggle) {
         _sortAsc = !_sortAsc;
     } else if (!skipToggle) {
@@ -81,21 +87,31 @@ function _sessionSortValue(s, field) {
 }
 
 function renderTable() {
-    var tbody  = document.getElementById('historyBody');
-    var empty  = document.getElementById('historyEmpty');
-    var count  = document.getElementById('historyCount');
+    var tbody = document.getElementById('historyBody');
+    var empty = document.getElementById('historyEmpty');
+    var count = document.getElementById('historyCount');
+    var total = _filteredSessions.length;
 
-    var totalRecords = _filteredSessions.reduce(function(n, s) {
-        return n + (s.tool_count || 1);
-    }, 0);
+    var totalPages = (_perPage === 0 || total === 0) ? 1 : Math.ceil(total / _perPage);
+    if (_currentPage > totalPages) _currentPage = totalPages;
+    if (_currentPage < 1) _currentPage = 1;
+
+    var start = _perPage === 0 ? 0 : (_currentPage - 1) * _perPage;
+    var end   = _perPage === 0 ? total : Math.min(start + _perPage, total);
+
     if (count) {
-        var n = _filteredSessions.length;
-        var label = n + ' session' + (n !== 1 ? 's' : '');
-        if (totalRecords !== n) label += ' (' + totalRecords + ' toolheads)';
-        count.textContent = label;
+        if (total === 0) {
+            count.textContent = '0 sessions';
+        } else if (_perPage === 0 || totalPages <= 1) {
+            count.textContent = total + ' session' + (total !== 1 ? 's' : '');
+        } else {
+            count.textContent = (start + 1) + '–' + end + ' of ' + total + ' sessions';
+        }
     }
 
-    if (_filteredSessions.length === 0) {
+    _renderPagination(totalPages, _currentPage);
+
+    if (total === 0) {
         tbody.innerHTML = '';
         if (empty) empty.style.display = 'block';
         return;
@@ -103,18 +119,52 @@ function renderTable() {
     if (empty) empty.style.display = 'none';
 
     var html = '';
-    _filteredSessions.forEach(function(s, i) {
-        var key    = s.session_id || ('__solo_' + i);
-        var multi  = s.tool_count > 1;
+    _filteredSessions.slice(start, end).forEach(function(s, i) {
+        var globalI  = start + i;
+        var key      = _sessionKey(s, globalI);
+        var multi    = s.tool_count > 1;
         var expanded = !!_expandedSessions[key];
-        html += buildSessionRow(s, i, key, multi, expanded);
+        html += buildSessionRow(s, globalI, key, multi, expanded);
         if (multi && expanded) {
-            (s.records || []).forEach(function(r) {
-                html += buildSubRow(r);
-            });
+            (s.records || []).forEach(function(r) { html += buildSubRow(r); });
         }
     });
     tbody.innerHTML = html;
+    _syncSelection();
+}
+
+function _renderPagination(totalPages, currentPage) {
+    var show = totalPages > 1;
+    ['historyPagTop', 'historyPagBottom'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        if (!show) { el.innerHTML = ''; return; }
+        var btn = 'padding:5px 14px;border-radius:6px;border:1px solid #555;background:#2a2a2a;color:#ccc;cursor:pointer;font-size:0.85em;';
+        var off = 'opacity:0.35;cursor:default;';
+        var atFirst = currentPage <= 1;
+        var atLast  = currentPage >= totalPages;
+        el.innerHTML =
+            '<div style="display:flex;align-items:center;justify-content:center;gap:10px;padding:8px 20px;">' +
+            '<button style="' + btn + (atFirst ? off : '') + '"' + (atFirst ? ' disabled' : '') +
+            ' onclick="changePage(-1)">&#8592; Prev</button>' +
+            '<span style="color:#888;font-size:0.85em;">Page ' + currentPage + ' of ' + totalPages + '</span>' +
+            '<button style="' + btn + (atLast ? off : '') + '"' + (atLast ? ' disabled' : '') +
+            ' onclick="changePage(1)">Next &#8594;</button>' +
+            '</div>';
+    });
+}
+
+function changePage(delta) {
+    _currentPage += delta;
+    renderTable();
+}
+
+function setPerPage(val) {
+    _perPage = parseInt(val, 10);
+    if (isNaN(_perPage)) _perPage = 25;
+    localStorage.setItem('history_per_page', String(_perPage));
+    _currentPage = 1;
+    renderTable();
 }
 
 // ─── Row builders ─────────────────────────────────────────────────────────────
@@ -163,17 +213,22 @@ function buildSessionRow(s, i, key, multi, expanded) {
     }
 
     var onclick = multi
-        ? 'toggleSession(\'' + _esc(key) + '\', ' + i + ')'
+        ? 'toggleSession(\'' + _esc(key) + '\')'
         : (s.records && s.records[0] ? 'openHistoryModal(' + s.records[0].id + ')' : '');
 
     var rowStyle = 'border-bottom:1px solid #2a2a2a;cursor:pointer;transition:background 0.15s;' +
         (multi ? 'border-left:3px solid #1a3a5c;' : '');
+    var chkChecked = _selectedKeys[key] ? ' checked' : '';
 
     return '<tr onclick="' + onclick + '" ' +
         'style="' + rowStyle + '" ' +
         'onmouseover="this.style.background=\'rgba(255,255,255,0.04)\'" ' +
         'onmouseout="this.style.background=\'\'">' +
+        '<td onclick="event.stopPropagation();" style="padding:9px 8px;width:32px;text-align:center;">' +
+        '<input type="checkbox"' + chkChecked + ' style="cursor:pointer;width:15px;height:15px;" ' +
+        'onchange="toggleSessionSelect(\'' + _esc(key) + '\', this)"></td>' +
         '<td style="padding:9px 12px;white-space:nowrap;color:#aaa;">' + date + '</td>' +
+        '<td style="padding:9px 12px;text-align:center;">' + thumbCell + '</td>' +
         '<td style="padding:9px 12px;white-space:nowrap;">' + _esc(s.printer_name) + sourceBadge + '</td>' +
         '<td style="padding:9px 12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(s.job_name) + '">' + fileCell + '</td>' +
         '<td style="padding:9px 12px;text-align:right;white-space:nowrap;">' + usage + '</td>' +
@@ -182,7 +237,6 @@ function buildSessionRow(s, i, key, multi, expanded) {
         '<td style="padding:9px 12px;color:#888;font-size:0.85em;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + note + '</td>' +
         '<td style="padding:9px 12px;text-align:center;">' + statusBadge + '</td>' +
         '<td style="padding:9px 12px;text-align:center;">' + qualityCell + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;">' + thumbCell + '</td>' +
         '</tr>';
 }
 
@@ -195,6 +249,7 @@ function buildSubRow(r) {
         'style="border-bottom:1px solid #222;cursor:pointer;background:rgba(0,0,0,0.25);" ' +
         'onmouseover="this.style.background=\'rgba(255,255,255,0.03)\'" ' +
         'onmouseout="this.style.background=\'rgba(0,0,0,0.25)\'">' +
+        '<td style="padding:6px 8px;width:32px;"></td>' +
         '<td style="padding:6px 12px;color:#666;font-size:0.82em;"></td>' +
         '<td style="padding:6px 12px;color:#777;font-size:0.82em;padding-left:28px;">T' + r.toolhead_id + ' · spool&nbsp;' + (r.spool_id > 0 ? '#' + r.spool_id : '—') + '</td>' +
         '<td style="padding:6px 12px;color:#666;font-size:0.82em;padding-left:28px;">' + _esc(_shortName(r.job_name)) + '</td>' +
@@ -210,7 +265,7 @@ function buildSubRow(r) {
         '</tr>';
 }
 
-function toggleSession(key, idx) {
+function toggleSession(key) {
     _expandedSessions[key] = !_expandedSessions[key];
     renderTable();
 }
@@ -354,6 +409,75 @@ function populateModal(r) {
 
     // Populate tag editor
     _populateTagEditor(r.tags || []);
+
+    // Load file attachments
+    _loadAttachments(r.id);
+}
+
+function _loadAttachments(printID) {
+    var listEl = document.getElementById('historyAttachmentList');
+    if (!listEl) return;
+    fetch('/api/history/' + printID + '/attachments')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var items = data.attachments || [];
+            if (items.length === 0) {
+                listEl.innerHTML = '<span style="color:#555;font-size:0.9em;">No files attached</span>';
+                return;
+            }
+            listEl.innerHTML = items.map(function(a) {
+                var typeColor = a.file_type === 'gcode' ? '#7ab8f5' : a.file_type === 'slicer' ? '#b48aff' : '#aaa';
+                var typeBadge = '<span style="background:#1a2a3a;color:' + typeColor + ';padding:1px 6px;border-radius:8px;font-size:0.78em;margin-right:6px;">' + _esc(a.file_type) + '</span>';
+                var size = a.file_size > 1048576
+                    ? (a.file_size / 1048576).toFixed(1) + ' MB'
+                    : a.file_size > 1024
+                        ? (a.file_size / 1024).toFixed(0) + ' KB'
+                        : a.file_size + ' B';
+                return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-top:1px solid #2a2a2a;">' +
+                    '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">' +
+                        typeBadge + '<span title="' + _esc(a.filename) + '">' + _esc(a.filename) + '</span>' +
+                        '<span style="color:#555;margin-left:8px;font-size:0.82em;">' + size + '</span>' +
+                    '</div>' +
+                    '<div style="display:flex;gap:6px;flex-shrink:0;margin-left:8px;">' +
+                        '<a href="/api/history/attachments/' + a.id + '/download" download="' + _esc(a.filename) + '" ' +
+                            'class="btn btn-small btn-secondary" style="padding:2px 8px;font-size:0.78em;text-decoration:none;">↓ Download</a>' +
+                        '<button class="btn btn-small btn-danger" style="padding:2px 8px;font-size:0.78em;" ' +
+                            'onclick="deleteHistoryAttachment(' + a.id + ', ' + printID + ')">✕</button>' +
+                    '</div>' +
+                    '</div>';
+            }).join('');
+        })
+        .catch(function() {
+            listEl.innerHTML = '<span style="color:#ef9a9a;font-size:0.9em;">Failed to load attachments</span>';
+        });
+}
+
+function deleteHistoryAttachment(attachID, printID) {
+    if (!confirm('Delete this attachment? The file cannot be recovered.')) return;
+    fetch('/api/history/attachments/' + attachID, { method: 'DELETE' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) { alert('Error: ' + data.error); return; }
+            _loadAttachments(printID);
+        })
+        .catch(function(e) { alert('Request failed: ' + e); });
+}
+
+function uploadHistoryAttachment() {
+    if (!_activeEntry) return;
+    var input = document.getElementById('historyAttachInput');
+    if (!input || !input.files || input.files.length === 0) return;
+    var file = input.files[0];
+    var formData = new FormData();
+    formData.append('file', file);
+    fetch('/api/history/' + _activeEntry.id + '/attachments', { method: 'POST', body: formData })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) { alert('Upload failed: ' + data.error); return; }
+            input.value = '';
+            _loadAttachments(_activeEntry.id);
+        })
+        .catch(function(e) { alert('Upload failed: ' + e); });
 }
 
 function closeHistoryModal() {
@@ -441,6 +565,94 @@ function recalcHistoryCost() {
             renderTable();
         })
         .catch(function(err) { alert('Error: ' + err.message); });
+}
+
+// ─── Bulk Selection & Delete ──────────────────────────────────────────────────
+
+function _sessionKey(s, i) {
+    if (s.session_id) return s.session_id;
+    return '__solo_' + (s.records && s.records[0] ? s.records[0].id : i);
+}
+
+function toggleSessionSelect(key, checkbox) {
+    if (checkbox.checked) {
+        _selectedKeys[key] = true;
+    } else {
+        delete _selectedKeys[key];
+    }
+    _syncSelection();
+}
+
+function toggleSelectAll(checked) {
+    _selectedKeys = {};
+    if (checked) {
+        _filteredSessions.forEach(function(s, i) {
+            _selectedKeys[_sessionKey(s, i)] = true;
+        });
+    }
+    renderTable();
+}
+
+function _syncSelection() {
+    var total = _filteredSessions.length;
+    var selectedCount = 0;
+    _filteredSessions.forEach(function(s, i) {
+        if (_selectedKeys[_sessionKey(s, i)]) selectedCount++;
+    });
+
+    var allCb = document.getElementById('historySelectAll');
+    if (allCb) {
+        allCb.checked = total > 0 && selectedCount === total;
+        allCb.indeterminate = selectedCount > 0 && selectedCount < total;
+    }
+
+    var btn = document.getElementById('historyDeleteSelectedBtn');
+    if (btn) {
+        if (selectedCount > 0) {
+            btn.style.display = '';
+            btn.textContent = '🗑 Delete (' + selectedCount + ')';
+        } else {
+            btn.style.display = 'none';
+        }
+    }
+}
+
+function deleteSelectedSessions() {
+    var ids = [];
+    var sessionCount = 0;
+    _filteredSessions.forEach(function(s, i) {
+        if (!_selectedKeys[_sessionKey(s, i)]) return;
+        sessionCount++;
+        (s.records || []).forEach(function(r) { ids.push(r.id); });
+    });
+    if (ids.length === 0) return;
+
+    var msg = 'Delete ' + sessionCount + ' session' + (sessionCount !== 1 ? 's' : '') +
+        ' (' + ids.length + ' record' + (ids.length !== 1 ? 's' : '') + ')?\nThis cannot be undone.';
+    if (!confirm(msg)) return;
+
+    fetch('/api/history/batch', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: ids })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) { alert('Error: ' + data.error); return; }
+        var deleted = {};
+        ids.forEach(function(id) { deleted[id] = true; });
+        _allSessions = _allSessions.reduce(function(acc, s) {
+            s.records = (s.records || []).filter(function(r) { return !deleted[r.id]; });
+            if (s.records.length > 0) {
+                s.tool_count = s.records.length;
+                acc.push(s);
+            }
+            return acc;
+        }, []);
+        _selectedKeys = {};
+        filterHistory();
+    })
+    .catch(function(err) { alert('Error: ' + err.message); });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -738,6 +950,8 @@ function saveHistoryTags() {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', function() {
+    var perPageSel = document.getElementById('historyPerPage');
+    if (perPageSel) perPageSel.value = String(_perPage);
     loadHistory();
 
     var tabs = document.querySelectorAll('.tab');

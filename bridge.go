@@ -96,6 +96,9 @@ type PrintHistory struct {
 
 	// Quality tags (outcome + issue labels)
 	Tags []PrintQualityTag `json:"tags,omitempty"`
+
+	// File attachments (gcode, slicer files — populated only on single-record fetch)
+	Attachments []PrintAttachment `json:"attachments,omitempty"`
 }
 
 // PrintFilamentUsage is per-tool filament data stored for a unified print record.
@@ -160,6 +163,9 @@ type OctoPrintPayload struct {
 	// plugin already deducted filament; The Moment must NOT deduct again.
 	// false = no Spoolman plugin active; The Moment deducts from Spoolman.
 	SpoolmanManaged *bool `json:"spoolman_managed,omitempty"`
+	// ThumbnailBase64 is an optional JPEG/PNG thumbnail extracted from the gcode file
+	// and sent by the OctoPrint plugin as a data URI (e.g. "data:image/jpeg;base64,...").
+	ThumbnailBase64 string `json:"thumbnail_base64,omitempty"`
 }
 
 // OctoPrintPayloadPause is a single pause entry within an OctoPrint payload.
@@ -263,6 +269,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migrateNFCAssignments(); err != nil {
 		return nil, fmt.Errorf("failed to migrate NFC assignments: %w", err)
+	}
+
+	if err := bridge.migratePrintAttachments(); err != nil {
+		return nil, fmt.Errorf("failed to migrate print attachments: %w", err)
 	}
 
 	// Update Spoolman URL and timeout if config is provided
@@ -549,6 +559,142 @@ func (b *FilamentBridge) migrateNFCAssignments() error {
 		}
 	}
 	return nil
+}
+
+// migratePrintAttachments creates the table that stores gcode and slicer files attached to print records.
+func (b *FilamentBridge) migratePrintAttachments() error {
+	_, err := b.db.Exec(`
+		CREATE TABLE IF NOT EXISTS print_attachments (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			print_history_id INTEGER NOT NULL,
+			file_type TEXT NOT NULL,
+			filename TEXT NOT NULL,
+			file_size INTEGER NOT NULL,
+			file_path TEXT NOT NULL,
+			stored_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			FOREIGN KEY (print_history_id) REFERENCES print_history(id) ON DELETE CASCADE
+		)`)
+	if err != nil {
+		return err
+	}
+	_, err = b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_print_attachments_print_id ON print_attachments(print_history_id)`)
+	return err
+}
+
+// PrintAttachment represents a file attached to a print history record.
+type PrintAttachment struct {
+	ID             int    `json:"id"`
+	PrintHistoryID int    `json:"print_history_id"`
+	FileType       string `json:"file_type"` // "gcode", "slicer", "other"
+	Filename       string `json:"filename"`
+	FileSize       int64  `json:"file_size"`
+	FilePath       string `json:"file_path"` // relative to DataDir
+	StoredAt       string `json:"stored_at"`
+}
+
+// SavePrintAttachment inserts a print attachment record into the database.
+func (b *FilamentBridge) SavePrintAttachment(printHistoryID int, fileType, filename, filePath string, fileSize int64) (int64, error) {
+	res, err := b.db.Exec(`
+		INSERT INTO print_attachments (print_history_id, file_type, filename, file_size, file_path)
+		VALUES (?, ?, ?, ?, ?)`,
+		printHistoryID, fileType, filename, fileSize, filePath,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to save print attachment: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// GetPrintAttachments returns all attachments for a given print history record.
+func (b *FilamentBridge) GetPrintAttachments(printHistoryID int) ([]PrintAttachment, error) {
+	rows, err := b.db.Query(`
+		SELECT id, print_history_id, file_type, filename, file_size, file_path, stored_at
+		FROM print_attachments WHERE print_history_id = ? ORDER BY stored_at ASC`,
+		printHistoryID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PrintAttachment
+	for rows.Next() {
+		var a PrintAttachment
+		if err := rows.Scan(&a.ID, &a.PrintHistoryID, &a.FileType, &a.Filename, &a.FileSize, &a.FilePath, &a.StoredAt); err != nil {
+			continue
+		}
+		out = append(out, a)
+	}
+	if out == nil {
+		out = []PrintAttachment{}
+	}
+	return out, nil
+}
+
+// GetPrintAttachment returns a single attachment by ID.
+func (b *FilamentBridge) GetPrintAttachment(id int) (*PrintAttachment, error) {
+	var a PrintAttachment
+	err := b.db.QueryRow(`
+		SELECT id, print_history_id, file_type, filename, file_size, file_path, stored_at
+		FROM print_attachments WHERE id = ?`, id,
+	).Scan(&a.ID, &a.PrintHistoryID, &a.FileType, &a.Filename, &a.FileSize, &a.FilePath, &a.StoredAt)
+	if err != nil {
+		return nil, fmt.Errorf("attachment %d not found: %w", id, err)
+	}
+	return &a, nil
+}
+
+// DeletePrintAttachment removes the DB record and the file from disk.
+func (b *FilamentBridge) DeletePrintAttachment(id int) error {
+	a, err := b.GetPrintAttachment(id)
+	if err != nil {
+		return err
+	}
+	absPath := filepath.Join(b.dataDir(), a.FilePath)
+	if rmErr := os.Remove(absPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+		log.Printf("Warning: could not delete attachment file %s: %v", absPath, rmErr)
+	}
+	_, err = b.db.Exec(`DELETE FROM print_attachments WHERE id = ?`, id)
+	return err
+}
+
+// dataDir returns the resolved data directory for file attachments.
+func (b *FilamentBridge) dataDir() string {
+	if b.config != nil && b.config.DataDir != "" {
+		return b.config.DataDir
+	}
+	return "the-moment-data"
+}
+
+// fileTypeFromName returns the attachment file_type based on filename extension.
+func fileTypeFromName(filename string) string {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".gcode", ".bgcode", ".gco", ".g":
+		return "gcode"
+	case ".3mf", ".orcaslicer", ".prusaslicer", ".fcstd", ".amf", ".step", ".stp":
+		return "slicer"
+	default:
+		return "other"
+	}
+}
+
+// savePrintFile writes content to disk under DataDir and inserts a print_attachments record.
+// fileType should be "gcode", "slicer", or "other". Safe to call even when DataDir is not yet set.
+func (b *FilamentBridge) savePrintFile(printID int, fileType, filename string, content []byte) error {
+	dir := b.dataDir()
+	now := time.Now()
+	subDir := filepath.Join(dir, "print-files", fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", int(now.Month())))
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		return fmt.Errorf("failed to create attachment directory: %w", err)
+	}
+	safeName := filepath.Base(filename)
+	relPath := filepath.Join("print-files", fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", int(now.Month())),
+		fmt.Sprintf("%d_%s", printID, safeName))
+	absPath := filepath.Join(dir, relPath)
+	if err := os.WriteFile(absPath, content, 0644); err != nil {
+		return fmt.Errorf("failed to write attachment file: %w", err)
+	}
+	_, err := b.SavePrintAttachment(printID, fileType, safeName, relPath, int64(len(content)))
+	return err
 }
 
 // ToolheadSpoolAssignment represents a spool-to-toolhead assignment record.
@@ -1862,6 +2008,9 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
 			log.Printf("Warning: failed to snapshot NFC assignments for cancelled print %d: %v", firstPrintID, err)
 		}
+		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
+			log.Printf("Warning: could not save gcode file for cancelled print %d: %v", firstPrintID, err)
+		}
 	}
 
 	return nil
@@ -1940,6 +2089,10 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 	if firstPrintID > 0 {
 		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
 			log.Printf("Warning: failed to snapshot NFC assignments for print %d: %v", firstPrintID, err)
+		}
+		// Save gcode to disk; best-effort — never aborts the print record.
+		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
+			log.Printf("Warning: could not save gcode file for print %d: %v", firstPrintID, err)
 		}
 	}
 
@@ -2402,10 +2555,19 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 			status = "cancelled"
 		}
 		sessionID := newSessionID()
+		var firstPrintID int
 		for toolheadID, usedG := range filamentUsage {
 			spoolID, _ := b.GetToolheadMapping(d.printerName, toolheadID)
-			_, _ = b.LogPrintUsageFull(d.printerName, toolheadID, spoolID, usedG, jobName,
+			printID, _ := b.LogPrintUsageFull(d.printerName, toolheadID, spoolID, usedG, jobName,
 				printTimeMin, status, thumbnailB64, sessionID, "prusalink")
+			if firstPrintID == 0 && printID > 0 {
+				firstPrintID = printID
+			}
+		}
+		if firstPrintID > 0 {
+			if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(d.filename), gcodeContent); err != nil {
+				log.Printf("Warning: could not save gcode file for retried print %d: %v", firstPrintID, err)
+			}
 		}
 
 		_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
@@ -2819,6 +2981,9 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 	// Fetch quality tags.
 	r.Tags, _ = b.GetPrintQualityTags(int64(id))
 
+	// Fetch file attachments.
+	r.Attachments, _ = b.GetPrintAttachments(id)
+
 	return &r, nil
 }
 
@@ -2888,8 +3053,16 @@ func (b *FilamentBridge) UpdatePrintNote(id int, note string) error {
 	return nil
 }
 
-// DeletePrintHistoryEntry removes a print history record and its associated cost record.
+// DeletePrintHistoryEntry removes a print history record. Files on disk are cleaned
+// up first; the DB cascade handles all child rows (costs, attachments, tags, etc.).
 func (b *FilamentBridge) DeletePrintHistoryEntry(id int) error {
+	attachments, _ := b.GetPrintAttachments(id)
+	for _, a := range attachments {
+		absPath := filepath.Join(b.dataDir(), a.FilePath)
+		if err := os.Remove(absPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Warning: could not delete attachment file %s: %v", absPath, err)
+		}
+	}
 	_, err := b.db.Exec("DELETE FROM print_history WHERE id = ?", id)
 	return err
 }
@@ -3033,11 +3206,11 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 			 source, total_duration_sec, print_duration_sec,
 			 pause_duration_sec, pause_count, cancel_reason,
 			 time_precision, filament_precision, session_id)
-		VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, '',
+		VALUES (?, 0, 0, ?, ?, ?, ?, ?, ?, ?,
 		        ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.PrinterID, totalGrams,
 		p.StartedAt, p.EndedAt, p.FileName,
-		printTimeMin, p.Status,
+		printTimeMin, p.Status, p.ThumbnailBase64,
 		p.Source, p.TotalDurationSec, p.PrintDurationSec,
 		p.PauseDurationSec, p.PauseCount, cancelReason,
 		p.TimePrecision, p.FilamentPrecision, p.SessionID,
