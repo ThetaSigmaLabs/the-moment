@@ -53,6 +53,14 @@ class TheMomentPlugin(
 ):
     def __init__(self):
         self._logger = logging.getLogger(__name__)
+        # Persists across prints — updated by plugin_spoolmanager_spool_selected events.
+        # Fallback when neither SpoolManager nor Spoolman plugin exposes a direct API.
+        self._spool_cache: dict[int, int] = {}
+        # Set in _send() after a print record is created; used by the Spoolman usage
+        # commit event handler to patch filament data onto the record.
+        self._pending_print_id: int | None = None
+        # True when the last print was sent with filament=[]; drives the patch decision.
+        self._sent_empty_filament: bool = False
         self._reset_state()
 
     # ── State management ────────────────────────────────────────────────────
@@ -203,6 +211,9 @@ class TheMomentPlugin(
                 return spools
         except Exception:
             pass
+        # Fall back to event-driven cache populated by plugin_spoolmanager_spool_selected.
+        if self._spool_cache:
+            return dict(self._spool_cache)
         return spools
 
     def _get_filament_position_mm(self) -> dict[int, float]:
@@ -350,7 +361,40 @@ class TheMomentPlugin(
         elif event == Events.PRINT_FAILED:
             self._on_print_ended(payload, status="failed", cancel_reason="error")
 
+        elif event == "plugin_spoolmanager_spool_selected":
+            # Keep _spool_cache and active _current_spools current so that
+            # _get_current_spools() has a value even when the plugin API is absent.
+            tool_id = payload.get("toolId")
+            db_id = payload.get("databaseId")
+            if tool_id is not None and db_id:
+                self._spool_cache[int(tool_id)] = int(db_id)
+                with self._lock:
+                    self._current_spools[int(tool_id)] = int(db_id)
+
+        elif event == "plugin_Spoolman_spool_usage_committed":
+            # Fires ~600 ms after PrintDone with the actual Spoolman spool ID and
+            # measured extrusion length.  When the print record was sent with empty
+            # filament data (because _get_current_spools returned {}), patch it now.
+            if not self._sent_empty_filament:
+                return
+            tool_idx = int(payload.get("toolIdx") or 0)
+            spoolman_id_raw = payload.get("spoolId")
+            extrusion_mm = float(payload.get("extrusionLength") or 0)
+            print_id = self._pending_print_id
+            if not (print_id and spoolman_id_raw and extrusion_mm > 0):
+                return
+            url = (self._settings.get(["url"]) or "").rstrip("/")
+            api_key = self._settings.get(["api_key"]) or ""
+            if url:
+                threading.Thread(
+                    target=self._patch_filament_usage,
+                    args=(url, api_key, print_id, tool_idx, int(spoolman_id_raw), extrusion_mm),
+                    daemon=True,
+                ).start()
+
     def _on_print_started(self, payload):
+        self._pending_print_id = None
+        self._sent_empty_filament = False
         with self._lock:
             self._reset_state()
             self._print_started_at = datetime.datetime.utcnow()
@@ -361,7 +405,12 @@ class TheMomentPlugin(
             self._current_spools = self._get_current_spools()
             start_mm = self._get_filament_position_mm()
             self._last_filament_mm = dict(start_mm)  # prime the fallback
-            self._open_new_segments(start_mm, self._current_spools)
+            # For Marlin (Ender 3), job.filament.tool0.length is the constant
+            # G-code estimate — same at start and end, so delta = 0. Open segments
+            # at 0 so the final estimate (end_mm) is used directly as consumed.
+            # Klipper/Prusa real-time counters also start at 0, so this is correct
+            # for both firmware types.
+            self._open_new_segments({}, self._current_spools)
             self._logger.info(
                 "Print started: %s  spools=%s", self._current_file, self._current_spools
             )
@@ -605,6 +654,9 @@ class TheMomentPlugin(
                 print_id = resp.json().get("id")
                 self._logger.info("Sent print record to The Moment (id=%s)", print_id)
                 self._debug_log("Response: HTTP 201 — %s", resp.text[:500])
+                if print_id:
+                    self._pending_print_id = print_id
+                    self._sent_empty_filament = not body.get("filament")
                 # Upload gcode file in background if we have a file path.
                 if print_id and file_path:
                     t = threading.Thread(
@@ -620,6 +672,40 @@ class TheMomentPlugin(
                 self._debug_log("Full response body: %s", resp.text)
         except Exception as exc:
             self._logger.error("Failed to send print record to The Moment: %s", exc)
+
+
+    def _patch_filament_usage(self, url: str, api_key: str, print_id: int,
+                               tool_idx: int, spoolman_id: int, extrusion_mm: float):
+        """POST filament usage to /api/prints/:id/filament after a Spoolman commit event."""
+        radius_cm = 0.175 / 2
+        cross_section = math.pi * radius_cm ** 2
+        grams = round((extrusion_mm / 10.0) * cross_section * 1.24, 3)
+
+        endpoint = "{}/api/prints/{}/filament".format(url, print_id)
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        body = dict(
+            tool_index=tool_idx,
+            change_number=0,
+            spool_id=spoolman_id,
+            filament_used_mm=round(extrusion_mm, 2),
+            filament_used_grams=grams,
+        )
+        try:
+            resp = requests.post(endpoint, json=body, headers=headers, timeout=10)
+            if resp.status_code in (200, 201, 204):
+                self._logger.info(
+                    "Patched filament for print %d: spool=%d tool=%d %.2fmm=%.3fg",
+                    print_id, spoolman_id, tool_idx, extrusion_mm, grams,
+                )
+            else:
+                self._logger.warning(
+                    "Filament patch for print %d returned %d: %s",
+                    print_id, resp.status_code, resp.text[:200],
+                )
+        except Exception as exc:
+            self._logger.error("Failed to patch filament for print %d: %s", print_id, exc)
 
 
 __plugin_name__ = "The Moment"

@@ -42,10 +42,12 @@ go.work
 Thumbs.db
 
 # Data directories
-data/
+the-moment-data/
+moment_data/
 
 # Environment files (use .env.example as template)
 .env
+.dev/
 
 # Claude Code local settings
 .claude/

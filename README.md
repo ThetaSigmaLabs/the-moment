@@ -161,8 +161,11 @@ The Moment ships an OctoPrint plugin (`octoprint-plugin/`) that pushes print eve
 1. Copy or install the plugin from `octoprint-plugin/`
 2. In OctoPrint Settings → **The Moment**, set:
    - **URL**: `http://<your-the-moment-host>:5000`
-   - **Printer ID**: a short identifier, e.g. `ender3-v3-se`
+   - **Printer ID**: a short identifier matching the name you'll use in The Moment, e.g. `ender3-v3-se`
    - **API Key**: leave blank unless you've configured one in The Moment
+3. In The Moment, go to **Settings → Printers → Add Printer** and create an entry whose name matches the Printer ID above
+
+> **Setup order note:** The Moment will accept print records from any authenticated OctoPrint instance, even before a matching printer config is created. However, printer-specific cost rates (wattage, depreciation) only apply once the config exists, and they are not applied retroactively. Create the printer config in The Moment before your first print to get accurate costs from the start.
 
 ## Configuration
 
@@ -172,9 +175,17 @@ All configuration lives in the SQLite database. For Docker, set `THE_MOMENT_DB_P
 
 1. Open `http://localhost:5000`
 2. Go to **Settings → Printers → Add Printer**
-3. Enter a name, hostname/IP, and PrusaLink API key
+3. Enter a name, hostname/IP, and API key
 4. Optionally set toolhead count and names
 5. Go to **Settings → Cost Settings** to configure electricity rate, wattage, maintenance, depreciation, margin, and currency
+
+### Printer creation requirements by interface
+
+| Interface | Must create printer before first print? | What happens if you don't |
+| --- | --- | --- |
+| **PrusaLink** | **Yes** | The Moment only polls configured printers. Prints that occur before the printer is added are never recorded. |
+| **Virtual** | **Yes** | Virtual printers are created explicitly — there is no push path. |
+| **OctoPrint** | **Recommended, not required** | Print records are accepted and stored regardless. Printer-specific cost rates (wattage, depreciation) are not applied until a matching config exists, and are not applied retroactively. |
 
 ## Usage
 

@@ -3233,6 +3233,20 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 		}
 	}
 
+	// Backfill the legacy spool_id field from the primary tool (T0, initial load)
+	// so the history table and cost recalculation can surface the spool.
+	for _, f := range p.Filament {
+		if f.ToolIndex == 0 && f.ChangeNumber == 0 && f.SpoolID > 0 {
+			if _, err := b.db.Exec(
+				`UPDATE print_history SET spool_id = ? WHERE id = ?`,
+				f.SpoolID, printID,
+			); err != nil {
+				log.Printf("Warning: failed to backfill spool_id for print %d: %v", printID, err)
+			}
+			break
+		}
+	}
+
 	// Pause events.
 	for _, pause := range p.Pauses {
 		if _, err := b.db.Exec(`
@@ -3282,6 +3296,53 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 	log.Printf("📋 OctoPrint record logged: %s on %s (%.2fg, %.0fmin, %s)",
 		p.FileName, p.PrinterID, totalGrams, printTimeMin, p.Status)
 	return printID, nil
+}
+
+// AppendFilamentUsage adds a filament usage row to an existing print record and
+// updates the print_history total.  Idempotent: if a row for the same
+// (print_id, tool_index, change_number) already exists, it returns without error.
+// Called by the /api/prints/:id/filament endpoint when the OctoPrint plugin patches
+// filament data that arrived too late to include in the original POST.
+func (b *FilamentBridge) AppendFilamentUsage(printID, toolIndex, changeNumber, spoolID int, usedMM, usedG float64) error {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	// Idempotency check.
+	var count int
+	b.db.QueryRow(
+		`SELECT COUNT(*) FROM print_filament_usage WHERE print_id=? AND tool_index=? AND change_number=?`,
+		printID, toolIndex, changeNumber,
+	).Scan(&count)
+	if count > 0 {
+		return nil
+	}
+
+	if _, err := b.db.Exec(
+		`INSERT INTO print_filament_usage (print_id, tool_index, change_number, spool_id, filament_used_mm, filament_used_grams)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		printID, toolIndex, changeNumber, spoolID, usedMM, usedG,
+	); err != nil {
+		return fmt.Errorf("append filament usage: %w", err)
+	}
+
+	// Update the rollup total on print_history.
+	b.db.Exec(
+		`UPDATE print_history SET filament_used = (
+			SELECT COALESCE(SUM(filament_used_grams),0) FROM print_filament_usage WHERE print_id=?
+		 ) WHERE id=?`,
+		printID, printID,
+	)
+	// Backfill legacy spool_id for T0 initial load if not already set.
+	if toolIndex == 0 && changeNumber == 0 && spoolID > 0 {
+		b.db.Exec(
+			`UPDATE print_history SET spool_id=? WHERE id=? AND spool_id=0`,
+			spoolID, printID,
+		)
+	}
+
+	log.Printf("📎 Filament appended to print %d: tool=%d spool=%d %.2fmm=%.3fg",
+		printID, toolIndex, spoolID, usedMM, usedG)
+	return nil
 }
 
 // ReassignFilamentSegment moves the filament usage recorded against segmentID to

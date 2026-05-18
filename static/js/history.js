@@ -402,7 +402,8 @@ function populateModal(r) {
         if (recalcBtn) recalcBtn.style.display = '';
     } else {
         costSection.style.display = 'none';
-        if (recalcBtn) recalcBtn.style.display = r.filament_used > 0 ? '' : 'none';
+        var hasFilament = r.filament_used > 0 || (r.filament_usages && r.filament_usages.length > 0);
+        if (recalcBtn) recalcBtn.style.display = hasFilament ? '' : 'none';
     }
 
     document.getElementById('historyNoteInput').value = r.notes || '';
@@ -533,14 +534,33 @@ function deleteHistoryEntry() {
 
 function recalcHistoryCost() {
     if (!_activeEntry) return;
+    var body;
+    if (_activeEntry.filament_usages && _activeEntry.filament_usages.length > 0) {
+        body = {
+            filament:       _activeEntry.filament_usages.map(function(fu) {
+                return {
+                    tool_index:          fu.tool_index,
+                    change_number:       fu.change_number,
+                    spool_id:            fu.spool_id,
+                    filament_used_mm:    fu.filament_used_mm,
+                    filament_used_grams: fu.filament_used_grams
+                };
+            }),
+            print_time_min: _activeEntry.print_time_minutes,
+            printer_name:   _activeEntry.printer_name
+        };
+    } else {
+        body = {
+            filament_grams: _activeEntry.filament_used,
+            print_time_min: _activeEntry.print_time_minutes,
+            spool_id:       _activeEntry.spool_id,
+            printer_name:   _activeEntry.printer_name
+        };
+    }
     fetch('/api/cost/calculate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            filament_grams: _activeEntry.filament_used,
-            print_time_min: _activeEntry.print_time_minutes,
-            spool_id:       _activeEntry.spool_id
-        })
+        body: JSON.stringify(body)
     })
         .then(function(r) { return r.json(); })
         .then(function(bd) {
@@ -606,6 +626,16 @@ function _syncSelection() {
         allCb.indeterminate = selectedCount > 0 && selectedCount < total;
     }
 
+    var recalcSelBtn = document.getElementById('historyRecalcSelectedBtn');
+    if (recalcSelBtn) {
+        if (selectedCount > 0) {
+            recalcSelBtn.style.display = '';
+            recalcSelBtn.textContent = '💰 Recalc (' + selectedCount + ')';
+        } else {
+            recalcSelBtn.style.display = 'none';
+        }
+    }
+
     var btn = document.getElementById('historyDeleteSelectedBtn');
     if (btn) {
         if (selectedCount > 0) {
@@ -615,6 +645,44 @@ function _syncSelection() {
             btn.style.display = 'none';
         }
     }
+}
+
+function recalcSelectedSessions() {
+    var ids = [];
+    var sessionCount = 0;
+    _filteredSessions.forEach(function(s, i) {
+        if (!_selectedKeys[_sessionKey(s, i)]) return;
+        sessionCount++;
+        (s.records || []).forEach(function(r) { ids.push(r.id); });
+    });
+    if (ids.length === 0) return;
+
+    fetch('/api/history/batch-recalc', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: ids })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) { alert('Error: ' + data.error); return; }
+        var costMap = {};
+        (data.results || []).forEach(function(r) {
+            if (!r.error) costMap[r.id] = r.total_cost;
+        });
+        _allSessions.forEach(function(s) {
+            (s.records || []).forEach(function(r) {
+                if (r.id in costMap) r.total_cost = costMap[r.id];
+            });
+            s.total_cost = (s.records || []).reduce(function(sum, r) { return sum + (r.total_cost || 0); }, 0);
+        });
+        _selectedKeys = {};
+        filterHistory();
+        var errCount = (data.results || []).filter(function(r) { return r.error; }).length;
+        if (errCount > 0) {
+            alert('Updated ' + data.updated + ' records. ' + errCount + ' failed.');
+        }
+    })
+    .catch(function(err) { alert('Error: ' + err.message); });
 }
 
 function deleteSelectedSessions() {

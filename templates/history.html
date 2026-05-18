@@ -35,6 +35,9 @@
                     <option value="0">All</option>
                 </select>
                 <button class="btn btn-small btn-secondary" onclick="loadHistory()" title="Refresh">↺ Refresh</button>
+                <button id="historyRecalcSelectedBtn" class="btn btn-small btn-secondary"
+                        onclick="recalcSelectedSessions()"
+                        style="display:none;">💰 Recalc Selected</button>
                 <button id="historyDeleteSelectedBtn" class="btn btn-small btn-danger"
                         onclick="deleteSelectedSessions()"
                         style="display:none;">🗑 Delete Selected</button>

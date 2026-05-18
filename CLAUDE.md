@@ -41,6 +41,28 @@ This document describes the **NFC & Spoolman spool workflow** to be implemented.
 3. **DB cleanup must be complete.** Deleting a printer cascades to `toolhead_mappings` and `toolhead_names`.
 4. **UI text extraction uses `data-*` attributes**, never `textContent` of elements that may contain child nodes.
 5. **All edge cases handled before code is presented as final.** No "patch it after" patterns.
+6. **Host address is never statically configured.** NFC tag URLs use `c.Request.Host` (Gin's HTTP Host header) — the app auto-detects whatever address the client used to reach it. Do not add a `THE_MOMENT_IP` or `THE_MOMENT_HOST` env var; `c.Request.Host` already includes the port and adapts correctly across LAN, hostname, and VPN access.
+7. **Printer record creation rules differ by interface type.** OctoPrint is push-based: The Moment accepts any `printer_id` from an authenticated POST, even with no matching config. The API key is the security gate; rejecting unknown printer IDs would cause permanent data loss (no retry queue). PrusaLink and Virtual are pull-based: a printer config must exist before The Moment polls or processes them — there is no push path to miss. `print_history.printer_name` is a plain `TEXT` column with no foreign key; creating, renaming, or deleting a printer config has no effect on existing history records. Printer-specific cost rates only apply when a matching config exists at print time; no retroactive recalculation occurs.
+8. **OctoPrint `print_history.spool_id` is backfilled from the filament payload.** The legacy `spool_id` column on `print_history` is populated from the primary filament entry (tool_index=0, change_number=0, spool_id>0) after per-tool rows are written to `print_filament_usage`. Per-tool breakdown always comes from `print_filament_usage`; the `spool_id` on `print_history` is T0 only, used for display and cost recalculation from the modal.
+
+---
+
+## Environment Variables (`.env`)
+
+Copy `.env.example` to `.env` and adjust. `.env` is gitignored — never commit it. The Makefile loads it automatically via `-include .env`.
+
+| Variable | Read by | Default | Purpose |
+| --- | --- | --- | --- |
+| `THE_MOMENT_PORT` | `docker-compose.yml`, `main.go` | `5000` | Host-side port The Moment listens on |
+| `SPOOLMAN_PORT` | `docker-compose.yml` | `7912` | Host-side port Spoolman listens on |
+| `THE_MOMENT_DB_PATH` | `docker-compose.yml` (bind mount source), `config.go` | `./moment_data` | Host directory for The Moment's SQLite DB and config files. Bind-mounted to `/app/data` inside the container. |
+| `SPOOLMAN_DB_PATH` | `docker-compose.yml` (bind mount source) | `./spoolman_data` | Host directory for Spoolman's SQLite DB. Bind-mounted to `/home/spoolman/data` inside the container. |
+| `BACKUP_DIR` | `Makefile` | `./backups` | Where `make backup` writes timestamped `.tar.gz` archives. Can be an absolute path or a network-mounted share. |
+| `SPOOLMAN_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | Internal URL The Moment uses to reach Spoolman. Set to `http://spoolman:8000` in `docker-compose.yml` to use Docker DNS. Only applied on first run if the DB value is still the default; ignored after that. |
+
+**Data directories are bind mounts, not Docker volumes.** This makes backup and migration simple — the data lives on the host filesystem, not inside Docker's volume store. Paths can be relative (resolved from the `docker-compose.yml` directory) or absolute.
+
+**`SPOOLMAN_URL` is a first-run seed, not a live config.** After The Moment writes the URL to its SQLite DB on first startup, the env var is ignored. To change the Spoolman URL after first run, update it via the UI or edit the DB directly.
 
 ---
 
@@ -104,6 +126,8 @@ Spoolman holds all filament and spool data, including OpenPrintTag-compatible fi
 **Note on OpenPrintTag CBOR:** The Spoolman custom fields (all `nfc_*` fields) are populated and maintained now so the data is ready. Generating the CBOR binary for NFC tags is **Phase 2** work, deferred until INBXX Semi-Smart V2 hardware ships (targeted Q3 2026). See the Phase 2 section at the end of this document.
 
 ### NFC Tag Types
+
+**`{MOMENT_HOST}` resolution:** In URL format examples below, `{MOMENT_HOST}` is not a configured value — it is resolved at request time from `c.Request.Host` (the HTTP Host header). This includes the port automatically (e.g. `192.168.1.50:5001`). Do not add an env var for this; the auto-detection approach handles LAN IP, mDNS hostname, and VPN access without any static config.
 
 #### Location Tags (cheap NTAG213 — URL only)
 

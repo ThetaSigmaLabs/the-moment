@@ -208,6 +208,7 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/history/:id", ws.getHistoryEntryHandler)
 		api.PATCH("/history/:id/note", ws.updateHistoryNoteHandler)
 		api.DELETE("/history/batch", ws.batchDeleteHistoryHandler)
+		api.POST("/history/batch-recalc", ws.batchRecalcCostHandler)
 		api.DELETE("/history/:id", ws.deleteHistoryEntryHandler)
 		api.GET("/history/:id/tags", ws.getHistoryTagsHandler)
 		api.POST("/history/:id/tags", ws.setHistoryTagsHandler)
@@ -245,6 +246,8 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/nfc/spoolman-setup-status", ws.nfcSetupStatusHandler)
 		api.POST("/nfc/spoolman-setup", ws.nfcSetupHandler)
 
+		// Post-print filament data append (from OctoPrint plugin Spoolman commit event)
+		api.POST("/prints/:id/filament", ws.appendFilamentHandler)
 		// Post-print spool segment reassignment
 		api.POST("/prints/:id/filament/:segment_id/reassign", ws.reassignFilamentHandler)
 
@@ -2089,27 +2092,98 @@ func (ws *WebServer) resolvePrinterName(printerID string) string {
 
 // calculateCostHandler computes a cost breakdown without persisting it.
 // POST /api/cost/calculate
-// Body: { filament_grams, print_time_min, spool_id }
+// Body (single-spool): { filament_grams, print_time_min, spool_id, printer_name }
+// Body (multi-spool):  { filament: [{tool_index,spool_id,filament_used_grams,...}], print_time_min, printer_name }
 func (ws *WebServer) calculateCostHandler(c *gin.Context) {
 	var req struct {
-		FilamentGrams float64 `json:"filament_grams"`
-		PrintTimeMin  float64 `json:"print_time_min"`
-		SpoolID       int     `json:"spool_id"`
+		FilamentGrams float64                      `json:"filament_grams"`
+		PrintTimeMin  float64                      `json:"print_time_min"`
+		SpoolID       int                          `json:"spool_id"`
+		Filament      []OctoPrintPayloadFilament   `json:"filament"`
+		PrinterName   string                       `json:"printer_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.FilamentGrams < 0 || req.PrintTimeMin < 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "filament_grams and print_time_min must be non-negative"})
+	if req.PrintTimeMin < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "print_time_min must be non-negative"})
 		return
 	}
-	bd, err := ws.bridge.CalculatePrintCost(req.FilamentGrams, req.PrintTimeMin, req.SpoolID)
+	var bd *CostBreakdown
+	var err error
+	if len(req.Filament) > 0 {
+		bd, err = ws.bridge.CalculatePrintCostMultiSpoolForPrinter(req.Filament, req.PrintTimeMin, req.PrinterName)
+	} else {
+		if req.FilamentGrams < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "filament_grams must be non-negative"})
+			return
+		}
+		bd, err = ws.bridge.CalculatePrintCostForPrinter(req.FilamentGrams, req.PrintTimeMin, req.SpoolID, req.PrinterName)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, bd)
+}
+
+// batchRecalcCostHandler recalculates and persists cost for multiple print records.
+// POST /api/history/batch-recalc
+// Body: { ids: [int...] }
+func (ws *WebServer) batchRecalcCostHandler(c *gin.Context) {
+	var body struct {
+		IDs []int `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids required"})
+		return
+	}
+	type result struct {
+		ID        int     `json:"id"`
+		TotalCost float64 `json:"total_cost"`
+		Error     string  `json:"error,omitempty"`
+	}
+	results := make([]result, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		record, err := ws.bridge.GetPrintHistoryEntry(id)
+		if err != nil {
+			results = append(results, result{ID: id, Error: err.Error()})
+			continue
+		}
+		var bd *CostBreakdown
+		if len(record.FilamentUsages) > 0 {
+			filament := make([]OctoPrintPayloadFilament, len(record.FilamentUsages))
+			for i, fu := range record.FilamentUsages {
+				filament[i] = OctoPrintPayloadFilament{
+					ToolIndex:      fu.ToolIndex,
+					ChangeNumber:   fu.ChangeNumber,
+					SpoolID:        fu.SpoolID,
+					FilamentUsedMM: fu.FilamentUsedMM,
+					FilamentUsedG:  fu.FilamentUsedG,
+				}
+			}
+			bd, err = ws.bridge.CalculatePrintCostMultiSpoolForPrinter(filament, record.PrintTimeMinutes, record.PrinterName)
+		} else {
+			bd, err = ws.bridge.CalculatePrintCostForPrinter(record.FilamentUsed, record.PrintTimeMinutes, record.SpoolID, record.PrinterName)
+		}
+		if err != nil {
+			results = append(results, result{ID: id, Error: err.Error()})
+			continue
+		}
+		if err := ws.bridge.SavePrintCost(id, bd); err != nil {
+			results = append(results, result{ID: id, Error: err.Error()})
+			continue
+		}
+		results = append(results, result{ID: id, TotalCost: bd.TotalCost})
+	}
+	updated := 0
+	for _, r := range results {
+		if r.Error == "" {
+			updated++
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results, "updated": updated})
 }
 
 // getPrintErrorsHandler returns all unacknowledged print errors
@@ -3098,6 +3172,35 @@ func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
 }
 
 // ─── Post-print filament segment reassignment ─────────────────────────────────
+
+// appendFilamentHandler adds a filament usage entry to an existing print record.
+// Called by the OctoPrint plugin when the Spoolman usage-commit event arrives after
+// the initial print POST (which had filament=[]).
+// POST /api/prints/:id/filament
+// Body: {"tool_index":0,"change_number":0,"spool_id":1,"filament_used_mm":767.56,"filament_used_grams":2.289}
+func (ws *WebServer) appendFilamentHandler(c *gin.Context) {
+	printID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid print id"})
+		return
+	}
+	var body struct {
+		ToolIndex    int     `json:"tool_index"`
+		ChangeNumber int     `json:"change_number"`
+		SpoolID      int     `json:"spool_id"`
+		UsedMM       float64 `json:"filament_used_mm"`
+		UsedG        float64 `json:"filament_used_grams"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	if err := ws.bridge.AppendFilamentUsage(printID, body.ToolIndex, body.ChangeNumber, body.SpoolID, body.UsedMM, body.UsedG); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"ok": true})
+}
 
 // reassignFilamentHandler moves a print's filament segment to a different spool.
 // POST /api/prints/:id/filament/:segment_id/reassign
