@@ -1,8 +1,8 @@
 -include .env
 export
 
-THE_MOMENT_DB_PATH ?= ./moment_data
-SPOOLMAN_DB_PATH   ?= ./spoolman_data
+THE_MOMENT_DB_PATH ?= ./the-moment-data
+SPOOLMAN_DB_PATH   ?= ./spoolman-data
 BACKUP_DIR         ?= ./backups
 
 .PHONY: up down logs update ps backup restore help

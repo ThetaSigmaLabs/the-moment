@@ -55,8 +55,8 @@ Copy `.env.example` to `.env` and adjust. `.env` is gitignored — never commit 
 | --- | --- | --- | --- |
 | `THE_MOMENT_PORT` | `docker-compose.yml`, `main.go` | `5000` | Host-side port The Moment listens on |
 | `SPOOLMAN_PORT` | `docker-compose.yml` | `7912` | Host-side port Spoolman listens on |
-| `THE_MOMENT_DB_PATH` | `docker-compose.yml` (bind mount source), `config.go` | `./moment_data` | Host directory for The Moment's SQLite DB and config files. Bind-mounted to `/app/data` inside the container. |
-| `SPOOLMAN_DB_PATH` | `docker-compose.yml` (bind mount source) | `./spoolman_data` | Host directory for Spoolman's SQLite DB. Bind-mounted to `/home/spoolman/data` inside the container. |
+| `THE_MOMENT_DB_PATH` | `docker-compose.yml` (bind mount source), `config.go` | `./the-moment-data` | Host directory for The Moment's SQLite DB and config files. Bind-mounted to `/app/data` inside the container. |
+| `SPOOLMAN_DB_PATH` | `docker-compose.yml` (bind mount source) | `./spoolman-data` | Host directory for Spoolman's SQLite DB. Bind-mounted to `/home/spoolman/data` inside the container. |
 | `BACKUP_DIR` | `Makefile` | `./backups` | Where `make backup` writes timestamped `.tar.gz` archives. Can be an absolute path or a network-mounted share. |
 | `SPOOLMAN_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | Internal URL The Moment uses to reach Spoolman. Set to `http://spoolman:8000` in `docker-compose.yml` to use Docker DNS. Only applied on first run if the DB value is still the default; ignored after that. |
 

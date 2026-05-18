@@ -55,6 +55,29 @@
     margin-top: 20px;
 }
 
+/* History Modal Inner Tabs */
+.hm-tab {
+    background: none;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: #777;
+    cursor: pointer;
+    font-size: 0.83em;
+    font-weight: 500;
+    padding: 10px 14px;
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    letter-spacing: 0.02em;
+}
+.hm-tab:hover {
+    color: #ccc;
+    background: rgba(255,255,255,0.04);
+}
+.hm-tab.active {
+    color: #c8b8ff;
+    border-bottom-color: #7c5cfc;
+}
+
 /* Modal Form Groups (override main form styles for modals) */
 .modal .form-group {
     margin-bottom: 15px;

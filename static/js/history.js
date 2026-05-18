@@ -272,6 +272,19 @@ function toggleSession(key) {
 
 // ─── History Detail Modal ─────────────────────────────────────────────────────
 
+var _activeModalTab = 'details';
+
+function switchModalTab(tab) {
+    _activeModalTab = tab;
+    document.querySelectorAll('.hm-tab').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    ['details','costs','quality','filament','files'].forEach(function(t) {
+        var el = document.getElementById('hmTab-' + t);
+        if (el) el.style.display = (t === tab) ? 'block' : 'none';
+    });
+}
+
 function openHistoryModal(id) {
     fetch('/api/history/' + id)
         .then(function(r) { return r.json(); })
@@ -286,6 +299,7 @@ function openHistoryModal(id) {
 }
 
 function populateModal(r) {
+    switchModalTab('details');
     document.getElementById('historyDetailTitle').textContent = r.job_name || 'Print Detail';
 
     var thumbEl = document.getElementById('historyThumb');
@@ -328,46 +342,55 @@ function populateModal(r) {
     }
 
     document.getElementById('historyMetaRows').innerHTML = rows.map(function(row) {
-        return '<tr><td style="padding:5px 12px 5px 0;color:#888;white-space:nowrap;vertical-align:top;">' + row[0] +
-            '</td><td style="padding:5px 0;word-break:break-all;">' + row[1] + '</td></tr>';
+        return '<tr><td style="padding:5px 14px 5px 0;color:#777;white-space:nowrap;vertical-align:top;font-size:0.9em;">' + row[0] +
+            '</td><td style="padding:5px 0;word-break:break-all;color:#d0d0d0;">' + row[1] + '</td></tr>';
     }).join('');
 
     // Filament usages (OctoPrint multi-spool / multi-tool detail)
     var fuSection = document.getElementById('historyFilamentUsages');
     if (fuSection) {
-        // Show the table whenever there are per-segment records, even for single-tool prints,
-        // so the user can reassign the spool after the fact.
         if (r.filament_usages && r.filament_usages.length > 0) {
-            var fuHTML = '<div style="margin-top:12px;"><div style="color:#888;font-size:0.8em;text-transform:uppercase;letter-spacing:0.05em;margin-bottom:6px;">Filament by tool</div>';
-            fuHTML += '<table style="width:100%;font-size:0.85em;border-collapse:collapse;">';
-            fuHTML += '<tr style="color:#666;font-size:0.78em;">' +
-                '<th style="text-align:left;padding:3px 6px;">Tool</th>' +
-                '<th style="text-align:left;padding:3px 6px;">Load</th>' +
-                '<th style="text-align:left;padding:3px 6px;">Spool</th>' +
-                '<th style="text-align:right;padding:3px 6px;">mm</th>' +
-                '<th style="text-align:right;padding:3px 6px;">grams</th>' +
-                '<th style="padding:3px 6px;"></th>' +
+            var fuHTML = '<div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Filament by Tool</div>';
+            fuHTML += '<table style="width:100%;font-size:0.875em;border-collapse:collapse;">';
+            fuHTML += '<tr style="color:#888;font-size:0.78em;border-bottom:1px solid #333;">' +
+                '<th style="text-align:left;padding:5px 8px;font-weight:500;">Tool</th>' +
+                '<th style="text-align:left;padding:5px 8px;font-weight:500;">Load</th>' +
+                '<th style="text-align:left;padding:5px 8px;font-weight:500;">Spool</th>' +
+                '<th style="text-align:right;padding:5px 8px;font-weight:500;">mm</th>' +
+                '<th style="text-align:right;padding:5px 8px;font-weight:500;">grams</th>' +
+                '<th style="text-align:right;padding:5px 8px;font-weight:500;">Cost/kg</th>' +
+                '<th style="text-align:right;padding:5px 8px;font-weight:500;">Est. cost</th>' +
+                '<th style="padding:5px 8px;"></th>' +
                 '</tr>';
             r.filament_usages.forEach(function(fu) {
                 var spoolLabel = fu.spool_id > 0 ? '#' + fu.spool_id : '—';
+                var priceCell, estCostCell;
+                if (fu.price_per_kg != null && fu.price_per_kg > 0) {
+                    var estCost = (fu.filament_used_grams / 1000) * fu.price_per_kg;
+                    priceCell  = '<td style="padding:6px 8px;text-align:right;color:#aaa;">' + fu.price_per_kg.toFixed(2) + '</td>';
+                    estCostCell = '<td style="padding:6px 8px;text-align:right;color:#c8b8ff;">' + estCost.toFixed(3) + '</td>';
+                } else {
+                    priceCell   = '<td style="padding:6px 8px;text-align:right;color:#555;">—</td>';
+                    estCostCell = '<td style="padding:6px 8px;text-align:right;color:#555;">—</td>';
+                }
                 fuHTML += '<tr style="border-top:1px solid #2a2a2a;" id="fu-row-' + fu.id + '">' +
-                    '<td style="padding:4px 6px;">T' + fu.tool_index + '</td>' +
-                    '<td style="padding:4px 6px;color:#888;">#' + fu.change_number + '</td>' +
-                    '<td style="padding:4px 6px;color:#888;" id="fu-spool-' + fu.id + '">' + _esc(spoolLabel) + '</td>' +
-                    '<td style="padding:4px 6px;text-align:right;">' + fu.filament_used_mm.toFixed(0) + '</td>' +
-                    '<td style="padding:4px 6px;text-align:right;color:#c8b8ff;">' + fu.filament_used_grams.toFixed(2) + ' g</td>' +
-                    '<td style="padding:4px 6px;">' +
+                    '<td style="padding:6px 8px;color:#ccc;">T' + fu.tool_index + '</td>' +
+                    '<td style="padding:6px 8px;color:#777;">#' + fu.change_number + '</td>' +
+                    '<td style="padding:6px 8px;color:#aaa;" id="fu-spool-' + fu.id + '">' + _esc(spoolLabel) + '</td>' +
+                    '<td style="padding:6px 8px;text-align:right;color:#aaa;">' + fu.filament_used_mm.toFixed(0) + '</td>' +
+                    '<td style="padding:6px 8px;text-align:right;color:#c8b8ff;">' + fu.filament_used_grams.toFixed(2) + ' g</td>' +
+                    priceCell +
+                    estCostCell +
+                    '<td style="padding:6px 8px;">' +
                         '<button class="btn btn-small btn-secondary" style="padding:2px 7px;font-size:0.78em;" ' +
                         'onclick="openReassignPicker(' + fu.id + ',' + r.id + ',' + fu.filament_used_grams + ')">↔ Reassign</button>' +
                     '</td>' +
                     '</tr>';
             });
-            fuHTML += '</table></div>';
+            fuHTML += '</table>';
             fuSection.innerHTML = fuHTML;
-            fuSection.style.display = 'block';
         } else {
-            fuSection.innerHTML = '';
-            fuSection.style.display = 'none';
+            fuSection.innerHTML = '<p style="color:#555;font-size:0.875em;padding:24px 0;text-align:center;margin:0;">No per-tool filament data recorded for this print.</p>';
         }
     }
 
@@ -392,17 +415,21 @@ function populateModal(r) {
         }
     }
 
-    // Cost breakdown
+    // Cost breakdown (Costs tab)
     var costSection = document.getElementById('historyDetailCost');
+    var costEmpty   = document.getElementById('hmCostEmpty');
     var recalcBtn   = document.getElementById('historyRecalcBtn');
+    var hasFilament = r.filament_used > 0 || (r.filament_usages && r.filament_usages.length > 0);
     if (r.total_cost > 0) {
-        costSection.style.display = 'block';
+        if (costSection) costSection.style.display = 'block';
+        if (costEmpty)   costEmpty.style.display   = 'none';
         document.getElementById('historyDetailCostRows').innerHTML =
-            '<p style="color:#aaa;font-size:0.85em;margin:0;">Stored total: ' + _fmtCost(r.total_cost, r.currency) + '</p>';
+            '<p style="color:#aaa;font-size:0.85em;margin:0 0 4px;">Stored total: <strong style="color:#c8b8ff;">' + _fmtCost(r.total_cost, r.currency) + '</strong></p>' +
+            '<p style="color:#555;font-size:0.8em;margin:0;">Click Recalculate to recompute from current rates.</p>';
         if (recalcBtn) recalcBtn.style.display = '';
     } else {
-        costSection.style.display = 'none';
-        var hasFilament = r.filament_used > 0 || (r.filament_usages && r.filament_usages.length > 0);
+        if (costSection) costSection.style.display = 'none';
+        if (costEmpty)   costEmpty.style.display   = 'block';
         if (recalcBtn) recalcBtn.style.display = hasFilament ? '' : 'none';
     }
 
@@ -423,7 +450,7 @@ function _loadAttachments(printID) {
         .then(function(data) {
             var items = data.attachments || [];
             if (items.length === 0) {
-                listEl.innerHTML = '<span style="color:#555;font-size:0.9em;">No files attached</span>';
+                listEl.innerHTML = '<span style="color:#555;font-size:0.875em;">No files attached</span>';
                 return;
             }
             listEl.innerHTML = items.map(function(a) {
@@ -566,7 +593,9 @@ function recalcHistoryCost() {
         .then(function(bd) {
             if (bd.error) { alert('Error: ' + bd.error); return; }
             var costSection = document.getElementById('historyDetailCost');
-            costSection.style.display = 'block';
+            var costEmpty   = document.getElementById('hmCostEmpty');
+            if (costSection) costSection.style.display = 'block';
+            if (costEmpty)   costEmpty.style.display   = 'none';
             if (typeof _renderCostRows === 'function') {
                 document.getElementById('historyDetailCostRows').innerHTML = _renderCostRows(bd, bd.currency);
             } else {

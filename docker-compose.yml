@@ -40,7 +40,7 @@ services:
     ports:
       - "${SPOOLMAN_PORT:-7912}:8000"
     volumes:
-      - ${SPOOLMAN_DB_PATH:-./spoolman_data}:/home/spoolman/data
+      - ${SPOOLMAN_DB_PATH:-./spoolman-data}:/home/spoolman/data
     environment:
       # Timezone — adjust to your local zone
       TZ: America/Halifax
@@ -70,7 +70,7 @@ services:
       - "${THE_MOMENT_PORT:-5000}:${THE_MOMENT_PORT:-5000}"
     volumes:
       # SQLite database + config — bind-mounted from host for easy backup/portability
-      - ${THE_MOMENT_DB_PATH:-./moment_data}:/app/data
+      - ${THE_MOMENT_DB_PATH:-./the-moment-data}:/app/data
     environment:
       THE_MOMENT_PORT: ${THE_MOMENT_PORT:-5000}
       # Tell The Moment where the SQLite database lives inside the container

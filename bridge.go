@@ -107,13 +107,14 @@ type PrintHistory struct {
 // values; manual filament changes on one tool have the same ToolIndex with
 // incrementing ChangeNumber.
 type PrintFilamentUsage struct {
-	ID             int     `json:"id"`
-	PrintID        int     `json:"print_id"`
-	ToolIndex      int     `json:"tool_index"`
-	ChangeNumber   int     `json:"change_number"`
-	SpoolID        int     `json:"spool_id"`
-	FilamentUsedMM float64 `json:"filament_used_mm"`
-	FilamentUsedG  float64 `json:"filament_used_grams"`
+	ID             int      `json:"id"`
+	PrintID        int      `json:"print_id"`
+	ToolIndex      int      `json:"tool_index"`
+	ChangeNumber   int      `json:"change_number"`
+	SpoolID        int      `json:"spool_id"`
+	FilamentUsedMM float64  `json:"filament_used_mm"`
+	FilamentUsedG  float64  `json:"filament_used_grams"`
+	PricePerKg     *float64 `json:"price_per_kg,omitempty"` // from Spoolman, nil if not set
 }
 
 // PrintPause records a single pause event within a print job.
@@ -2963,6 +2964,24 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 		}
 	}
 
+	// Enrich filament usages with Spoolman price-per-kg (best-effort, errors silently skipped).
+	spoolPriceCache := map[int]*float64{}
+	for i := range r.FilamentUsages {
+		sid := r.FilamentUsages[i].SpoolID
+		if sid <= 0 {
+			continue
+		}
+		if _, seen := spoolPriceCache[sid]; !seen {
+			if spool, serr := b.spoolman.GetSpoolByID(sid); serr == nil && spool != nil {
+				p := spool.PricePerKg()
+				spoolPriceCache[sid] = &p
+			} else {
+				spoolPriceCache[sid] = nil
+			}
+		}
+		r.FilamentUsages[i].PricePerKg = spoolPriceCache[sid]
+	}
+
 	// Fetch pause events.
 	pRows, err := b.db.Query(`
 		SELECT id, print_id, paused_at, resumed_at, duration_sec, reason
@@ -3298,50 +3317,88 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 	return printID, nil
 }
 
-// AppendFilamentUsage adds a filament usage row to an existing print record and
-// updates the print_history total.  Idempotent: if a row for the same
-// (print_id, tool_index, change_number) already exists, it returns without error.
+// AppendFilamentUsage adds or updates a filament usage row on an existing print record.
 // Called by the /api/prints/:id/filament endpoint when the OctoPrint plugin patches
 // filament data that arrived too late to include in the original POST.
+//
+// Idempotency rules:
+//   - Row exists with spool_id > 0 → skip (already fully populated)
+//   - Row exists with spool_id = 0 and new spoolID > 0 → UPDATE spool_id and recalc cost
+//   - No row → INSERT and recalc cost
 func (b *FilamentBridge) AppendFilamentUsage(printID, toolIndex, changeNumber, spoolID int, usedMM, usedG float64) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
-	// Idempotency check.
-	var count int
-	b.db.QueryRow(
-		`SELECT COUNT(*) FROM print_filament_usage WHERE print_id=? AND tool_index=? AND change_number=?`,
+	var existingSpoolID int
+	err := b.db.QueryRow(
+		`SELECT COALESCE(spool_id, 0) FROM print_filament_usage WHERE print_id=? AND tool_index=? AND change_number=?`,
 		printID, toolIndex, changeNumber,
-	).Scan(&count)
-	if count > 0 {
-		return nil
-	}
+	).Scan(&existingSpoolID)
 
-	if _, err := b.db.Exec(
-		`INSERT INTO print_filament_usage (print_id, tool_index, change_number, spool_id, filament_used_mm, filament_used_grams)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		printID, toolIndex, changeNumber, spoolID, usedMM, usedG,
-	); err != nil {
-		return fmt.Errorf("append filament usage: %w", err)
-	}
-
-	// Update the rollup total on print_history.
-	b.db.Exec(
-		`UPDATE print_history SET filament_used = (
-			SELECT COALESCE(SUM(filament_used_grams),0) FROM print_filament_usage WHERE print_id=?
-		 ) WHERE id=?`,
-		printID, printID,
-	)
-	// Backfill legacy spool_id for T0 initial load if not already set.
-	if toolIndex == 0 && changeNumber == 0 && spoolID > 0 {
+	rowExists := err == nil
+	if rowExists {
+		if existingSpoolID > 0 {
+			return nil // already has a valid spool_id, nothing to do
+		}
+		// Row exists with spool_id=0 — update it if we now have the real ID.
+		if spoolID <= 0 {
+			return nil
+		}
+		if _, err := b.db.Exec(
+			`UPDATE print_filament_usage SET spool_id=? WHERE print_id=? AND tool_index=? AND change_number=?`,
+			spoolID, printID, toolIndex, changeNumber,
+		); err != nil {
+			return fmt.Errorf("updating spool_id for filament usage: %w", err)
+		}
+		if toolIndex == 0 && changeNumber == 0 {
+			b.db.Exec(`UPDATE print_history SET spool_id=? WHERE id=? AND spool_id=0`, spoolID, printID)
+		}
+		log.Printf("📎 Filament spool_id patched for print %d: tool=%d spool=%d", printID, toolIndex, spoolID)
+	} else {
+		if _, err := b.db.Exec(
+			`INSERT INTO print_filament_usage (print_id, tool_index, change_number, spool_id, filament_used_mm, filament_used_grams)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			printID, toolIndex, changeNumber, spoolID, usedMM, usedG,
+		); err != nil {
+			return fmt.Errorf("append filament usage: %w", err)
+		}
 		b.db.Exec(
-			`UPDATE print_history SET spool_id=? WHERE id=? AND spool_id=0`,
-			spoolID, printID,
+			`UPDATE print_history SET filament_used = (
+				SELECT COALESCE(SUM(filament_used_grams),0) FROM print_filament_usage WHERE print_id=?
+			 ) WHERE id=?`,
+			printID, printID,
 		)
+		if toolIndex == 0 && changeNumber == 0 && spoolID > 0 {
+			b.db.Exec(`UPDATE print_history SET spool_id=? WHERE id=? AND spool_id=0`, spoolID, printID)
+		}
+		log.Printf("📎 Filament appended to print %d: tool=%d spool=%d %.2fmm=%.3fg",
+			printID, toolIndex, spoolID, usedMM, usedG)
 	}
 
-	log.Printf("📎 Filament appended to print %d: tool=%d spool=%d %.2fmm=%.3fg",
-		printID, toolIndex, spoolID, usedMM, usedG)
+	// Recalculate cost with the updated filament data. Neither
+	// CalculatePrintCostMultiSpoolForPrinter nor SavePrintCost acquires b.mutex.
+	costRows, err := b.db.Query(
+		`SELECT tool_index, COALESCE(change_number,0), COALESCE(spool_id,0), filament_used_grams
+		 FROM print_filament_usage WHERE print_id = ? ORDER BY tool_index, change_number`, printID)
+	if err == nil {
+		defer costRows.Close()
+		var filamentForCost []OctoPrintPayloadFilament
+		for costRows.Next() {
+			var f OctoPrintPayloadFilament
+			if costRows.Scan(&f.ToolIndex, &f.ChangeNumber, &f.SpoolID, &f.FilamentUsedG) == nil {
+				filamentForCost = append(filamentForCost, f)
+			}
+		}
+		costRows.Close()
+		var printTimeMin float64
+		var printerName string
+		b.db.QueryRow(`SELECT COALESCE(print_time_minutes,0), printer_name FROM print_history WHERE id = ?`, printID).
+			Scan(&printTimeMin, &printerName)
+		if bd, calcErr := b.CalculatePrintCostMultiSpoolForPrinter(filamentForCost, printTimeMin, printerName); calcErr == nil {
+			b.SavePrintCost(printID, bd)
+		}
+	}
+
 	return nil
 }
 

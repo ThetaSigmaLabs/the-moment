@@ -258,144 +258,168 @@
 
 <!-- Print History Detail Modal -->
 <div id="historyDetailModal" class="modal">
-    <div class="modal-content" style="max-width:640px;">
-        <div class="modal-header">
-            <h3 id="historyDetailTitle" style="margin:0;font-size:1em;word-break:break-all;">Print Detail</h3>
-            <button class="close" onclick="closeHistoryModal()">&times;</button>
+    <div class="modal-content" style="max-width:680px;padding:0;display:flex;flex-direction:column;max-height:88vh;">
+
+        <!-- Header -->
+        <div class="modal-header" style="padding:14px 20px;margin:0;border-bottom:1px solid #2e2e2e;flex-shrink:0;">
+            <h3 id="historyDetailTitle" style="margin:0;font-size:0.95em;word-break:break-all;color:#e0e0e0;font-weight:500;">Print Detail</h3>
+            <button class="close" onclick="closeHistoryModal()" style="margin:0;line-height:1;">&times;</button>
         </div>
 
-        <!-- Two-column layout: thumbnail left, meta right -->
-        <div style="display:flex;gap:20px;padding:4px 0 16px;flex-wrap:wrap;">
-            <!-- Thumbnail -->
-            <div style="flex-shrink:0;">
-                <div id="historyThumb" style="width:120px;height:120px;border-radius:8px;
-                     background:#1a1a1a;border:1px solid #333;overflow:hidden;display:flex;
-                     align-items:center;justify-content:center;">
-                    <span style="color:#555;font-size:2em;">🖼</span>
+        <!-- Inner tab bar -->
+        <div style="display:flex;border-bottom:2px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;overflow-x:auto;">
+            <button class="hm-tab active" data-tab="details"  onclick="switchModalTab('details')">Details</button>
+            <button class="hm-tab"        data-tab="costs"    onclick="switchModalTab('costs')">Costs</button>
+            <button class="hm-tab"        data-tab="quality"  onclick="switchModalTab('quality')">Quality</button>
+            <button class="hm-tab"        data-tab="filament" onclick="switchModalTab('filament')">Filament</button>
+            <button class="hm-tab"        data-tab="files"    onclick="switchModalTab('files')">Files</button>
+        </div>
+
+        <!-- Scrollable tab content -->
+        <div style="flex:1;overflow-y:auto;min-height:0;">
+
+            <!-- Tab: Details -->
+            <div id="hmTab-details" style="padding:18px 20px;">
+                <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:16px;">
+                    <div style="flex-shrink:0;">
+                        <div id="historyThumb" style="width:108px;height:108px;border-radius:8px;
+                             background:#1a1a1a;border:1px solid #2e2e2e;overflow:hidden;display:flex;
+                             align-items:center;justify-content:center;">
+                            <span style="color:#444;font-size:2em;">🖼</span>
+                        </div>
+                    </div>
+                    <div style="flex:1;min-width:180px;">
+                        <table style="width:100%;border-collapse:collapse;font-size:0.875em;">
+                            <tbody id="historyMetaRows"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <!-- Pause events (OctoPrint) -->
+                <div id="historyPauses" style="display:none;border-top:1px solid #2a2a2a;padding-top:12px;margin-top:4px;"></div>
+                <!-- Note -->
+                <div style="border-top:1px solid #2a2a2a;padding-top:14px;margin-top:8px;">
+                    <label style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;display:block;margin-bottom:7px;">Note</label>
+                    <textarea id="historyNoteInput" rows="3"
+                              style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.05);
+                                     border:1px solid #444;border-radius:6px;color:#d0d0d0;padding:8px 10px;
+                                     font-size:0.88em;resize:vertical;font-family:inherit;"
+                              placeholder="Add a note about this print…"></textarea>
+                    <div style="margin-top:8px;text-align:right;">
+                        <button class="btn btn-small" onclick="saveHistoryNote()">💾 Save Note</button>
+                    </div>
                 </div>
             </div>
-            <!-- Meta grid -->
-            <div style="flex:1;min-width:200px;">
-                <table style="width:100%;border-collapse:collapse;font-size:0.88em;">
-                    <tbody id="historyMetaRows"></tbody>
-                </table>
-            </div>
-        </div>
 
-        <!-- Per-tool filament detail (OctoPrint multi-spool / multi-tool) -->
-        <div id="historyFilamentUsages" style="display:none;border-top:1px solid #333;padding-top:4px;margin-top:4px;"></div>
-
-        <!-- Inline spool picker for segment reassignment (hidden until triggered) -->
-        <div id="reassignPicker" style="display:none;border:1px solid #555;border-radius:8px;padding:12px;margin-top:8px;background:rgba(255,255,255,0.04);">
-            <div style="font-size:0.85em;color:#aaa;margin-bottom:8px;">Reassign segment to a different spool</div>
-            <select id="reassignSpoolSelect" style="width:100%;padding:6px;background:#222;color:#fff;border:1px solid #555;border-radius:4px;margin-bottom:8px;">
-                <option value="">Loading spools…</option>
-            </select>
-            <div style="display:flex;gap:8px;">
-                <button class="btn btn-small" onclick="confirmReassign()">✓ Confirm</button>
-                <button class="btn btn-small btn-secondary" onclick="cancelReassign()">Cancel</button>
-            </div>
-        </div>
-
-        <!-- Pause events detail -->
-        <div id="historyPauses" style="display:none;border-top:1px solid #333;padding-top:4px;margin-top:4px;"></div>
-
-        <!-- File attachments (gcode, slicer files) -->
-        <div id="historyAttachments" style="border-top:1px solid #333;padding-top:14px;margin-top:14px;">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                <div style="font-size:0.85em;color:#aaa;text-transform:uppercase;letter-spacing:0.05em;">Files</div>
-                <label style="cursor:pointer;">
-                    <input type="file" id="historyAttachInput" style="display:none;" onchange="uploadHistoryAttachment()">
-                    <span class="btn btn-small btn-secondary" style="font-size:0.78em;padding:2px 10px;"
-                          onclick="document.getElementById('historyAttachInput').click()">+ Attach file</span>
-                </label>
-            </div>
-            <div id="historyAttachmentList" style="font-size:0.85em;color:#666;">Loading…</div>
-        </div>
-
-        <!-- Cost breakdown (collapsible) -->
-        <div id="historyDetailCost" style="display:none;border-top:1px solid #333;padding-top:14px;margin-top:4px;">
-            <h4 style="margin:0 0 10px;font-size:0.9em;">💰 Cost Breakdown</h4>
-            <div id="historyDetailCostRows" style="font-size:0.88em;"></div>
-        </div>
-
-        <!-- Quality tags editor -->
-        <div style="border-top:1px solid #333;padding-top:14px;margin-top:14px;">
-            <label style="font-size:0.85em;color:#aaa;display:block;margin-bottom:10px;">Quality / Outcome</label>
-
-            <!-- Outcome toggle -->
-            <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-                <button id="tagOutcomeSuccess"  class="tag-outcome-btn" data-outcome="success"
-                        onclick="toggleOutcome('success')"
-                        style="padding:5px 14px;border-radius:20px;border:1px solid #444;
-                               background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
-                    ✅ Success
-                </button>
-                <button id="tagOutcomeAcceptable" class="tag-outcome-btn" data-outcome="acceptable"
-                        onclick="toggleOutcome('acceptable')"
-                        style="padding:5px 14px;border-radius:20px;border:1px solid #444;
-                               background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
-                    👍 Acceptable
-                </button>
-                <button id="tagOutcomeFailed" class="tag-outcome-btn" data-outcome="failed"
-                        onclick="toggleOutcome('failed')"
-                        style="padding:5px 14px;border-radius:20px;border:1px solid #444;
-                               background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
-                    ❌ Failed
-                </button>
+            <!-- Tab: Costs -->
+            <div id="hmTab-costs" style="display:none;padding:18px 20px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">💰 Cost Breakdown</div>
+                    <button class="btn btn-small btn-secondary" onclick="recalcHistoryCost()"
+                            id="historyRecalcBtn" style="display:none;font-size:0.78em;padding:3px 12px;">↻ Recalculate</button>
+                </div>
+                <div id="historyDetailCost" style="display:none;">
+                    <div id="historyDetailCostRows" style="font-size:0.88em;"></div>
+                </div>
+                <div id="hmCostEmpty" style="color:#555;font-size:0.875em;padding:24px 0;text-align:center;">
+                    No cost data stored — click Recalculate to compute from current rates.
+                </div>
             </div>
 
-            <!-- Issue checkboxes -->
-            <label style="font-size:0.8em;color:#888;display:block;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">Issues observed</label>
-            <div class="tag-issue-grid">
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="bed-adhesion"> Bed Adhesion</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="warping"> Warping</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="stringing"> Stringing</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="spaghetti"> Spaghetti</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-shift"> Layer Shift</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-delamination"> Layer Delamination</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="under-extrusion"> Under-Extrusion</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="over-extrusion"> Over-Extrusion</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="seam-blobbing"> Seam Blobbing</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="vfa"> VFA (Salmon Skin)</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="ghosting"> Ghosting / Ringing</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="elephant-foot"> Elephant Foot</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="filament-jam"> Filament Jam</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="nozzle-clog"> Nozzle Clog</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="thermal-issue"> Thermal Issue</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="power-failure"> Power Failure</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="user-cancelled"> User Cancelled</label>
-                <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="custom" id="tagIssueCustomCheck" onchange="toggleCustomText()"> Custom…</label>
+            <!-- Tab: Quality -->
+            <div id="hmTab-quality" style="display:none;padding:18px 20px;">
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Outcome</div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button id="tagOutcomeSuccess" class="tag-outcome-btn" data-outcome="success"
+                                onclick="toggleOutcome('success')"
+                                style="padding:6px 16px;border-radius:20px;border:1px solid #444;
+                                       background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                            ✅ Success
+                        </button>
+                        <button id="tagOutcomeAcceptable" class="tag-outcome-btn" data-outcome="acceptable"
+                                onclick="toggleOutcome('acceptable')"
+                                style="padding:6px 16px;border-radius:20px;border:1px solid #444;
+                                       background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                            👍 Acceptable
+                        </button>
+                        <button id="tagOutcomeFailed" class="tag-outcome-btn" data-outcome="failed"
+                                onclick="toggleOutcome('failed')"
+                                style="padding:6px 16px;border-radius:20px;border:1px solid #444;
+                                       background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                            ❌ Failed
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Issues Observed</div>
+                    <div class="tag-issue-grid">
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="bed-adhesion"> Bed Adhesion</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="warping"> Warping</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="stringing"> Stringing</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="spaghetti"> Spaghetti</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-shift"> Layer Shift</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-delamination"> Layer Delamination</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="under-extrusion"> Under-Extrusion</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="over-extrusion"> Over-Extrusion</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="seam-blobbing"> Seam Blobbing</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="vfa"> VFA (Salmon Skin)</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="ghosting"> Ghosting / Ringing</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="elephant-foot"> Elephant Foot</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="filament-jam"> Filament Jam</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="nozzle-clog"> Nozzle Clog</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="thermal-issue"> Thermal Issue</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="power-failure"> Power Failure</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="user-cancelled"> User Cancelled</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="custom" id="tagIssueCustomCheck" onchange="toggleCustomText()"> Custom…</label>
+                    </div>
+                    <input type="text" id="tagCustomText" placeholder="Describe the issue…"
+                           style="display:none;width:100%;box-sizing:border-box;margin-top:8px;
+                                  background:rgba(255,255,255,0.05);border:1px solid #444;border-radius:6px;
+                                  color:#d0d0d0;padding:7px 10px;font-size:0.88em;font-family:inherit;">
+                    <div style="margin-top:14px;">
+                        <button class="btn btn-small" onclick="saveHistoryTags()">💾 Save Tags</button>
+                    </div>
+                </div>
             </div>
-            <input type="text" id="tagCustomText" placeholder="Describe the issue…"
-                   style="display:none;width:100%;box-sizing:border-box;margin-top:8px;
-                          background:rgba(255,255,255,0.05);border:1px solid #555;border-radius:6px;
-                          color:#fff;padding:7px 10px;font-size:0.88em;">
-            <div style="margin-top:10px;">
-                <button class="btn btn-small" onclick="saveHistoryTags()">💾 Save Tags</button>
+
+            <!-- Tab: Filament -->
+            <div id="hmTab-filament" style="display:none;padding:18px 20px;">
+                <div id="historyFilamentUsages"></div>
+                <!-- Inline spool reassignment picker -->
+                <div id="reassignPicker" style="display:none;border:1px solid #444;border-radius:8px;padding:12px;margin-top:14px;background:rgba(255,255,255,0.04);">
+                    <div style="font-size:0.83em;color:#aaa;margin-bottom:8px;">Reassign segment to a different spool</div>
+                    <select id="reassignSpoolSelect" style="width:100%;padding:7px;background:#1e1e1e;color:#d0d0d0;border:1px solid #444;border-radius:4px;margin-bottom:10px;font-family:inherit;">
+                        <option value="">Loading spools…</option>
+                    </select>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-small" onclick="confirmReassign()">✓ Confirm</button>
+                        <button class="btn btn-small btn-secondary" onclick="cancelReassign()">Cancel</button>
+                    </div>
+                </div>
             </div>
+
+            <!-- Tab: Files -->
+            <div id="hmTab-files" style="display:none;padding:18px 20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">Attachments</div>
+                    <label style="cursor:pointer;">
+                        <input type="file" id="historyAttachInput" style="display:none;" onchange="uploadHistoryAttachment()">
+                        <span class="btn btn-small btn-secondary" style="font-size:0.78em;padding:3px 10px;"
+                              onclick="document.getElementById('historyAttachInput').click()">+ Attach File</span>
+                    </label>
+                </div>
+                <div id="historyAttachmentList" style="font-size:0.85em;color:#777;">Loading…</div>
+            </div>
+
+        </div><!-- end scrollable content -->
+
+        <!-- Footer — always visible -->
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:12px 20px;border-top:1px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;">
+            <button class="btn btn-small btn-danger" onclick="deleteHistoryEntry()">🗑 Delete</button>
+            <button class="btn btn-small btn-secondary" onclick="closeHistoryModal()">Close</button>
         </div>
 
-        <!-- Note editor -->
-        <div style="border-top:1px solid #333;padding-top:14px;margin-top:14px;">
-            <label style="font-size:0.85em;color:#aaa;display:block;margin-bottom:6px;">Note</label>
-            <textarea id="historyNoteInput" rows="3"
-                      style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.05);
-                             border:1px solid #555;border-radius:6px;color:#fff;padding:8px;
-                             font-size:0.9em;resize:vertical;"
-                      placeholder="Add a note about this print…"></textarea>
-        </div>
-
-        <div class="modal-actions" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
-            <button class="btn btn-small btn-danger" onclick="deleteHistoryEntry()"
-                    id="historyDeleteBtn">🗑 Delete</button>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                <button class="btn btn-small btn-secondary" onclick="recalcHistoryCost()"
-                        id="historyRecalcBtn" style="display:none;">💰 Recalc Cost</button>
-                <button class="btn btn-small" onclick="saveHistoryNote()">💾 Save Note</button>
-                <button class="btn btn-small btn-secondary" onclick="closeHistoryModal()">Close</button>
-            </div>
-        </div>
     </div>
 </div>
 

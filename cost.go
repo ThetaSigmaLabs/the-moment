@@ -302,8 +302,8 @@ func (b *FilamentBridge) CalculatePrintCost(filamentGrams float64, printTimeMin 
 		spools, err := b.spoolman.GetAllSpools()
 		if err == nil {
 			for _, s := range spools {
-				if s.ID == spoolID && s.Price != nil {
-					pricePerKg = *s.Price
+				if s.ID == spoolID {
+					pricePerKg = s.PricePerKg()
 					break
 				}
 			}
@@ -335,9 +335,7 @@ func (b *FilamentBridge) CalculatePrintCostForPrinter(filamentGrams, printTimeMi
 		if err == nil {
 			for _, s := range spools {
 				if s.ID == spoolID {
-					if s.Price != nil {
-						pricePerKg = *s.Price
-					}
+					pricePerKg = s.PricePerKg()
 					if isHighTempMaterial(s.Material) {
 						isHighTemp = true
 					}
@@ -382,9 +380,7 @@ func (b *FilamentBridge) CalculatePrintCostMultiSpoolForPrinter(filament []OctoP
 	if len(filament) > 0 {
 		if spools, err := b.spoolman.GetAllSpools(); err == nil {
 			for _, s := range spools {
-				if s.Price != nil {
-					spoolPrices[s.ID] = *s.Price
-				}
+				spoolPrices[s.ID] = s.PricePerKg()
 				spoolMaterials[s.ID] = s.Material
 			}
 		}
@@ -400,7 +396,11 @@ func (b *FilamentBridge) CalculatePrintCostMultiSpoolForPrinter(filament []OctoP
 		}
 	}
 
-	bd := assembleCostBreakdown(settings, pc, totalGrams, printTimeMin, filamentCost, 0, isHighTemp)
+	var effectivePricePerKg float64
+	if totalGrams > 0 && filamentCost > 0 {
+		effectivePricePerKg = filamentCost / (totalGrams / 1000.0)
+	}
+	bd := assembleCostBreakdown(settings, pc, totalGrams, printTimeMin, filamentCost, effectivePricePerKg, isHighTemp)
 
 	htLabel := ""
 	if isHighTemp { htLabel = " [high-temp]" }

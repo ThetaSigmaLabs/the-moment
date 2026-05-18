@@ -58,6 +58,7 @@ type SpoolmanFilament struct {
 	Name                 string                 `json:"name"`
 	Vendor               *SpoolmanVendor        `json:"vendor"`
 	Material             string                 `json:"material"`
+	Price                *float64               `json:"price"` // price per kg for this filament type
 	Density              float64                `json:"density"`
 	Diameter             float64                `json:"diameter"`
 	Weight               float64                `json:"weight"`
@@ -68,6 +69,18 @@ type SpoolmanFilament struct {
 	ExternalID           string                 `json:"external_id"`
 	Extra                map[string]interface{} `json:"extra"`
 	Archived             bool                   `json:"archived"`
+}
+
+// PricePerKg returns the effective per-kg price for a spool: spool-level price
+// takes precedence over filament-level price (both are stored as price/kg in Spoolman).
+func (s *SpoolmanSpool) PricePerKg() float64 {
+	if s.Price != nil {
+		return *s.Price
+	}
+	if s.Filament != nil && s.Filament.Price != nil {
+		return *s.Filament.Price
+	}
+	return 0
 }
 
 // SpoolmanVendor represents a vendor from Spoolman

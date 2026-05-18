@@ -186,7 +186,7 @@ function _renderCostRows(d, currency) {
         return '<div style="display:flex;justify-content:space-between;padding:5px 0;' +
                'border-bottom:1px solid #2a2a2a;">' +
                '<span style="color:#bbb;">' + label + '</span>' +
-               '<span>' + val + (dim ? ' <span style="color:#666;font-size:0.8em;">' + dim + '</span>' : '') + '</span>' +
+               '<span style="color:#d0d0d0;">' + val + (dim ? ' <span style="color:#777;font-size:0.8em;">' + dim + '</span>' : '') + '</span>' +
                '</div>';
     };
 
@@ -222,7 +222,7 @@ function _renderCostRows(d, currency) {
 
     html += '<div style="display:flex;justify-content:space-between;padding:8px 0;' +
             'border-top:2px solid #444;margin-top:4px;font-weight:700;font-size:1.05em;">' +
-            '<span>Total</span><span style="color:#c8b8ff;">' + fmt(d.total_cost) + '</span></div>';
+            '<span style="color:#d0d0d0;">Total</span><span style="color:#c8b8ff;">' + fmt(d.total_cost) + '</span></div>';
 
     if (!d.filament_price_per_kg || d.filament_price_per_kg === 0) {
         html += '<p style="color:#ffb74d;font-size:0.8em;margin-top:8px;">' +
