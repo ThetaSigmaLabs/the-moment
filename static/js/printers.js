@@ -72,14 +72,21 @@ function buildRealPrinterCard(printerId, printer) {
             'style="flex:1;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;"></div>';
     }
     var isOctoPrint = (printer.printer_type === 'octoprint');
+    var isBambu     = (printer.printer_type === 'bambu');
     var typeBadge = isOctoPrint
         ? '<span style="background:#3a4f6b;color:#90caf9;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">OctoPrint</span>'
+        : isBambu
+        ? '<span style="background:#5a3b3a;color:#ffab91;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">Bambu</span>'
         : '<span style="background:#3a5a3a;color:#a5d6a7;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">PrusaLink</span>';
     var apiKeyLine = isOctoPrint
         ? (printer.api_key ? '<div><strong>API Key:</strong> ••••••••</div>' : '')
+        : isBambu
+        ? '<div><strong>Credentials:</strong> ' + (printer.api_key ? '••••••••' : 'Not configured') + '</div>'
         : '<div><strong>API Key:</strong> ' + (printer.api_key ? '••••••••' : 'Not configured') + '</div>';
     var octoPrintHint = isOctoPrint
         ? '<div style="color:#90caf9;font-size:0.85em;margin-top:4px;">Receives data via push from OctoPrint plugin</div>'
+        : isBambu
+        ? '<div style="color:#ffab91;font-size:0.85em;margin-top:4px;">Connects via MQTT over TLS · AMS slots map to toolheads</div>'
         : '';
     return '<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;">' +
         '<h3 style="margin:0;">' + escapeHtml(printer.name || 'Unknown') + '</h3>' + typeBadge + '</div>' +
@@ -561,20 +568,33 @@ document.addEventListener('DOMContentLoaded', function() {
 // ─── Real Printer Modals ──────────────────────────────────────────────────────
 
 function onPrinterTypeChange(type, prefix) {
-    var label    = document.getElementById(prefix + 'APIKeyLabel');
-    var hint     = document.getElementById(prefix + 'APIKeyHint');
+    var label     = document.getElementById(prefix + 'APIKeyLabel');
+    var hint      = document.getElementById(prefix + 'APIKeyHint');
     var modelHint = document.getElementById(prefix + 'ModelHint');
-    var ipHint   = document.getElementById(prefix + 'IPHint');
+    var ipHint    = document.getElementById(prefix + 'IPHint');
+    var thLabel   = document.getElementById(prefix + 'ToolheadsLabel');
+    var thHint    = document.getElementById(prefix + 'ToolheadsHint');
     if (type === 'octoprint') {
         if (label)     label.textContent     = 'API Key (optional)';
         if (hint)      hint.textContent      = 'Leave blank if your OctoPrint does not require an API key';
         if (modelHint) modelHint.textContent = 'Informational only — not used for OctoPrint';
         if (ipHint)    ipHint.textContent    = 'Hostname or IP address of your OctoPrint server';
+        if (thLabel)   thLabel.textContent   = 'Number of Toolheads';
+        if (thHint)    thHint.textContent    = 'How many toolheads does your printer have?';
+    } else if (type === 'bambu') {
+        if (label)     label.textContent     = 'Credentials';
+        if (hint)      hint.innerHTML        = 'Format: <code>serial:accesscode</code> — e.g. <code>00M09C380500001:abc12345</code>. Found in Bambu Handy → Settings → Device, or on the printer touchscreen under Network.';
+        if (modelHint) modelHint.textContent = 'Select your Bambu printer model';
+        if (ipHint)    ipHint.textContent    = 'LAN IP address of your Bambu printer (LAN mode must be enabled on the printer)';
+        if (thLabel)   thLabel.textContent   = 'AMS Slots';
+        if (thHint)    thHint.textContent    = '4 for one AMS unit, 8 for two AMS units, 1 for no AMS (single spool)';
     } else {
         if (label)     label.textContent     = 'API Key';
         if (hint)      hint.textContent      = 'Found in PrusaLink settings on your printer';
         if (modelHint) modelHint.textContent = 'Select your printer model (auto-detected for PrusaLink)';
         if (ipHint)    ipHint.textContent    = 'Hostname or IP address of your printer';
+        if (thLabel)   thLabel.textContent   = 'Number of Toolheads';
+        if (thHint)    thHint.textContent    = 'How many toolheads does your printer have?';
     }
 }
 
@@ -644,7 +664,7 @@ document.getElementById('addPrinterForm').addEventListener('submit', function(e)
     var toolheads = parseInt(fd.get('toolheads'));
     var model = fd.get('model') || 'Other';
 
-    if (printerType === 'octoprint') {
+    if (printerType === 'octoprint' || printerType === 'bambu') {
         if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
         addPrinter({ name: name, model: model, ip_address: ip, api_key: key,
             toolheads: toolheads, printer_type: printerType })

@@ -912,8 +912,10 @@ func (ws *WebServer) updatePrinterHandler(c *gin.Context) {
 			return
 		}
 
-		// Auto-detect model if address or API key changed, or if model is currently "Unknown"
-		if printerConfig.Model == "" || printerConfig.Model == ModelUnknown {
+		// Auto-detect model via PrusaLink API (not applicable to Bambu or OctoPrint)
+		if printerConfig.PrinterType != PrinterTypeOctoPrint &&
+			printerConfig.PrinterType != PrinterTypeBambu &&
+			(printerConfig.Model == "" || printerConfig.Model == ModelUnknown) {
 			log.Printf("🔍 [Auto-Detection] Detecting model for printer %s (IP: %s)", printerID, printerConfig.IPAddress)
 
 			client := NewPrusaLinkClient(printerConfig.IPAddress, printerConfig.APIKey, 10, 60)

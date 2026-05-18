@@ -46,6 +46,12 @@ type FilamentBridge struct {
 	previousState    map[string]string    // Last seen printer state per printer
 	printStartTime   map[string]time.Time // When each printer's current job was first detected
 	mutex            sync.RWMutex
+
+	// Bambu MQTT clients — long-lived, one per printer, keyed by printerID
+	bambuClients      map[string]BambuStatusProvider
+	bambuMutex        sync.RWMutex
+	// bambuClientFactory creates a new Bambu client; overridable in tests.
+	bambuClientFactory func(ip, serial, accessCode string) BambuStatusProvider
 }
 
 // ToolheadMapping represents a mapping between a printer toolhead and a spool
@@ -241,6 +247,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		printErrors:      make(map[string]PrintError),
 		previousState:    make(map[string]string),
 		printStartTime:   make(map[string]time.Time),
+		bambuClients:     make(map[string]BambuStatusProvider),
+	}
+	bridge.bambuClientFactory = func(ip, serial, accessCode string) BambuStatusProvider {
+		return NewBambuMQTTClient(ip, serial, accessCode, newBambuDebugLogger(bridge))
 	}
 
 	// Initialize database
@@ -1732,7 +1742,7 @@ func (b *FilamentBridge) MonitorPrinters() {
 		return
 	}
 
-	// Monitor each PrusaLink printer (OctoPrint printers use push — skip them here)
+	// Monitor each printer (OctoPrint uses push — skip it here)
 	for printerID, printerConfig := range configSnapshot.Printers {
 		if printerID == "no_printers" {
 			continue // Skip placeholder
@@ -1740,7 +1750,16 @@ func (b *FilamentBridge) MonitorPrinters() {
 		if printerConfig.PrinterType == PrinterTypeOctoPrint {
 			continue // OctoPrint pushes data; no polling needed
 		}
-		go func(printerID string, config PrinterConfig) {
+		if printerConfig.IsVirtual {
+			continue // Virtual printers have no hardware to poll
+		}
+
+		monitorFn := b.monitorPrusaLink
+		if printerConfig.PrinterType == PrinterTypeBambu {
+			monitorFn = b.monitorBambu
+		}
+
+		go func(printerID string, config PrinterConfig, fn func(string, PrinterConfig) error) {
 			b.mutex.Lock()
 			if b.monitoringActive[printerID] {
 				b.mutex.Unlock()
@@ -1755,10 +1774,10 @@ func (b *FilamentBridge) MonitorPrinters() {
 				b.mutex.Unlock()
 			}()
 
-			if err := b.monitorPrusaLink(printerID, config); err != nil {
+			if err := fn(printerID, config); err != nil {
 				log.Printf("Error monitoring printer %s (%s): %v", config.IPAddress, printerID, err)
 			}
-		}(printerID, printerConfig)
+		}(printerID, printerConfig, monitorFn)
 	}
 }
 
@@ -1931,6 +1950,280 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	}
 
 	return nil
+}
+
+// monitorBambu polls one Bambu printer per ticker tick.
+//
+// The MQTT client is long-lived (persistent TLS connection). monitorBambu
+// gets-or-creates the client on first call and reads its cached status on
+// every subsequent call — no new TCP connection per tick.
+//
+// State machine mirrors monitorPrusaLink exactly, keyed on the same
+// wasPrinting / previousState / currentJobFile maps.
+func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) error {
+	serial, accessCode, err := parseBambuCredentials(config.APIKey)
+	if err != nil {
+		log.Printf("[BAMBU] Bad credentials for printer %s (%s): %v", printerID, config.Name, err)
+		return nil
+	}
+
+	// Get or create the persistent MQTT client for this printer.
+	b.bambuMutex.Lock()
+	client, exists := b.bambuClients[printerID]
+	if !exists {
+		client = b.bambuClientFactory(config.IPAddress, serial, accessCode)
+		b.bambuClients[printerID] = client
+		if err := client.Connect(); err != nil {
+			b.bambuMutex.Unlock()
+			log.Printf("[BAMBU] Could not connect to printer %s (%s) at %s: %v",
+				printerID, config.Name, config.IPAddress, err)
+			return nil
+		}
+	}
+	b.bambuMutex.Unlock()
+
+	status, err := client.GetCurrentStatus()
+	if err != nil {
+		// No MQTT message received yet — still connecting or printer is off.
+		log.Printf("[BAMBU] No status yet from %s (%s): %v", printerID, config.Name, err)
+		return nil
+	}
+
+	currentState := mapBambuState(status.GcodeState)
+	progressPct := float64(status.McPercent)
+
+	b.mutex.RLock()
+	wasPrinting := b.wasPrinting[printerID]
+	storedJobFile := b.currentJobFile[printerID]
+	prevState := b.previousState[printerID]
+	b.mutex.RUnlock()
+
+	log.Printf("[BAMBU] Printer %s (%s): state=%s (prev=%s), wasPrinting=%v, progress=%.1f%%, file=%s",
+		printerID, config.Name, currentState, prevState, wasPrinting, progressPct, storedJobFile)
+
+	switch currentState {
+
+	case StatePrinting:
+		b.mutex.Lock()
+		if status.GcodeFile != "" && storedJobFile == "" {
+			b.currentJobFile[printerID] = status.GcodeFile
+			b.printStartTime[printerID] = time.Now()
+			log.Printf("[BAMBU] 📁 Stored job filename for %s: %s", printerID, status.GcodeFile)
+		}
+		b.wasPrinting[printerID] = true
+		b.previousState[printerID] = currentState
+		b.mutex.Unlock()
+
+	case StatePaused:
+		if prevState != StatePaused {
+			log.Printf("[BAMBU] ⏸️  Print paused on %s (%s)", printerID, config.Name)
+		}
+		b.mutex.Lock()
+		b.wasPrinting[printerID] = wasPrinting
+		b.previousState[printerID] = currentState
+		b.mutex.Unlock()
+
+	case StateFinished, StateIdle:
+		if wasPrinting {
+			log.Printf("[BAMBU] 🎉 Print finished on %s (%s): file=%s weight=%.2fg",
+				printerID, config.Name, storedJobFile, status.FilamentWeightTotal)
+
+			b.mutex.Lock()
+			b.wasPrinting[printerID] = false
+			b.processingPrints[printerID] = true
+			b.previousState[printerID] = currentState
+			b.mutex.Unlock()
+
+			finishErr := b.handleBambuPrintFinished(printerID, config, storedJobFile, status)
+
+			b.mutex.Lock()
+			b.processingPrints[printerID] = false
+			if finishErr == nil {
+				b.currentJobFile[printerID] = ""
+			}
+			b.mutex.Unlock()
+
+			if finishErr != nil {
+				log.Printf("[BAMBU] Error handling print finished for %s: %v", printerID, finishErr)
+			}
+		} else {
+			b.mutex.Lock()
+			if !b.processingPrints[printerID] {
+				b.currentJobFile[printerID] = ""
+			}
+			b.previousState[printerID] = currentState
+			b.mutex.Unlock()
+		}
+
+	case StateStopped:
+		if wasPrinting {
+			log.Printf("[BAMBU] 🛑 Print CANCELLED on %s (%s): progress=%.1f%%, file=%s",
+				printerID, config.Name, progressPct, storedJobFile)
+
+			b.mutex.Lock()
+			b.wasPrinting[printerID] = false
+			b.processingPrints[printerID] = true
+			b.previousState[printerID] = currentState
+			b.mutex.Unlock()
+
+			cancelErr := b.handleBambuPrintCancelled(printerID, config, storedJobFile, status, progressPct)
+
+			b.mutex.Lock()
+			b.processingPrints[printerID] = false
+			b.currentJobFile[printerID] = ""
+			b.mutex.Unlock()
+
+			if cancelErr != nil {
+				log.Printf("[BAMBU] Error handling cancelled print for %s: %v", printerID, cancelErr)
+			}
+		} else {
+			b.mutex.Lock()
+			b.previousState[printerID] = currentState
+			b.mutex.Unlock()
+		}
+
+	default:
+		log.Printf("[BAMBU] Unknown state %q on %s (%s)", currentState, printerID, config.Name)
+		b.mutex.Lock()
+		b.previousState[printerID] = currentState
+		b.mutex.Unlock()
+	}
+
+	return nil
+}
+
+// handleBambuPrintFinished records a completed Bambu print.
+// Unlike PrusaLink, Bambu provides filament_weight_total directly in the MQTT
+// finish payload so no G-code download is needed.
+func (b *FilamentBridge) handleBambuPrintFinished(printerID string, config PrinterConfig, filename string, status *BambuStatus) error {
+	printerName := resolvePrinterName(config)
+
+	filamentUsage := computeBambuFilamentUsage(status, config.Toolheads)
+	if len(filamentUsage) == 0 {
+		msg := fmt.Sprintf("no filament usage data from Bambu MQTT payload (weight=%.2fg, ams_slots=%d)",
+			status.FilamentWeightTotal, len(status.AMSSlots))
+		b.addPrintError(printerName, filename, msg)
+		return fmt.Errorf("%s", msg)
+	}
+
+	log.Printf("[BAMBU] Filament usage for %s: %v", printerName, filamentUsage)
+
+	if err := b.processFilamentUsage(printerName, filamentUsage, filename); err != nil {
+		return err
+	}
+
+	b.mutex.RLock()
+	startTime := b.printStartTime[printerID]
+	b.mutex.RUnlock()
+
+	sessionID := newSessionID()
+	var firstPrintID int
+	for toolheadID, usedG := range filamentUsage {
+		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
+		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename,
+			0, "completed", "", sessionID, "bambu")
+		if firstPrintID == 0 && printID > 0 {
+			firstPrintID = printID
+		}
+	}
+	if firstPrintID > 0 {
+		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
+			log.Printf("[BAMBU] Warning: failed to snapshot NFC assignments for print %d: %v", firstPrintID, err)
+		}
+	}
+	return nil
+}
+
+// handleBambuPrintCancelled records a cancelled Bambu print, scaling the
+// filament usage by the print progress percentage.
+func (b *FilamentBridge) handleBambuPrintCancelled(printerID string, config PrinterConfig, filename string, status *BambuStatus, progressPct float64) error {
+	printerName := resolvePrinterName(config)
+
+	if progressPct <= 0 {
+		log.Printf("[BAMBU] ⚠️  Cancelled print at 0%% progress on %s — skipping filament deduction", printerName)
+		return nil
+	}
+
+	scale := (progressPct / 100.0) * 0.95
+	if scale > 1.0 {
+		scale = 1.0
+	}
+
+	fullUsage := computeBambuFilamentUsage(status, config.Toolheads)
+	if len(fullUsage) == 0 {
+		log.Printf("[BAMBU] No filament data for cancelled print on %s — skipping deduction", printerName)
+		return nil
+	}
+
+	partialUsage := make(map[int]float64, len(fullUsage))
+	for toolheadID, usedG := range fullUsage {
+		partialUsage[toolheadID] = usedG * scale
+	}
+
+	log.Printf("[BAMBU] Cancelled print on %s: scale=%.3f, usage=%v", printerName, scale, partialUsage)
+
+	if err := b.processFilamentUsage(printerName, partialUsage, filename+" [CANCELLED]"); err != nil {
+		return err
+	}
+
+	b.mutex.RLock()
+	startTime := b.printStartTime[printerID]
+	b.mutex.RUnlock()
+
+	sessionID := newSessionID()
+	var firstPrintID int
+	for toolheadID, usedG := range partialUsage {
+		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
+		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename+" [CANCELLED]",
+			0, "cancelled", "", sessionID, "bambu")
+		if firstPrintID == 0 && printID > 0 {
+			firstPrintID = printID
+		}
+	}
+	if firstPrintID > 0 {
+		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
+			log.Printf("[BAMBU] Warning: failed to snapshot NFC assignments for cancelled print %d: %v", firstPrintID, err)
+		}
+	}
+	return nil
+}
+
+// computeBambuFilamentUsage derives a per-toolhead filament usage map from a
+// Bambu MQTT status. AMS slot indices map directly to toolhead indices.
+//
+// If AMS slot data is present and FilamentWeightTotal > 0, the total is
+// distributed evenly across all slots that appear in status.AMSSlots. This is
+// a conservative approximation — a future refinement can use pre-print slot
+// snapshots for per-slot proportional allocation.
+//
+// Falls back to assigning the full weight to toolhead 0 when no AMS data is
+// present (single-spool printer or AMS not reporting).
+func computeBambuFilamentUsage(status *BambuStatus, toolheads int) map[int]float64 {
+	if status.FilamentWeightTotal <= 0 {
+		return nil
+	}
+
+	if len(status.AMSSlots) > 0 && toolheads > 0 {
+		activeSlots := 0
+		for slotIdx := 0; slotIdx < toolheads; slotIdx++ {
+			if _, ok := status.AMSSlots[slotIdx]; ok {
+				activeSlots++
+			}
+		}
+		if activeSlots > 0 {
+			perSlot := status.FilamentWeightTotal / float64(activeSlots)
+			usage := make(map[int]float64, activeSlots)
+			for slotIdx := 0; slotIdx < toolheads; slotIdx++ {
+				if _, ok := status.AMSSlots[slotIdx]; ok {
+					usage[slotIdx] = perSlot
+				}
+			}
+			return usage
+		}
+	}
+
+	// Fallback: single spool or no AMS data
+	return map[int]float64{0: status.FilamentWeightTotal}
 }
 
 // handlePrusaLinkPrintCancelled handles a cancelled print by computing partial filament usage.
@@ -2203,6 +2496,24 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				status.Printers[printerID] = PrinterData{
 					Name:  printerName,
 					State: StateOctoPrint,
+				}
+				continue
+			}
+
+			// Bambu: read cached MQTT state rather than making a new connection
+			if printerConfig.PrinterType == PrinterTypeBambu {
+				b.bambuMutex.RLock()
+				bambuClient, bambuExists := b.bambuClients[printerID]
+				b.bambuMutex.RUnlock()
+				bambuState := StateOffline
+				if bambuExists {
+					if s, err := bambuClient.GetCurrentStatus(); err == nil {
+						bambuState = mapBambuState(s.GcodeState)
+					}
+				}
+				status.Printers[printerID] = PrinterData{
+					Name:  printerName,
+					State: bambuState,
 				}
 				continue
 			}
@@ -3567,10 +3878,23 @@ func (b *FilamentBridge) bulkFetchQualityTags(ids []int) map[int][]PrintQualityT
 
 // Close closes the database connection
 func (b *FilamentBridge) Close() error {
+	b.CloseBambuClients()
 	if b.db != nil {
 		return b.db.Close()
 	}
 	return nil
+}
+
+// CloseBambuClients disconnects all Bambu MQTT clients.
+func (b *FilamentBridge) CloseBambuClients() {
+	b.bambuMutex.Lock()
+	defer b.bambuMutex.Unlock()
+	for id, client := range b.bambuClients {
+		if err := client.Close(); err != nil {
+			log.Printf("Warning: error closing Bambu client %s: %v", id, err)
+		}
+	}
+	b.bambuClients = make(map[string]BambuStatusProvider)
 }
 
 // All The Moment location management functions have been removed - locations are now managed in Spoolman only

@@ -30,6 +30,7 @@ This document describes the **NFC & Spoolman spool workflow** to be implemented.
 | --- | --- | --- |
 | Ender 3 V3 SE | OctoPrint | Marlin-based, single toolhead |
 | Prusa CORE One L | PrusaLink + PrusaConnect | Single toolhead, NFC reader coming in 2026 |
+| Bambu X1C / P1S / A1 (future) | Bambu MQTT | AMS = multi-toolhead; each AMS slot maps to a toolhead index |
 | INDX 8-head (future) | TBD | Multi-toolhead, pre-mapped |
 
 ---
@@ -59,6 +60,7 @@ Copy `.env.example` to `.env` and adjust. `.env` is gitignored — never commit 
 | `SPOOLMAN_DB_PATH` | `docker-compose.yml` (bind mount source) | `./spoolman-data` | Host directory for Spoolman's SQLite DB. Bind-mounted to `/home/spoolman/data` inside the container. |
 | `BACKUP_DIR` | `Makefile` | `./backups` | Where `make backup` writes timestamped `.tar.gz` archives. Can be an absolute path or a network-mounted share. |
 | `SPOOLMAN_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | Internal URL The Moment uses to reach Spoolman. Set to `http://spoolman:8000` in `docker-compose.yml` to use Docker DNS. Only applied on first run if the DB value is still the default; ignored after that. |
+| `BAMBU_DEBUG` | `bambu.go` | `0` | Set to `1` to enable verbose Bambu MQTT debug logging. Also toggleable at runtime via DB config key `bambu_debug = "true"` without a restart. |
 
 **Data directories are bind mounts, not Docker volumes.** This makes backup and migration simple — the data lives on the host filesystem, not inside Docker's volume store. Paths can be relative (resolved from the `docker-compose.yml` directory) or absolute.
 
@@ -76,6 +78,7 @@ database.go             — SQLite init, migrations, all DB helper functions
 monitor.go              — MonitorPrinters loop, skips IsVirtual printers
 prusalink.go            — PrusaLink API client
 octoprint.go            — OctoPrint API client
+bambu.go                — Bambu MQTT client, BambuStatusProvider interface, AMS parsing, debug logging
 virtual.go              — virtual printer file upload, G-code parsing, StateVirtual
 gcode.go                — ParseGcodeMetadata (extracts ;TIME:, JPG thumbnails)
 history.go              — print history table, detail modal, note editing, delete
@@ -107,6 +110,120 @@ cd octoprint-plugin && rm -f ../octoprint-the-moment.zip && \
 ```
 
 Install via OctoPrint Plugin Manager → "Install from file".
+
+---
+
+## Bambu Printer Support
+
+Bambu printers (X1C, P1S, A1, A1 Mini, etc.) communicate via MQTT over TLS. They do not use PrusaLink or OctoPrint. `bambu.go` implements the full Bambu integration.
+
+### Credential Format
+
+No new struct fields. Encode credentials in the existing `APIKey` field as `serial:accesscode`:
+
+```text
+APIKey:    "00M09C380500001:testaccesscode"
+IPAddress: "192.168.1.100"   (printer's LAN IP)
+```
+
+`parseBambuCredentials(apiKey)` splits on `:`. The serial is also the MQTT client ID and the MQTT topic suffix.
+
+### AMS → Toolhead Mapping
+
+AMS (Automatic Material System) slots map directly to The Moment's toolhead index concept:
+
+```text
+slot_index = (ams_unit_index * 4) + tray_index
+```
+
+- AMS unit 0, tray 0 → toolhead 0
+- AMS unit 0, tray 3 → toolhead 3
+- AMS unit 1, tray 0 → toolhead 4
+
+Set `Toolheads` in the printer config to the total number of AMS slots (e.g. 4 for a single AMS, 8 for two). Assign Spoolman spools to slots via the NFC workflow exactly as with any other multi-toolhead printer — The Moment fills the filament identity gap that Bambu's optional RFID does not require.
+
+### MQTT Connection Details
+
+- Broker: printer's LAN IP, port 8883 (TLS)
+- Username: `"bblp"`, password: access code
+- Topic: `device/{serial}/report`
+- TLS: `InsecureSkipVerify: true` (Bambu uses a self-signed cert)
+- Payloads are **incremental** — only changed fields appear; `handleReport()` merges into cached state
+- `filament_weight_total` in the FINISH payload gives total grams used — no G-code download needed
+
+### Architecture: BambuStatusProvider Interface
+
+```go
+type BambuStatusProvider interface {
+    Connect() error
+    GetCurrentStatus() (*BambuStatus, error)
+    Close() error
+}
+```
+
+`FilamentBridge` holds a factory:
+
+```go
+bambuClientFactory func(ip, serial, accessCode string) BambuStatusProvider
+```
+
+Tests override the factory to inject `MockBambuClient` — no network, no MQTT broker needed. Production uses `NewBambuMQTTClient`. Do not bypass this pattern when adding Bambu tests.
+
+### Bambu Debug Logging
+
+Two ways to enable verbose debug logging:
+
+1. **Environment variable** (requires container restart):
+
+   ```bash
+   BAMBU_DEBUG=1
+   ```
+
+2. **DB config key** (hot-toggle, no restart needed):
+
+   ```text
+   bambu_debug = "true"
+   ```
+
+   Toggle via Settings → Advanced or directly in the DB.
+
+When enabled, all Bambu log lines carry the prefix `[BAMBU DEBUG]`. Paho MQTT internal logs use `[BAMBU MQTT]` / `[BAMBU MQTT WARN]` / `[BAMBU MQTT ERROR]`.
+
+#### Collecting a Debug Log Transcript
+
+```bash
+# Collect from Docker (all Bambu lines)
+docker logs the-moment 2>&1 | grep "BAMBU"
+
+# Tail live
+docker logs -f the-moment 2>&1 | grep "BAMBU"
+```
+
+**What the log captures:**
+
+| Line | Diagnoses |
+| --- | --- |
+| `[BAMBU DEBUG] Connecting to tls://…` | Whether connect is attempted |
+| `[BAMBU DEBUG] TLS handshake result: ok/error` | Cert trust / TLS failure |
+| `[BAMBU DEBUG] MQTT connect result: …` | CONNACK code (auth failure, broker unavailable) |
+| `[BAMBU DEBUG] Raw MQTT payload (N bytes): …` | Full JSON — verifies topic subscription works |
+| `[BAMBU DEBUG] Parsed status: gcode_state=… mc_percent=… filament_weight_total=…` | Field name alignment |
+| `[BAMBU DEBUG] Incremental merge: field X updated old → new` | Partial update handling |
+| `[BAMBU DEBUG] AMS unit N tray N: type=… color=… remain=…%` | AMS slot parsing |
+| `[BAMBU DEBUG] State transition: X → Y` | State machine correctness |
+| `[BAMBU DEBUG] Triggering print finish: file=… weight_total=…g` | End-of-print detection |
+| `[BAMBU DEBUG] computeBambuFilamentUsage: active_slots=N per_slot=…g` | Usage distribution |
+
+Provide this transcript when asking Claude to debug a real-printer integration issue. Include lines from printer add through at least one complete print cycle.
+
+### Bambu-Specific Tests
+
+```bash
+# Run all Bambu integration tests
+go test -tags=integration -v -run TestBambu ./...
+```
+
+Tests use `MockBambuClient` — no hardware required. All 10 tests must pass before any Bambu change is merged.
 
 ---
 

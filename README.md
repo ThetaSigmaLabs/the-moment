@@ -1,7 +1,7 @@
 # The Moment
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Go Version](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://golang.org/)
 [![GitHub release](https://img.shields.io/github/v/release/ThetaSigmaLabs/the-moment)](https://github.com/ThetaSigmaLabs/the-moment/releases)
 
 A high-performance Go microservice that bridges your 3D printers and [Spoolman](https://github.com/Donkie/Spoolman) for automatic filament inventory management, complete print history, and per-print cost tracking across all your printers.
@@ -18,6 +18,7 @@ Running multiple 3D printers with Spoolman means manually updating filament usag
 
 - 🔗 **PrusaLink**: Works with any PrusaLink-compatible printer (Prusa CORE One, XL, MK4, Mini, and more)
 - 🐙 **OctoPrint**: Plugin pushes print events from any OctoPrint-managed printer directly to The Moment
+- 🐼 **Bambu**: Connects via MQTT over TLS; AMS slots map to toolheads — assign Spoolman spools via NFC just like any multi-toolhead printer
 - 🧪 **Virtual Test Printers**: Upload G-code files and simulate prints to validate Spoolman integration without hardware
 
 ### Filament & Inventory
@@ -73,9 +74,9 @@ Running multiple 3D printers with Spoolman means manually updating filament usag
 
 ## Prerequisites
 
-- A PrusaLink-compatible 3D printer **and/or** an OctoPrint instance
+- A PrusaLink-compatible printer **and/or** an OctoPrint instance **and/or** a Bambu printer on your LAN
 - Spoolman running and reachable on your network
-- **For building from source**: Go 1.23 or higher
+- **For building from source**: Go 1.24 or higher
 - **(Optional) For NFC features**: NFC-capable smartphone and NFC tags (NTAG213/215/216 recommended)
 - **(Recommendation) NFC Tools Pro** mobile app (for programming tags)
 
@@ -144,6 +145,57 @@ go build -o the-moment .
 ./the-moment
 ```
 
+## Bambu Printer Setup
+
+Bambu printers (X1C, P1S, A1, A1 Mini, etc.) connect via MQTT over TLS directly on your LAN — no cloud relay.
+
+**Requirements:**
+
+- LAN mode enabled on the printer (Bambu Handy → Settings → LAN Only Mode or LAN Mode)
+- The printer's LAN IP address
+- The printer's serial number and access code (shown in Bambu Handy → Settings → Device or on the printer screen under Network)
+
+**Add the printer in The Moment:**
+
+1. Go to **Settings → Printers → Add Printer**
+2. Set **Type** to `Bambu`
+3. Enter the LAN IP in **IP Address**
+4. Enter credentials as `serial:accesscode` in **API Key** (e.g. `00M09C380500001:abc12345`)
+5. Set **Toolheads** to the number of AMS slots (4 for one AMS unit, 8 for two, 1 for no AMS)
+6. Save — The Moment will connect on the next poll cycle
+
+**AMS slot → toolhead mapping:**
+
+Each AMS tray maps to a toolhead index: `(ams_unit * 4) + tray`. Assign Spoolman spools to these slots via the NFC Tags tab or directly in the Filament Status tab, exactly as with any other multi-toolhead printer.
+
+### Bambu Debug Logging
+
+If a Bambu printer is not connecting or not recording print events, enable debug logging to capture the full MQTT transcript:
+
+**Option 1 — environment variable** (set in `.env`, requires container restart):
+
+```bash
+BAMBU_DEBUG=1
+```
+
+**Option 2 — DB config key** (hot-toggle, no restart):
+
+In Settings → Advanced, add a config entry `bambu_debug` = `true`.
+
+**Collect the log:**
+
+```bash
+# All Bambu debug lines from Docker
+docker logs the-moment 2>&1 | grep "BAMBU"
+
+# Tail live
+docker logs -f the-moment 2>&1 | grep "BAMBU"
+```
+
+The log captures TLS handshake outcome, MQTT CONNACK code, raw JSON payloads, AMS slot parsing, and state machine transitions. Provide this transcript in a GitHub issue or to Claude when diagnosing integration problems.
+
+---
+
 ## OctoPrint Plugin
 
 The Moment ships an OctoPrint plugin (`octoprint-plugin/`) that pushes print events to The Moment API so non-Prusa printers share the same history and cost tracking.
@@ -184,6 +236,7 @@ All configuration lives in the SQLite database. For Docker, set `THE_MOMENT_DB_P
 | Interface | Must create printer before first print? | What happens if you don't |
 | --- | --- | --- |
 | **PrusaLink** | **Yes** | The Moment only polls configured printers. Prints that occur before the printer is added are never recorded. |
+| **Bambu** | **Yes** | Same as PrusaLink — pull-based. The Moment only polls printers it knows about. |
 | **Virtual** | **Yes** | Virtual printers are created explicitly — there is no push path. |
 | **OctoPrint** | **Recommended, not required** | Print records are accepted and stored regardless. Printer-specific cost rates (wattage, depreciation) are not applied until a matching config exists, and are not applied retroactively. |
 
@@ -336,6 +389,7 @@ the-moment/
 ├── nfc_routes.go                    # HTTP handlers for NFC/spool assignment API
 ├── spoolman.go                      # Spoolman API client
 ├── prusalink.go                     # PrusaLink API client
+├── bambu.go                         # Bambu MQTT client, BambuStatusProvider interface, AMS parsing
 ├── cost.go                          # Cost calculation and per-printer overrides
 ├── config.go                        # Configuration management
 ├── constants.go                     # Application constants
@@ -390,6 +444,19 @@ the-moment/
 - The interface falls back to periodic polling if WebSocket fails
 - Ensure no reverse proxy is stripping the `Upgrade` header
 
+### Bambu printer not connecting
+
+- Confirm LAN mode is enabled on the printer
+- Verify the IP address is correct and reachable from the Docker host (`ping <printer-ip>`)
+- Check credentials: `APIKey` must be `serial:accesscode` — no spaces, colon separator
+- Enable `BAMBU_DEBUG=1` and check `docker logs the-moment 2>&1 | grep "BAMBU"` for TLS or auth errors
+
+### Bambu print not recorded
+
+- Verify `Toolheads` count in the printer config matches the number of AMS slots
+- Confirm spools are assigned to the relevant AMS slot toolheads before printing
+- Enable debug logging and look for `[BAMBU DEBUG] State transition` and `Triggering print finish` lines
+
 ### Stuck spool assignments after deleting a printer
 
 - Settings → Printers → Check for Stuck Assignments
@@ -420,7 +487,11 @@ go test ./...
 # Run with race detector
 go run -race .
 
+# Run integration tests (includes Bambu, OctoPrint lifecycle, monitor)
+go test -tags=integration ./... -v
+
 # Run specific test suites
+go test -tags=integration ./... -v -run TestBambu
 go test ./... -v -run TestOctoPrint
 go test ./... -v -run TestCost
 go test ./... -v -run TestSession
@@ -438,6 +509,7 @@ Contributions are welcome!
 
 ## Roadmap
 
+- [x] Bambu printer support (MQTT over TLS, AMS multi-toolhead)
 - [ ] Support for additional printer APIs
 - [ ] Mobile-responsive UI improvements
 - [x] OctoPrint plugin

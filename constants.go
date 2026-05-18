@@ -93,4 +93,8 @@ const MaxToolheads = 16
 const (
 	PrinterTypePrusaLink = "prusalink"
 	PrinterTypeOctoPrint = "octoprint"
+	PrinterTypeBambu     = "bambu"
 )
+
+// ConfigKeyBambuDebug enables verbose Bambu MQTT debug logging when set to "true".
+const ConfigKeyBambuDebug = "bambu_debug"
