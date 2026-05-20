@@ -19,8 +19,11 @@ Settings (configured in OctoPrint Settings → The Moment):
 """
 
 import datetime
+import glob
+import json
 import logging
 import math
+import os
 import threading
 import uuid
 
@@ -31,6 +34,9 @@ import requests
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_MAX_PENDING_AGE_DAYS = 7
+
 
 def _utc_now() -> str:
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
@@ -62,6 +68,7 @@ class TheMomentPlugin(
         # True when the last print was sent with filament=[]; drives the patch decision.
         self._sent_empty_filament: bool = False
         self._reset_state()
+        self._drain_lock = threading.Lock()
 
     # ── State management ────────────────────────────────────────────────────
 
@@ -115,6 +122,12 @@ class TheMomentPlugin(
             spoolman_managed=True,
             debug_mode=False,
         )
+
+    # ── OctoPrint lifecycle ──────────────────────────────────────────────────
+
+    def on_after_startup(self):
+        """Drain any prints that were queued while The Moment was unreachable."""
+        threading.Thread(target=self._drain_pending_queue, daemon=True).start()
 
     # ── OctoPrint SimpleApiPlugin ────────────────────────────────────────────
 
@@ -665,14 +678,123 @@ class TheMomentPlugin(
                         daemon=True,
                     )
                     t.start()
+                # Drain any prints queued while The Moment was previously unreachable.
+                threading.Thread(target=self._drain_pending_queue, daemon=True).start()
             else:
                 self._logger.warning(
                     "The Moment returned %s: %s", resp.status_code, resp.text[:200]
                 )
                 self._debug_log("Full response body: %s", resp.text)
+                self._save_to_pending_queue(body, file_origin, file_path)
         except Exception as exc:
             self._logger.error("Failed to send print record to The Moment: %s", exc)
+            self._save_to_pending_queue(body, file_origin, file_path)
 
+
+    # ── Pending-print disk queue ─────────────────────────────────────────────
+
+    def _pending_queue_dir(self) -> str:
+        d = os.path.join(self.get_plugin_data_folder(), "pending_prints")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def _save_to_pending_queue(self, body: dict, file_origin: str, file_path: str):
+        """Persist a failed print push to disk so it can be retried on next startup or reconnect."""
+        try:
+            d = self._pending_queue_dir()
+            session_id = body.get("session_id") or str(uuid.uuid4())
+            ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            fname = os.path.join(d, "{}_{}.json".format(ts, session_id))
+            entry = {
+                "queued_at": _utc_now(),
+                "attempts": 0,
+                "file_origin": file_origin,
+                "file_path": file_path,
+                "payload": body,
+            }
+            with open(fname, "w") as fh:
+                json.dump(entry, fh)
+            self._logger.warning(
+                "Print queued for retry (The Moment unreachable): %s → %s",
+                body.get("file_name", "?"), fname,
+            )
+        except Exception as exc:
+            self._logger.error("Failed to save print to pending queue: %s", exc)
+
+    def _send_queued(self, entry: dict) -> bool:
+        """Send one queued entry. Returns True on 201, False otherwise. Never re-queues."""
+        url = (self._settings.get(["url"]) or "").rstrip("/")
+        api_key = self._settings.get(["api_key"]) or ""
+        if not url:
+            return False
+        body = entry.get("payload", {})
+        file_origin = entry.get("file_origin", "local")
+        file_path = entry.get("file_path", "")
+        endpoint = url + "/api/prints"
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        try:
+            resp = requests.post(endpoint, json=body, headers=headers, timeout=10)
+            if resp.status_code == 201:
+                print_id = resp.json().get("id")
+                self._logger.info(
+                    "Sent queued print to The Moment (id=%s, file=%s)",
+                    print_id, body.get("file_name", "?"),
+                )
+                if print_id and file_path:
+                    threading.Thread(
+                        target=self._upload_gcode,
+                        args=(url, api_key, print_id, file_origin, file_path),
+                        daemon=True,
+                    ).start()
+                return True
+            self._logger.warning(
+                "Queued print returned %s: %s", resp.status_code, resp.text[:200],
+            )
+            return False
+        except Exception as exc:
+            self._logger.warning("Queued print send failed: %s", exc)
+            return False
+
+    def _drain_pending_queue(self):
+        """Send all queued prints to The Moment, oldest first. Safe to call from any thread."""
+        if not self._drain_lock.acquire(blocking=False):
+            return  # another drain is already in progress
+        try:
+            d = self._pending_queue_dir()
+            files = sorted(glob.glob(os.path.join(d, "*.json")))
+            if not files:
+                return
+            self._logger.info("Draining %d queued print(s)…", len(files))
+            cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=_MAX_PENDING_AGE_DAYS)
+            for fpath in files:
+                try:
+                    with open(fpath) as fh:
+                        entry = json.load(fh)
+                    try:
+                        queued_at = datetime.datetime.strptime(
+                            entry.get("queued_at", ""), "%Y-%m-%dT%H:%M:%SZ"
+                        )
+                    except ValueError:
+                        queued_at = datetime.datetime.utcnow()
+                    if queued_at < cutoff:
+                        self._logger.warning(
+                            "Discarding expired queued print (>%d days old): %s",
+                            _MAX_PENDING_AGE_DAYS, fpath,
+                        )
+                        os.remove(fpath)
+                        continue
+                    if self._send_queued(entry):
+                        os.remove(fpath)
+                    else:
+                        entry["attempts"] = entry.get("attempts", 0) + 1
+                        with open(fpath, "w") as fh:
+                            json.dump(entry, fh)
+                except Exception as exc:
+                    self._logger.error("Error processing queued print %s: %s", fpath, exc)
+        finally:
+            self._drain_lock.release()
 
     def _patch_filament_usage(self, url: str, api_key: str, print_id: int,
                                tool_idx: int, spoolman_id: int, extrusion_mm: float):
@@ -710,7 +832,7 @@ class TheMomentPlugin(
 
 __plugin_name__ = "The Moment"
 __plugin_identifier__ = "the_moment"
-__plugin_version__ = "1.1.0"
+__plugin_version__ = "1.2.0"
 __plugin_description__ = "Sends print events to The Moment for unified print history and cost tracking."
 __plugin_pythoncompat__ = ">=3.9,<4"
 __plugin_implementation__ = TheMomentPlugin()

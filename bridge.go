@@ -3509,6 +3509,17 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 	}
 	if p.SessionID == "" {
 		p.SessionID = newSessionID()
+	} else {
+		// Idempotency: if this session_id was already recorded (e.g. the plugin
+		// retried a push that actually succeeded), return the existing ID.
+		var existingID int
+		err := b.db.QueryRow(
+			`SELECT id FROM print_history WHERE session_id = ? LIMIT 1`,
+			p.SessionID,
+		).Scan(&existingID)
+		if err == nil {
+			return existingID, nil
+		}
 	}
 
 	// Sum filament across all tools for the top-level record.
