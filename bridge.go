@@ -7,6 +7,7 @@ package main
 import (
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -32,6 +33,16 @@ func newSessionID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
 
+// logStateTransition logs a printer state change in a structured, grep-friendly format.
+// Only logs when from != to; no-ops on same-state polls.
+func logStateTransition(printerID, from, to string, jobID int, progress float64) {
+	if from == to {
+		return
+	}
+	log.Printf("[PRUSALINK] printer=%s transition=%s→%s job=%d progress=%.1f",
+		printerID, from, to, jobID, progress)
+}
+
 // FilamentBridge manages the connection between PrusaLink and Spoolman
 type FilamentBridge struct {
 	config           *Config
@@ -39,6 +50,8 @@ type FilamentBridge struct {
 	db               *sql.DB
 	wasPrinting      map[string]bool
 	currentJobFile   map[string]string     // Store current job filename per printer
+	currentJobDisplayName map[string]string // Display name (long filename) for current job
+	currentJobID     map[string]int        // Job ID from PRINTING state; carried to finish handler
 	processingPrints map[string]bool       // Track prints being processed
 	monitoringActive map[string]bool       // Guard against overlapping monitor goroutines per printer
 	printErrors      map[string]PrintError // Store print processing errors
@@ -105,6 +118,9 @@ type PrintHistory struct {
 
 	// File attachments (gcode, slicer files — populated only on single-record fetch)
 	Attachments []PrintAttachment `json:"attachments,omitempty"`
+
+	// HasDebugLog is true when a debug poll transcript exists for this print.
+	HasDebugLog bool `json:"has_debug_log,omitempty"`
 }
 
 // PrintFilamentUsage is per-tool filament data stored for a unified print record.
@@ -240,9 +256,11 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 	bridge := &FilamentBridge{
 		config:           config,
 		spoolman:         NewSpoolmanClient(DefaultSpoolmanURL, SpoolmanTimeout),
-		wasPrinting:      make(map[string]bool),
-		currentJobFile:   make(map[string]string),
-		processingPrints: make(map[string]bool),
+		wasPrinting:           make(map[string]bool),
+		currentJobFile:        make(map[string]string),
+		currentJobDisplayName: make(map[string]string),
+		currentJobID:          make(map[string]int),
+		processingPrints:      make(map[string]bool),
 		monitoringActive: make(map[string]bool),
 		printErrors:      make(map[string]PrintError),
 		previousState:    make(map[string]string),
@@ -285,6 +303,20 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 	if err := bridge.migratePrintAttachments(); err != nil {
 		return nil, fmt.Errorf("failed to migrate print attachments: %w", err)
 	}
+
+	if err := bridge.migratePrusaLinkStateCache(); err != nil {
+		return nil, fmt.Errorf("failed to migrate PrusaLink state cache: %w", err)
+	}
+
+	if err := bridge.migratePrintSessions(); err != nil {
+		return nil, fmt.Errorf("failed to migrate print sessions: %w", err)
+	}
+
+	if err := bridge.migratePrinterDebugLog(); err != nil {
+		return nil, fmt.Errorf("failed to migrate printer debug log: %w", err)
+	}
+
+	bridge.ReconcileActiveSessions()
 
 	// Update Spoolman URL and timeout if config is provided
 	if config != nil && config.SpoolmanURL != "" {
@@ -590,6 +622,464 @@ func (b *FilamentBridge) migratePrintAttachments() error {
 	}
 	_, err = b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_print_attachments_print_id ON print_attachments(print_history_id)`)
 	return err
+}
+
+// migratePrusaLinkStateCache creates tables for persisting per-printer poll state
+// and deduplicating re-fired job completions (known PrusaLink firmware behaviour).
+func (b *FilamentBridge) migratePrusaLinkStateCache() error {
+	tables := []string{
+		`CREATE TABLE IF NOT EXISTS printer_state_cache (
+			printer_id TEXT PRIMARY KEY,
+			last_state TEXT NOT NULL,
+			last_job_id INTEGER,
+			last_progress REAL,
+			last_time_printing INTEGER,
+			last_polled_at DATETIME NOT NULL,
+			next_poll_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			consecutive_failures INTEGER NOT NULL DEFAULT 0,
+			FOREIGN KEY (printer_id) REFERENCES printer_configs(printer_id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS processed_jobs (
+			printer_id TEXT NOT NULL,
+			job_id INTEGER NOT NULL,
+			completed_at DATETIME NOT NULL,
+			outcome TEXT NOT NULL,
+			PRIMARY KEY (printer_id, job_id),
+			FOREIGN KEY (printer_id) REFERENCES printer_configs(printer_id) ON DELETE CASCADE
+		)`,
+	}
+	for _, q := range tables {
+		if _, err := b.db.Exec(q); err != nil {
+			return fmt.Errorf("migratePrusaLinkStateCache: %w", err)
+		}
+	}
+	return nil
+}
+
+// PrinterStateCache holds the last-known poll result for a single printer.
+type PrinterStateCache struct {
+	PrinterID           string
+	LastState           string
+	LastJobID           int
+	LastProgress        float64
+	LastTimePrinting    int
+	LastPolledAt        time.Time
+	NextPollAt          time.Time
+	ConsecutiveFailures int
+}
+
+// pollIntervalForState returns the desired poll interval for a given printer state.
+func pollIntervalForState(state string) time.Duration {
+	switch state {
+	case StateFinished:
+		return 2 * time.Second
+	case StateAttention:
+		return 3 * time.Second
+	case StatePrinting:
+		return 5 * time.Second
+	case StatePaused:
+		return 10 * time.Second
+	case StateIdle:
+		return 20 * time.Second
+	default:
+		return 30 * time.Second
+	}
+}
+
+// GetLastKnownState returns the cached poll state for a printer, or a zero-value
+// struct if no row exists yet.
+func (b *FilamentBridge) GetLastKnownState(printerID string) (PrinterStateCache, error) {
+	var c PrinterStateCache
+	var lastPolled, nextPoll string
+	err := b.db.QueryRow(`
+		SELECT printer_id, last_state, COALESCE(last_job_id,0),
+		       COALESCE(last_progress,0), COALESCE(last_time_printing,0),
+		       last_polled_at, next_poll_at, consecutive_failures
+		FROM printer_state_cache WHERE printer_id = ?`, printerID).
+		Scan(&c.PrinterID, &c.LastState, &c.LastJobID,
+			&c.LastProgress, &c.LastTimePrinting,
+			&lastPolled, &nextPoll, &c.ConsecutiveFailures)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PrinterStateCache{}, nil
+	}
+	if err != nil {
+		return PrinterStateCache{}, err
+	}
+	c.LastPolledAt, _ = time.Parse(time.RFC3339, lastPolled)
+	c.NextPollAt, _ = time.Parse(time.RFC3339, nextPoll)
+	return c, nil
+}
+
+// UpsertLastKnownState writes (or updates) the cached poll state for a printer.
+// nextState is used to compute the next desired poll time.
+func (b *FilamentBridge) UpsertLastKnownState(printerID, state string, jobID int, progress float64, timePrinting int) error {
+	now := time.Now().UTC()
+	nextPoll := now.Add(pollIntervalForState(state))
+	_, err := b.db.Exec(`
+		INSERT INTO printer_state_cache
+			(printer_id, last_state, last_job_id, last_progress, last_time_printing,
+			 last_polled_at, next_poll_at, consecutive_failures)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+		ON CONFLICT(printer_id) DO UPDATE SET
+			last_state = excluded.last_state,
+			last_job_id = excluded.last_job_id,
+			last_progress = excluded.last_progress,
+			last_time_printing = excluded.last_time_printing,
+			last_polled_at = excluded.last_polled_at,
+			next_poll_at = excluded.next_poll_at,
+			consecutive_failures = 0`,
+		printerID, state, jobID, progress, timePrinting,
+		now.Format(time.RFC3339), nextPoll.Format(time.RFC3339))
+	return err
+}
+
+// IncrementFailureCount increments the consecutive_failures counter and returns
+// the new count. Does not update last_polled_at or next_poll_at.
+func (b *FilamentBridge) IncrementFailureCount(printerID string) (int, error) {
+	_, err := b.db.Exec(`
+		INSERT INTO printer_state_cache
+			(printer_id, last_state, last_polled_at, next_poll_at, consecutive_failures)
+		VALUES (?, '', datetime('now'), datetime('now'), 1)
+		ON CONFLICT(printer_id) DO UPDATE SET
+			consecutive_failures = consecutive_failures + 1`,
+		printerID)
+	if err != nil {
+		return 0, err
+	}
+	var count int
+	err = b.db.QueryRow(`SELECT consecutive_failures FROM printer_state_cache WHERE printer_id = ?`, printerID).Scan(&count)
+	return count, err
+}
+
+// IsJobProcessed reports whether a job has been conclusively processed (finished or
+// stopped). "recovered" entries do not count — a job recovered at restart can still
+// complete normally once the printer resumes.
+func (b *FilamentBridge) IsJobProcessed(printerID string, jobID int) (bool, error) {
+	if jobID == 0 {
+		return false, nil // job ID 0 means unknown; never suppress
+	}
+	var count int
+	err := b.db.QueryRow(`SELECT COUNT(*) FROM processed_jobs WHERE printer_id = ? AND job_id = ? AND outcome != 'recovered'`,
+		printerID, jobID).Scan(&count)
+	return count > 0, err
+}
+
+// MarkJobProcessed records that a job has been fully handled so re-fires are ignored.
+// outcome is one of "finished", "stopped", "recovered", "errored".
+// Uses INSERT OR REPLACE so a prior "recovered" placeholder gets upgraded to the final outcome.
+func (b *FilamentBridge) MarkJobProcessed(printerID string, jobID int, outcome string) error {
+	if jobID == 0 {
+		return nil
+	}
+	_, err := b.db.Exec(`
+		INSERT OR REPLACE INTO processed_jobs (printer_id, job_id, completed_at, outcome)
+		VALUES (?, ?, datetime('now'), ?)`,
+		printerID, jobID, outcome)
+	return err
+}
+
+// migratePrintSessions creates the active_print_sessions table and adds
+// recovery-tracking columns to print_history.
+func (b *FilamentBridge) migratePrintSessions() error {
+	_, err := b.db.Exec(`CREATE TABLE IF NOT EXISTS active_print_sessions (
+		printer_id TEXT NOT NULL,
+		job_id INTEGER NOT NULL,
+		started_at DATETIME NOT NULL,
+		file_path TEXT,
+		file_size_bytes INTEGER,
+		gcode_metadata_json TEXT,
+		gcode_local_path TEXT,
+		initial_assignments_json TEXT,
+		last_seen_progress REAL,
+		last_seen_time_printing INTEGER,
+		change_count INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (printer_id, job_id),
+		FOREIGN KEY (printer_id) REFERENCES printer_configs(printer_id) ON DELETE CASCADE
+	)`)
+	if err != nil {
+		return fmt.Errorf("migratePrintSessions: %w", err)
+	}
+	for _, q := range []string{
+		`ALTER TABLE print_history ADD COLUMN outcome TEXT DEFAULT 'finished'`,
+		`ALTER TABLE print_history ADD COLUMN progress_at_stop REAL`,
+		`ALTER TABLE print_history ADD COLUMN recovered INTEGER DEFAULT 0`,
+		`ALTER TABLE print_history ADD COLUMN gcode_unavailable INTEGER DEFAULT 0`,
+	} {
+		b.db.Exec(q) // ignore duplicate-column errors on existing DBs
+	}
+	return nil
+}
+
+// migratePrinterDebugLog adds debug_log toggle to printer_configs and creates
+// the print_debug_logs table for per-print poll transcripts.
+func (b *FilamentBridge) migratePrinterDebugLog() error {
+	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN debug_log INTEGER DEFAULT 0`)
+	_, err := b.db.Exec(`
+		CREATE TABLE IF NOT EXISTS print_debug_logs (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			printer_id       TEXT    NOT NULL,
+			job_id           INTEGER NOT NULL,
+			print_history_id INTEGER,
+			logged_at        DATETIME NOT NULL DEFAULT (datetime('now')),
+			message          TEXT    NOT NULL
+		)`)
+	if err != nil {
+		return fmt.Errorf("migratePrinterDebugLog: %w", err)
+	}
+	b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pdl_hist ON print_debug_logs(print_history_id)`)
+	b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pdl_job  ON print_debug_logs(printer_id, job_id)`)
+	return nil
+}
+
+// AppendPrintDebugLog writes one line to the in-progress debug transcript for
+// the given printer+job pair. Called only when DebugLog is enabled on the config.
+func (b *FilamentBridge) AppendPrintDebugLog(printerID string, jobID int, message string) error {
+	_, err := b.db.Exec(
+		`INSERT INTO print_debug_logs (printer_id, job_id, message) VALUES (?, ?, ?)`,
+		printerID, jobID, message)
+	return err
+}
+
+// LinkDebugLogsToPrint sets print_history_id on all unlinked rows for a printer+job.
+// Called once the print_history record has been written.
+func (b *FilamentBridge) LinkDebugLogsToPrint(printerID string, jobID int, printHistoryID int) error {
+	_, err := b.db.Exec(
+		`UPDATE print_debug_logs SET print_history_id = ?
+		 WHERE printer_id = ? AND job_id = ? AND print_history_id IS NULL`,
+		printHistoryID, printerID, jobID)
+	return err
+}
+
+// GetPrintDebugLog returns the full debug transcript for a print as plain text.
+func (b *FilamentBridge) GetPrintDebugLog(printHistoryID int) (string, error) {
+	rows, err := b.db.Query(
+		`SELECT logged_at, message FROM print_debug_logs
+		 WHERE print_history_id = ? ORDER BY id ASC`, printHistoryID)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var ts, msg string
+		if err := rows.Scan(&ts, &msg); err != nil {
+			return "", err
+		}
+		lines = append(lines, ts+" "+msg)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// HasPrintDebugLog reports whether any debug log rows exist for the given print.
+func (b *FilamentBridge) HasPrintDebugLog(printHistoryID int) bool {
+	var n int
+	b.db.QueryRow(`SELECT COUNT(*) FROM print_debug_logs WHERE print_history_id = ?`, printHistoryID).Scan(&n)
+	return n > 0
+}
+
+// ActivePrintSession records a print that is currently in progress so a restart
+// can detect orphaned sessions and write recovery history rows.
+type ActivePrintSession struct {
+	PrinterID              string
+	JobID                  int
+	StartedAt              time.Time
+	FilePath               string
+	FileSizeBytes          int64
+	GcodeMetadataJSON      string
+	GcodeLocalPath         string
+	InitialAssignmentsJSON string
+	LastSeenProgress       float64
+	LastSeenTimePrinting   int
+	ChangeCount            int
+}
+
+// UpsertActivePrintSession inserts a new active session record. ON CONFLICT DO NOTHING
+// so that re-entering PRINTING for the same job (e.g. after ATTENTION) is idempotent.
+func (b *FilamentBridge) UpsertActivePrintSession(printerID string, jobID int, startedAt time.Time, filePath string, fileSizeBytes int64, assignmentsJSON string) error {
+	_, err := b.db.Exec(`
+		INSERT INTO active_print_sessions
+			(printer_id, job_id, started_at, file_path, file_size_bytes, initial_assignments_json)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(printer_id, job_id) DO NOTHING`,
+		printerID, jobID,
+		startedAt.UTC().Format(time.RFC3339Nano),
+		filePath, fileSizeBytes, assignmentsJSON)
+	return err
+}
+
+// GetActivePrintSession returns the active session for a printer/job pair, or nil if none.
+func (b *FilamentBridge) GetActivePrintSession(printerID string, jobID int) (*ActivePrintSession, error) {
+	var s ActivePrintSession
+	var startedAt string
+	var filePath, gcodeMeta, gcodeLocal, assignJSON sql.NullString
+	var fileSizeBytes sql.NullInt64
+	var lastProgress sql.NullFloat64
+	var lastTimePrinting sql.NullInt64
+	err := b.db.QueryRow(`
+		SELECT printer_id, job_id, started_at, file_path, file_size_bytes,
+		       gcode_metadata_json, gcode_local_path, initial_assignments_json,
+		       last_seen_progress, last_seen_time_printing, change_count
+		FROM active_print_sessions WHERE printer_id = ? AND job_id = ?`,
+		printerID, jobID).Scan(
+		&s.PrinterID, &s.JobID, &startedAt, &filePath, &fileSizeBytes,
+		&gcodeMeta, &gcodeLocal, &assignJSON,
+		&lastProgress, &lastTimePrinting, &s.ChangeCount)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.StartedAt, _ = time.Parse(time.RFC3339Nano, startedAt)
+	if s.StartedAt.IsZero() {
+		s.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+	}
+	if filePath.Valid {
+		s.FilePath = filePath.String
+	}
+	if fileSizeBytes.Valid {
+		s.FileSizeBytes = fileSizeBytes.Int64
+	}
+	if gcodeMeta.Valid {
+		s.GcodeMetadataJSON = gcodeMeta.String
+	}
+	if gcodeLocal.Valid {
+		s.GcodeLocalPath = gcodeLocal.String
+	}
+	if assignJSON.Valid {
+		s.InitialAssignmentsJSON = assignJSON.String
+	}
+	if lastProgress.Valid {
+		s.LastSeenProgress = lastProgress.Float64
+	}
+	if lastTimePrinting.Valid {
+		s.LastSeenTimePrinting = int(lastTimePrinting.Int64)
+	}
+	return &s, nil
+}
+
+// UpdateSessionProgress persists the latest progress/time into the active session row.
+func (b *FilamentBridge) UpdateSessionProgress(printerID string, jobID int, progress float64, timePrinting int) error {
+	_, err := b.db.Exec(`
+		UPDATE active_print_sessions
+		SET last_seen_progress = ?, last_seen_time_printing = ?
+		WHERE printer_id = ? AND job_id = ?`,
+		progress, timePrinting, printerID, jobID)
+	return err
+}
+
+// DeleteActivePrintSession removes the active session record once the print has
+// been processed (finished, cancelled, or recovered on restart).
+func (b *FilamentBridge) DeleteActivePrintSession(printerID string, jobID int) error {
+	_, err := b.db.Exec(`DELETE FROM active_print_sessions WHERE printer_id = ? AND job_id = ?`,
+		printerID, jobID)
+	return err
+}
+
+// ReconcileActiveSessions runs once at startup to salvage prints that were in-progress
+// when the service last restarted. For each orphaned session a recovery print_history
+// row is written (recovered=1, gcode_unavailable=1) so the print is not silently lost.
+func (b *FilamentBridge) ReconcileActiveSessions() {
+	type orphan struct {
+		printerID        string
+		printerName      string
+		jobID            int
+		startedAt        string
+		filePath         string
+		lastProgress     float64
+		lastTimePrinting int
+	}
+
+	rows, err := b.db.Query(`
+		SELECT s.printer_id, COALESCE(pc.name, s.printer_id),
+		       s.job_id, s.started_at,
+		       COALESCE(s.file_path, ''),
+		       COALESCE(s.last_seen_progress, 0),
+		       COALESCE(s.last_seen_time_printing, 0)
+		FROM active_print_sessions s
+		LEFT JOIN printer_configs pc ON pc.printer_id = s.printer_id
+		WHERE NOT EXISTS (
+			SELECT 1 FROM processed_jobs p
+			WHERE p.printer_id = s.printer_id AND p.job_id = s.job_id
+		)`)
+	if err != nil {
+		log.Printf("[RECONCILE] query failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var orphans []orphan
+	for rows.Next() {
+		var o orphan
+		if err := rows.Scan(&o.printerID, &o.printerName, &o.jobID, &o.startedAt,
+			&o.filePath, &o.lastProgress, &o.lastTimePrinting); err != nil {
+			log.Printf("[RECONCILE] scan error: %v", err)
+			continue
+		}
+		orphans = append(orphans, o)
+	}
+
+	if len(orphans) == 0 {
+		log.Printf("[RECONCILE] no orphaned sessions")
+		return
+	}
+
+	for _, o := range orphans {
+		log.Printf("[RECONCILE] orphaned session: printer=%s job=%d progress=%.1f%% file=%s",
+			o.printerID, o.jobID, o.lastProgress, o.filePath)
+
+		startTime, _ := time.Parse(time.RFC3339Nano, o.startedAt)
+		if startTime.IsZero() {
+			startTime, _ = time.Parse(time.RFC3339, o.startedAt)
+		}
+		if startTime.IsZero() {
+			startTime = time.Now().Add(-time.Hour)
+		}
+
+		jobName := filepath.Base(o.filePath)
+		if jobName == "." || jobName == "" {
+			jobName = "recovered-job"
+		}
+		jobName += " [RECOVERED]"
+		printTimeMin := float64(o.lastTimePrinting) / 60.0
+		sessionID := newSessionID()
+
+		res, insertErr := b.db.Exec(`
+			INSERT INTO print_history
+				(printer_name, toolhead_id, spool_id, filament_used,
+				 print_started, print_finished, job_name,
+				 print_time_minutes, status, session_id, source,
+				 time_precision, filament_precision,
+				 outcome, progress_at_stop, recovered, gcode_unavailable)
+			VALUES (?, 0, 0, 0, ?, ?, ?, ?, 'completed', ?, 'prusalink',
+			        'approximate', 'estimated',
+			        'recovered', ?, 1, 1)`,
+			o.printerName,
+			startTime.UTC().Format(time.RFC3339),
+			time.Now().UTC().Format(time.RFC3339),
+			jobName, printTimeMin, sessionID,
+			o.lastProgress)
+		if insertErr != nil {
+			log.Printf("[RECONCILE] failed to write history row for printer=%s job=%d: %v",
+				o.printerID, o.jobID, insertErr)
+		} else {
+			printID64, _ := res.LastInsertId()
+			log.Printf("[RECONCILE] wrote recovery row id=%d for printer=%s job=%d",
+				printID64, o.printerID, o.jobID)
+			if printID64 > 0 {
+				if sErr := b.SnapshotAssignmentsForPrint(int(printID64), o.printerID, startTime); sErr != nil {
+					log.Printf("[RECONCILE] snapshot failed for print %d: %v", printID64, sErr)
+				}
+			}
+		}
+
+		if mErr := b.MarkJobProcessed(o.printerID, o.jobID, "recovered"); mErr != nil {
+			log.Printf("[RECONCILE] mark processed failed: printer=%s job=%d: %v", o.printerID, o.jobID, mErr)
+		}
+		if dErr := b.DeleteActivePrintSession(o.printerID, o.jobID); dErr != nil {
+			log.Printf("[RECONCILE] delete session failed: printer=%s job=%d: %v", o.printerID, o.jobID, dErr)
+		}
+	}
 }
 
 // PrintAttachment represents a file attached to a print history record.
@@ -1198,7 +1688,7 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolLocation(location string) err
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
-	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink') FROM printer_configs")
+	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0) FROM printer_configs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer configs: %w", err)
 	}
@@ -1208,8 +1698,8 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 	for rows.Next() {
 		var printerID, name, model, ipAddress, apiKey, printerType string
 		var toolheads int
-		var isVirtual bool
-		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType); err != nil {
+		var isVirtual, debugLog bool
+		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog); err != nil {
 			return nil, fmt.Errorf("failed to scan printer config row: %w", err)
 		}
 		configs[printerID] = PrinterConfig{
@@ -1220,6 +1710,7 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 			Toolheads:   toolheads,
 			IsVirtual:   isVirtual,
 			PrinterType: printerType,
+			DebugLog:    debugLog,
 		}
 	}
 
@@ -1235,14 +1726,18 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	if config.IsVirtual {
 		isVirtualInt = 1
 	}
+	debugLogInt := 0
+	if config.DebugLog {
+		debugLogInt = 1
+	}
 	printerType := config.PrinterType
 	if printerType == "" {
 		printerType = PrinterTypePrusaLink
 	}
 	_, err := b.db.Exec(`
-		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType)
+		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt)
 	if err != nil {
 		return fmt.Errorf("failed to save printer config: %w", err)
 	}
@@ -1781,7 +2276,6 @@ func (b *FilamentBridge) MonitorPrinters() {
 	}
 }
 
-// monitorPrusaLink monitors a single printer using PrusaLink API
 // monitorPrusaLink polls a single printer via PrusaLink API and handles all state transitions.
 //
 // State machine:
@@ -1792,12 +2286,27 @@ func (b *FilamentBridge) MonitorPrinters() {
 //	IDLE / FINISHED   → if wasPrinting: print completed normally → process full G-code usage
 //	STOPPED           → if wasPrinting: job was cancelled → log partial usage from progress %
 func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig) error {
-	log.Printf("Starting monitoring for printer %s (%s) at %s", printerID, config.IPAddress, config.Name)
+	// Enforce per-printer variable poll intervals. next_poll_at is written by
+	// UpsertLastKnownState based on the last observed state (ATTENTION=3s,
+	// PRINTING=5s, IDLE=20s, etc.). With the current 30s global ticker this
+	// guard is mostly a no-op, but it activates automatically when the ticker
+	// is tightened in future.
+	if cached, err := b.GetLastKnownState(printerID); err == nil {
+		if !cached.NextPollAt.IsZero() && time.Now().Before(cached.NextPollAt) {
+			return nil
+		}
+	}
+
 	client := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
 
 	status, err := client.GetStatus()
 	if err != nil {
-		log.Printf("Warning: Failed to get printer status from %s (%s): %v", config.IPAddress, printerID, err)
+		failures, _ := b.IncrementFailureCount(printerID)
+		if failures == 1 {
+			log.Printf("[PRUSALINK] printer=%s poll_failure=1 error=%v", printerID, err)
+		} else if failures >= 3 {
+			log.Printf("[PRUSALINK] printer=%s UNREACHABLE consecutive_failures=%d", printerID, failures)
+		}
 		return nil
 	}
 
@@ -1810,10 +2319,15 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	currentState := status.Printer.State
 	jobName := "No active job"
 	currentJobFilename := ""
+	currentJobDisplay := ""
 	printProgress := jobInfo.Progress // 0..100
 
 	if jobInfo.File.Name != "" {
-		jobName = jobInfo.File.DisplayName
+		currentJobDisplay = jobInfo.File.DisplayName
+		if currentJobDisplay == "" {
+			currentJobDisplay = jobInfo.File.Name
+		}
+		jobName = currentJobDisplay
 		if jobInfo.File.Refs.Download != "" {
 			currentJobFilename = strings.TrimPrefix(jobInfo.File.Refs.Download, "/")
 		} else {
@@ -1831,20 +2345,66 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 
 	log.Printf("Printer %s (%s): state=%s (prev=%s), wasPrinting=%v, job=%s, file=%s",
 		config.IPAddress, printerID, currentState, prevState, wasPrinting, jobName, storedJobFile)
+	logStateTransition(printerID, prevState, currentState, jobInfo.ID, printProgress)
+
+	// Debug poll log — one line per poll while a job is active.
+	if config.DebugLog && jobInfo.ID != 0 {
+		filamentStr := "none"
+		if len(jobInfo.Filament) > 0 {
+			parts := make([]string, len(jobInfo.Filament))
+			for i, f := range jobInfo.Filament {
+				parts[i] = fmt.Sprintf("T%d:%.0fmm/%.3fg", f.ToolheadID, f.Length, f.Weight)
+			}
+			filamentStr = strings.Join(parts, " ")
+		}
+		_ = b.AppendPrintDebugLog(printerID, jobInfo.ID, fmt.Sprintf(
+			"[POLL] state=%s progress=%.1f%% time_printing=%ds time_left=%ds job_id=%d file=%q filament=%s",
+			currentState, printProgress,
+			status.Printer.Telemetry.PrintTime,
+			status.Printer.Telemetry.PrintTimeLeft,
+			jobInfo.ID, currentJobDisplay, filamentStr))
+	}
+
+	// Persist state so restarts can resume tracking correctly.
+	defer func() {
+		if uErr := b.UpsertLastKnownState(printerID, currentState, jobInfo.ID, printProgress, jobInfo.TimePrinting); uErr != nil {
+			log.Printf("[PRUSALINK] printer=%s failed to upsert state cache: %v", printerID, uErr)
+		}
+	}()
 
 	switch currentState {
 
 	case StatePrinting:
 		// Print is active — store the filename on first detection, keep wasPrinting=true
+		isNewPrint := false
 		b.mutex.Lock()
 		if currentJobFilename != "" && storedJobFile == "" {
 			b.currentJobFile[printerID] = currentJobFilename
+			b.currentJobDisplayName[printerID] = currentJobDisplay
 			b.printStartTime[printerID] = time.Now()
-			log.Printf("📁 Stored job filename for %s (%s): %s", config.IPAddress, printerID, currentJobFilename)
+			isNewPrint = true
+			log.Printf("📁 Stored job filename for %s (%s): %s (display: %s)", config.IPAddress, printerID, currentJobFilename, currentJobDisplay)
+		}
+		if jobInfo.ID != 0 {
+			b.currentJobID[printerID] = jobInfo.ID
 		}
 		b.wasPrinting[printerID] = true
 		b.previousState[printerID] = currentState
 		b.mutex.Unlock()
+
+		if isNewPrint && jobInfo.ID != 0 {
+			b.mutex.RLock()
+			startedAt := b.printStartTime[printerID]
+			b.mutex.RUnlock()
+			assignments, _ := b.GetAllCurrentAssignments(printerID)
+			assignJSON, _ := json.Marshal(assignments)
+			if uErr := b.UpsertActivePrintSession(printerID, jobInfo.ID, startedAt, currentJobFilename, 0, string(assignJSON)); uErr != nil {
+				log.Printf("[PRUSALINK] printer=%s failed to create active session: %v", printerID, uErr)
+			}
+		}
+		if jobInfo.ID != 0 {
+			_ = b.UpdateSessionProgress(printerID, jobInfo.ID, printProgress, jobInfo.TimePrinting)
+		}
 
 	case StatePaused:
 		// Print is paused by user — keep wasPrinting=true so we don't lose the transition
@@ -1869,7 +2429,32 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 
 	case StateFinished, StateIdle:
 		if wasPrinting {
-			// Normal print completion
+			// PrusaLink returns jobID=0 when transitioning to IDLE/FINISHED (no active job).
+			// Resolve effectiveJobID first using the ID captured during PRINTING so dedup,
+			// debug log linking, and session cleanup all use the correct job ID.
+			b.mutex.RLock()
+			storedJobID := b.currentJobID[printerID]
+			b.mutex.RUnlock()
+			effectiveJobID := jobInfo.ID
+			if effectiveJobID == 0 {
+				effectiveJobID = storedJobID
+			}
+
+			// Check dedup before doing any work — firmware sometimes re-fires the
+			// same job_id after the printer is already IDLE.
+			if already, err := b.IsJobProcessed(printerID, effectiveJobID); err != nil {
+				log.Printf("[PRUSALINK] printer=%s job=%d dedup check error: %v", printerID, effectiveJobID, err)
+			} else if already {
+				log.Printf("[PRUSALINK] printer=%s job=%d already processed — skipping duplicate FINISHED", printerID, effectiveJobID)
+				b.mutex.Lock()
+				b.wasPrinting[printerID] = false
+				b.currentJobFile[printerID] = ""
+				b.currentJobDisplayName[printerID] = ""
+				b.previousState[printerID] = currentState
+				b.mutex.Unlock()
+				break
+			}
+
 			filenameToUse := storedJobFile
 			if filenameToUse == "" {
 				log.Printf("Warning: No stored filename for %s (%s), using current: %s",
@@ -1886,23 +2471,35 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.previousState[printerID] = currentState
 			b.mutex.Unlock()
 
-			err := b.handlePrusaLinkPrintFinished(printerID, config, filenameToUse)
+			handleErr := b.handlePrusaLinkPrintFinished(printerID, config, effectiveJobID, filenameToUse)
 
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
-			if err == nil {
+			if handleErr == nil {
 				b.currentJobFile[printerID] = ""
+				b.currentJobDisplayName[printerID] = ""
+				b.currentJobID[printerID] = 0
 			}
 			b.mutex.Unlock()
 
-			if err != nil {
-				log.Printf("Error handling print finished: %v", err)
+			if handleErr != nil {
+				log.Printf("Error handling print finished: %v", handleErr)
+			} else {
+				if mErr := b.MarkJobProcessed(printerID, effectiveJobID, "finished"); mErr != nil {
+					log.Printf("[PRUSALINK] printer=%s job=%d failed to mark processed: %v", printerID, effectiveJobID, mErr)
+				}
+				if effectiveJobID != 0 {
+					if dErr := b.DeleteActivePrintSession(printerID, effectiveJobID); dErr != nil {
+						log.Printf("[PRUSALINK] printer=%s job=%d failed to delete active session: %v", printerID, effectiveJobID, dErr)
+					}
+				}
 			}
 		} else {
 			// Normal idle — clear any stale tracking
 			b.mutex.Lock()
 			if !b.processingPrints[printerID] {
 				b.currentJobFile[printerID] = ""
+				b.currentJobDisplayName[printerID] = ""
 			}
 			b.previousState[printerID] = currentState
 			b.mutex.Unlock()
@@ -1910,7 +2507,27 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 
 	case StateStopped:
 		if wasPrinting {
-			// Print was cancelled — attempt partial usage from progress percentage
+			b.mutex.RLock()
+			storedJobIDStop := b.currentJobID[printerID]
+			b.mutex.RUnlock()
+			effectiveJobIDStop := jobInfo.ID
+			if effectiveJobIDStop == 0 {
+				effectiveJobIDStop = storedJobIDStop
+			}
+
+			if already, err := b.IsJobProcessed(printerID, effectiveJobIDStop); err != nil {
+				log.Printf("[PRUSALINK] printer=%s job=%d dedup check error: %v", printerID, effectiveJobIDStop, err)
+			} else if already {
+				log.Printf("[PRUSALINK] printer=%s job=%d already processed — skipping duplicate STOPPED", printerID, effectiveJobIDStop)
+				b.mutex.Lock()
+				b.wasPrinting[printerID] = false
+				b.currentJobFile[printerID] = ""
+				b.currentJobDisplayName[printerID] = ""
+				b.previousState[printerID] = currentState
+				b.mutex.Unlock()
+				break
+			}
+
 			filenameToUse := storedJobFile
 			if filenameToUse == "" {
 				filenameToUse = currentJobFilename
@@ -1925,15 +2542,26 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.previousState[printerID] = currentState
 			b.mutex.Unlock()
 
-			err := b.handlePrusaLinkPrintCancelled(printerID, config, filenameToUse, printProgress)
+			handleErr := b.handlePrusaLinkPrintCancelled(printerID, config, effectiveJobIDStop, filenameToUse, printProgress)
 
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
 			b.currentJobFile[printerID] = ""
+			b.currentJobDisplayName[printerID] = ""
+			b.currentJobID[printerID] = 0
 			b.mutex.Unlock()
 
-			if err != nil {
-				log.Printf("Error handling cancelled print: %v", err)
+			if handleErr != nil {
+				log.Printf("Error handling cancelled print: %v", handleErr)
+			} else {
+				if mErr := b.MarkJobProcessed(printerID, effectiveJobIDStop, "stopped"); mErr != nil {
+					log.Printf("[PRUSALINK] printer=%s job=%d failed to mark processed: %v", printerID, effectiveJobIDStop, mErr)
+				}
+				if effectiveJobIDStop != 0 {
+					if dErr := b.DeleteActivePrintSession(printerID, effectiveJobIDStop); dErr != nil {
+						log.Printf("[PRUSALINK] printer=%s job=%d failed to delete active session: %v", printerID, effectiveJobIDStop, dErr)
+					}
+				}
 			}
 		} else {
 			b.mutex.Lock()
@@ -2040,6 +2668,7 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 			b.processingPrints[printerID] = false
 			if finishErr == nil {
 				b.currentJobFile[printerID] = ""
+				b.currentJobDisplayName[printerID] = ""
 			}
 			b.mutex.Unlock()
 
@@ -2050,6 +2679,7 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 			b.mutex.Lock()
 			if !b.processingPrints[printerID] {
 				b.currentJobFile[printerID] = ""
+				b.currentJobDisplayName[printerID] = ""
 			}
 			b.previousState[printerID] = currentState
 			b.mutex.Unlock()
@@ -2071,6 +2701,7 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
 			b.currentJobFile[printerID] = ""
+			b.currentJobDisplayName[printerID] = ""
 			b.mutex.Unlock()
 
 			if cancelErr != nil {
@@ -2228,8 +2859,21 @@ func computeBambuFilamentUsage(status *BambuStatus, toolheads int) map[int]float
 
 // handlePrusaLinkPrintCancelled handles a cancelled print by computing partial filament usage.
 // It downloads the G-code, gets the full usage from metadata, then scales by the print progress %.
-func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config PrinterConfig, filename string, progressPct float64) error {
+func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config PrinterConfig, jobID int, filename string, progressPct float64) error {
 	printerName := resolvePrinterName(config)
+
+	b.mutex.RLock()
+	displayName := b.currentJobDisplayName[printerID]
+	b.mutex.RUnlock()
+	jobName := displayName
+	if jobName == "" {
+		jobName = filepath.Base(filename)
+	}
+
+	if config.DebugLog && jobID != 0 {
+		_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf(
+			"[CANCELLED] progress=%.1f%% file=%q display_name=%q", progressPct, filename, displayName))
+	}
 
 	if filename == "" {
 		msg := "no filename available for cancelled print processing"
@@ -2254,6 +2898,9 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 	gcodeContent, err := prusaClient.GetGcodeFileWithRetry(filename, b.config.PrusaLinkFileDownloadTimeout)
 	if err != nil {
 		log.Printf("⚠️  G-code download failed for cancelled print %s (%s), queuing for retry: %v", printerName, filename, err)
+		if config.DebugLog && jobID != 0 {
+			_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf("[GCODE_DOWNLOAD_FAILED] %v — queued for retry", err))
+		}
 		if qErr := b.enqueuePendingGcodeDownload(printerName, config.IPAddress, filename, "cancelled", progressPct); qErr != nil {
 			msg := fmt.Sprintf("G-code download failed for cancelled print and could not be queued for retry: %v (original error: %v)", qErr, err)
 			b.addPrintError(printerName, filename, msg)
@@ -2276,10 +2923,14 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 			partialUsage[toolheadID] = partial
 			log.Printf("📉 Cancelled print partial usage: toolhead %d → %.2fg (%.1f%% of %.2fg)",
 				toolheadID, partial, progressPct, weight)
+			if config.DebugLog && jobID != 0 {
+				_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf(
+					"[PARTIAL_FILAMENT] T%d: %.2fg (%.1f%% of %.2fg full)", toolheadID, partial, progressPct, weight))
+			}
 		}
 	}
 
-	if err := b.processFilamentUsage(printerName, partialUsage, filename+" [CANCELLED]"); err != nil {
+	if err := b.processFilamentUsage(printerName, partialUsage, jobName+" [CANCELLED]"); err != nil {
 		return err
 	}
 
@@ -2292,7 +2943,7 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 	var firstPrintID int
 	for toolheadID, usedG := range partialUsage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
-		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename+" [CANCELLED]",
+		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, jobName+" [CANCELLED]",
 			0, "cancelled", thumbnailB64, sessionID, "prusalink")
 		if firstPrintID == 0 && printID > 0 {
 			firstPrintID = printID
@@ -2305,15 +2956,35 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
 			log.Printf("Warning: could not save gcode file for cancelled print %d: %v", firstPrintID, err)
 		}
+		if config.DebugLog && jobID != 0 {
+			if lErr := b.LinkDebugLogsToPrint(printerID, jobID, firstPrintID); lErr != nil {
+				log.Printf("[PRUSALINK] printer=%s job=%d failed to link debug logs: %v", printerID, jobID, lErr)
+			}
+		}
 	}
 
 	return nil
 }
 
-func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config PrinterConfig, filename string) error {
+func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config PrinterConfig, jobID int, filename string) error {
 	log.Printf("Print finished via PrusaLink (%s): %s", config.IPAddress, filename)
 
 	printerName := resolvePrinterName(config)
+
+	// Resolve display name stored when the print started (avoids FAT16 8.3 truncation in job_name).
+	b.mutex.RLock()
+	displayName := b.currentJobDisplayName[printerID]
+	startTime := b.printStartTime[printerID]
+	b.mutex.RUnlock()
+	jobName := displayName
+	if jobName == "" {
+		jobName = filepath.Base(filename)
+	}
+
+	if config.DebugLog && jobID != 0 {
+		_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf(
+			"[FINISH] file=%q display_name=%q", filename, displayName))
+	}
 
 	// Create PrusaLink client for this printer
 	prusaClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
@@ -2333,12 +3004,19 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 	gcodeContent, err := prusaClient.GetGcodeFileWithRetry(filename, b.config.PrusaLinkFileDownloadTimeout)
 	if err != nil {
 		log.Printf("⚠️  G-code download failed for %s (%s), queuing for retry: %v", printerName, filename, err)
+		if config.DebugLog && jobID != 0 {
+			_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf("[GCODE_DOWNLOAD_FAILED] %v — queued for retry", err))
+		}
 		if qErr := b.enqueuePendingGcodeDownload(printerName, config.IPAddress, filename, "completed", 0); qErr != nil {
 			errorMsg := fmt.Sprintf("G-code download failed and could not be queued for retry: %v (original error: %v)", qErr, err)
 			b.addPrintError(printerName, filename, errorMsg)
 			return fmt.Errorf("%s", errorMsg)
 		}
 		return nil // queued — caller clears currentJobFile so state machine stays clean
+	}
+
+	if config.DebugLog && jobID != 0 {
+		_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf("[GCODE_DOWNLOAD] %d bytes", len(gcodeContent)))
 	}
 
 	// Parse the downloaded file
@@ -2361,20 +3039,23 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 	printTimeSec, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
 	printTimeMin := float64(printTimeSec) / 60.0
 
-	if err := b.processFilamentUsage(printerName, filamentUsage, filename); err != nil {
+	if config.DebugLog && jobID != 0 {
+		for toolheadID, usedG := range filamentUsage {
+			_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf(
+				"[PARSED_FILAMENT] T%d: %.3fg  print_time=%ds (%.1fmin)", toolheadID, usedG, printTimeSec, printTimeMin))
+		}
+	}
+
+	if err := b.processFilamentUsage(printerName, filamentUsage, jobName); err != nil {
 		log.Printf("Error processing filament usage: %v", err)
 		return err
 	}
-
-	b.mutex.RLock()
-	startTime := b.printStartTime[printerID]
-	b.mutex.RUnlock()
 
 	sessionID := newSessionID()
 	var firstPrintID int
 	for toolheadID, usedG := range filamentUsage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
-		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename,
+		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, jobName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "prusalink")
 		if firstPrintID == 0 && printID > 0 {
 			firstPrintID = printID
@@ -2387,6 +3068,11 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 		// Save gcode to disk; best-effort — never aborts the print record.
 		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
 			log.Printf("Warning: could not save gcode file for print %d: %v", firstPrintID, err)
+		}
+		if config.DebugLog && jobID != 0 {
+			if lErr := b.LinkDebugLogsToPrint(printerID, jobID, firstPrintID); lErr != nil {
+				log.Printf("[PRUSALINK] printer=%s job=%d failed to link debug logs: %v", printerID, jobID, lErr)
+			}
 		}
 	}
 
@@ -3314,6 +4000,8 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 	// Fetch file attachments.
 	r.Attachments, _ = b.GetPrintAttachments(id)
 
+	r.HasDebugLog = b.HasPrintDebugLog(id)
+
 	return &r, nil
 }
 
@@ -3406,6 +4094,18 @@ func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 strin
 	timeRe := regexp.MustCompile(`;TIME:([0-9]+)`)
 	if m := timeRe.FindStringSubmatch(text); len(m) >= 2 {
 		fmt.Sscanf(m[1], "%d", &printTimeSec)
+	}
+
+	// PrusaSlicer: "; estimated printing time (normal mode) = 3h 45m 4s"
+	if printTimeSec == 0 {
+		prusaRe := regexp.MustCompile(`estimated printing time.*?=\s*(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?`)
+		if m := prusaRe.FindStringSubmatch(text); m != nil {
+			var h, min, sec int
+			fmt.Sscanf(m[1], "%d", &h)
+			fmt.Sscanf(m[2], "%d", &min)
+			fmt.Sscanf(m[3], "%d", &sec)
+			printTimeSec = h*3600 + min*60 + sec
+		}
 	}
 
 	// Thumbnail: OrcaSlicer / PrusaSlicer embed JPG base64 in comment lines:

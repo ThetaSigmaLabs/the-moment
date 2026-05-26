@@ -5,6 +5,9 @@
 Be brief. No filler. No pleasantries. Just the answer.
 Drop articles (a, an, the) when possible.
 Code blocks normal. Technical terms exact.
+There are unit and integration tests. Make sure you run the test cases to ensure nothing is broken.
+Before doing any work, mention how you could verify that work.
+Before start building interview me about it: what is the core problem to solve; what is success; what should this not do.
 
 ## Project Overview
 

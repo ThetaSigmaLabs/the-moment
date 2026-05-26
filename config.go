@@ -21,6 +21,7 @@ type PrinterConfig struct {
 	Toolheads   int    `json:"toolheads"`
 	IsVirtual   bool   `json:"is_virtual,omitempty"`   // Virtual test printer — no real hardware
 	PrinterType string `json:"printer_type,omitempty"` // "prusalink" | "octoprint"
+	DebugLog    bool   `json:"debug_log,omitempty"`    // Capture per-poll debug log for print history
 }
 
 // FilamentSpool represents a filament spool from Spoolman

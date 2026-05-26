@@ -99,6 +99,12 @@ function buildRealPrinterCard(printerId, printer) {
         '<div class="printer-actions">' +
         '<button class="btn btn-small" onclick="editPrinter(\'' + printerId + '\')">✏️ Edit</button>' +
         '<button class="btn btn-small" onclick="toggleToolheadNames(\'' + printerId + '\')">🔤 Rename Toolheads</button>' +
+        '<button class="btn btn-small btn-secondary" ' +
+            'id="debug-log-btn-' + printerId + '" ' +
+            (printer.debug_log ? 'style="background:#7a5c1e;color:#ffd070;" ' : '') +
+            'onclick="togglePrinterDebugLog(\'' + printerId + '\')" ' +
+            'title="When on, subsequent prints record a poll transcript viewable in Print History">' +
+            (printer.debug_log ? '🐛 Debug: ON' : '🐛 Debug: OFF') + '</button>' +
         '<button class="btn btn-small btn-danger" onclick="deletePrinter(\'' + printerId + '\')">🗑️ Delete</button>' +
         '</div>' +
         '<div id="toolhead-names-' + printerId + '" class="toolhead-names-section" style="display:none;margin-top:15px;padding:15px;background:rgba(255,255,255,0.05);border-radius:5px;">' +
@@ -774,6 +780,24 @@ function deletePrinter(printerId) {
             loadPrinters();
         })
         .catch(function(err) { alert('Error: ' + err.message); });
+}
+
+function togglePrinterDebugLog(printerId) {
+    var btn = document.getElementById('debug-log-btn-' + printerId);
+    var currentlyOn = btn && btn.textContent.indexOf('ON') !== -1;
+    var enable = !currentlyOn;
+    fetch('/api/printers/' + printerId + '/debug-log', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: enable })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (data.error) { alert('Error: ' + data.error); return; }
+        if (btn) {
+            btn.textContent = data.debug_log ? '🐛 Debug: ON' : '🐛 Debug: OFF';
+            btn.style.background = data.debug_log ? '#7a5c1e' : '';
+            btn.style.color = data.debug_log ? '#ffd070' : '';
+        }
+    }).catch(function(err) { alert('Error: ' + err.message); });
 }
 
 // ─── Toolhead Names ───────────────────────────────────────────────────────────

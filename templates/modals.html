@@ -294,6 +294,8 @@
             <button class="hm-tab"        data-tab="quality"  onclick="switchModalTab('quality')">Quality</button>
             <button class="hm-tab"        data-tab="filament" onclick="switchModalTab('filament')">Filament</button>
             <button class="hm-tab"        data-tab="files"    onclick="switchModalTab('files')">Files</button>
+            <button class="hm-tab" id="hmTab-debuglog-btn" data-tab="debuglog"
+                    onclick="switchModalTab('debuglog')" style="display:none;">Debug Log</button>
         </div>
 
         <!-- Scrollable tab content -->
@@ -417,6 +419,22 @@
                         <button class="btn btn-small btn-secondary" onclick="cancelReassign()">Cancel</button>
                     </div>
                 </div>
+            </div>
+
+            <!-- Tab: Debug Log -->
+            <div id="hmTab-debuglog" style="display:none;padding:18px 20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">Poll Transcript</div>
+                    <button class="btn btn-small btn-secondary" style="font-size:0.78em;padding:3px 10px;"
+                            onclick="copyDebugLog()">Copy All</button>
+                </div>
+                <textarea id="hmDebugLogText" readonly
+                          style="width:100%;box-sizing:border-box;height:340px;
+                                 background:#111;border:1px solid #333;border-radius:5px;
+                                 color:#b0c4b0;padding:10px;font-size:0.78em;
+                                 font-family:'Courier New',monospace;resize:vertical;
+                                 white-space:pre;overflow:auto;"
+                          placeholder="Loading…"></textarea>
             </div>
 
             <!-- Tab: Files -->

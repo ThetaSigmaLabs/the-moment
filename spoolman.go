@@ -835,33 +835,6 @@ func (c *SpoolmanClient) EnsureSpoolmanFields() (created, existed, failed []Spoo
 	for _, f := range requiredSpoolmanFields {
 		status := SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity}
 
-		checkURL := fmt.Sprintf("%s/api/v1/field/%s/%s", c.baseURL, f.Entity, f.Key)
-		checkReq, err := http.NewRequest("GET", checkURL, nil)
-		if err != nil {
-			log.Printf("NFC field check: error building request for %s/%s: %v", f.Entity, f.Key, err)
-			failed = append(failed, status)
-			continue
-		}
-		checkResp, err := c.httpClient.Do(checkReq)
-		if err != nil {
-			log.Printf("NFC field check: error checking %s/%s: %v", f.Entity, f.Key, err)
-			failed = append(failed, status)
-			continue
-		}
-		checkResp.Body.Close()
-
-		if checkResp.StatusCode == http.StatusOK {
-			existed = append(existed, status)
-			continue
-		}
-
-		if checkResp.StatusCode != http.StatusNotFound {
-			log.Printf("NFC field check: unexpected status %d for %s/%s", checkResp.StatusCode, f.Entity, f.Key)
-			failed = append(failed, status)
-			continue
-		}
-
-		// Field does not exist — create it.
 		fieldBody := SpoolmanFieldCreate{
 			Name:         f.Name,
 			FieldType:    f.FieldType,
@@ -891,9 +864,13 @@ func (c *SpoolmanClient) EnsureSpoolmanFields() (created, existed, failed []Spoo
 		}
 		createResp.Body.Close()
 
-		if createResp.StatusCode == http.StatusCreated || createResp.StatusCode == http.StatusConflict {
+		switch createResp.StatusCode {
+		case http.StatusCreated:
 			created = append(created, status)
-		} else {
+		case http.StatusConflict, http.StatusUnprocessableEntity:
+			// 409 = already exists, 422 = duplicate key on some Spoolman versions
+			existed = append(existed, status)
+		default:
 			log.Printf("NFC field create: unexpected status %d for %s/%s", createResp.StatusCode, f.Entity, f.Key)
 			failed = append(failed, status)
 		}
@@ -903,20 +880,30 @@ func (c *SpoolmanClient) EnsureSpoolmanFields() (created, existed, failed []Spoo
 
 // GetSpoolmanSetupStatus checks whether all required NFC custom fields exist in Spoolman.
 func (c *SpoolmanClient) GetSpoolmanSetupStatus() (ok bool, missing []SpoolmanFieldStatus) {
-	for _, f := range requiredSpoolmanFields {
-		checkURL := fmt.Sprintf("%s/api/v1/field/%s/%s", c.baseURL, f.Entity, f.Key)
-		req, err := http.NewRequest("GET", checkURL, nil)
+	// Fetch existing fields per entity type using the list endpoint GET /api/v1/field/{entity}.
+	type spoolmanFieldDef struct {
+		Key string `json:"key"`
+	}
+	existingByEntity := map[string]map[string]bool{}
+	for _, entityType := range []string{"filament", "spool"} {
+		listURL := fmt.Sprintf("%s/api/v1/field/%s", c.baseURL, entityType)
+		resp, err := c.httpClient.Get(listURL)
 		if err != nil {
-			missing = append(missing, SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity})
+			// Can't reach Spoolman — mark all fields for this entity as missing.
 			continue
 		}
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			missing = append(missing, SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity})
-			continue
-		}
+		var fields []spoolmanFieldDef
+		json.NewDecoder(resp.Body).Decode(&fields)
 		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
+		existing := map[string]bool{}
+		for _, fld := range fields {
+			existing[fld.Key] = true
+		}
+		existingByEntity[entityType] = existing
+	}
+
+	for _, f := range requiredSpoolmanFields {
+		if !existingByEntity[f.Entity][f.Key] {
 			missing = append(missing, SpoolmanFieldStatus{Key: f.Key, Entity: f.Entity})
 		}
 	}

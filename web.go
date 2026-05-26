@@ -174,6 +174,7 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/printers", ws.getPrintersHandler)
 		api.POST("/printers", ws.addPrinterHandler)
 		api.PUT("/printers/:id", ws.updatePrinterHandler)
+		api.PATCH("/printers/:id/debug-log", ws.togglePrinterDebugLogHandler)
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
 		api.GET("/printers/:id/toolheads", ws.getToolheadNamesHandler)
 		api.PUT("/printers/:id/toolheads/:toolhead_id", ws.updateToolheadNameHandler)
@@ -206,6 +207,7 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/sessions", ws.getSessionsHandler)
 		api.GET("/history", ws.getHistoryHandler)
 		api.GET("/history/:id", ws.getHistoryEntryHandler)
+		api.GET("/history/:id/debug-log", ws.getHistoryDebugLogHandler)
 		api.PATCH("/history/:id/note", ws.updateHistoryNoteHandler)
 		api.DELETE("/history/batch", ws.batchDeleteHistoryHandler)
 		api.POST("/history/batch-recalc", ws.batchRecalcCostHandler)
@@ -800,6 +802,7 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 			"toolheads":    printerConfig.Toolheads,
 			"is_virtual":   printerConfig.IsVirtual,
 			"printer_type": printerType,
+			"debug_log":    printerConfig.DebugLog,
 		}
 
 		// Include uploaded file list for virtual printers so the card renders immediately
@@ -869,6 +872,38 @@ func (ws *WebServer) addPrinterHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Printer added successfully", "printer_id": printerID})
+}
+
+// togglePrinterDebugLogHandler enables or disables the debug log for a single printer.
+// PATCH /api/printers/:id/debug-log   body: {"enabled": true}
+func (ws *WebServer) togglePrinterDebugLogHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	configs, err := ws.bridge.GetAllPrinterConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	cfg, ok := configs[printerID]
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "printer not found"})
+		return
+	}
+	cfg.DebugLog = body.Enabled
+	if err := ws.bridge.SavePrinterConfig(printerID, cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.ReloadConfig(); err != nil {
+		log.Printf("Warning: failed to reload config after debug-log toggle: %v", err)
+	}
+	c.JSON(http.StatusOK, gin.H{"debug_log": cfg.DebugLog})
 }
 
 // updatePrinterHandler updates an existing printer configuration
@@ -1873,6 +1908,22 @@ func (ws *WebServer) getHistoryEntryHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, record)
+}
+
+// getHistoryDebugLogHandler returns the debug poll transcript for a print as plain text.
+// GET /api/history/:id/debug-log
+func (ws *WebServer) getHistoryDebugLogHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	text, err := ws.bridge.GetPrintDebugLog(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.String(http.StatusOK, text)
 }
 
 // updateHistoryNoteHandler sets the user note on a print history record.

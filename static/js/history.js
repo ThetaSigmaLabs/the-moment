@@ -279,10 +279,39 @@ function switchModalTab(tab) {
     document.querySelectorAll('.hm-tab').forEach(function(btn) {
         btn.classList.toggle('active', btn.dataset.tab === tab);
     });
-    ['details','costs','quality','filament','files'].forEach(function(t) {
+    ['details','costs','quality','filament','files','debuglog'].forEach(function(t) {
         var el = document.getElementById('hmTab-' + t);
         if (el) el.style.display = (t === tab) ? 'block' : 'none';
     });
+    if (tab === 'debuglog' && _activeEntry) {
+        _loadDebugLog(_activeEntry.id);
+    }
+}
+
+function _loadDebugLog(id) {
+    var ta = document.getElementById('hmDebugLogText');
+    if (!ta || ta.dataset.loadedFor === String(id)) return;
+    ta.value = 'Loading…';
+    fetch('/api/history/' + id + '/debug-log')
+        .then(function(r) { return r.text(); })
+        .then(function(text) {
+            ta.value = text || '(no log entries)';
+            ta.dataset.loadedFor = String(id);
+        })
+        .catch(function(err) {
+            ta.value = 'Error loading log: ' + err.message;
+        });
+}
+
+function copyDebugLog() {
+    var ta = document.getElementById('hmDebugLogText');
+    if (!ta) return;
+    ta.select();
+    try {
+        document.execCommand('copy');
+    } catch(e) {
+        if (navigator.clipboard) navigator.clipboard.writeText(ta.value);
+    }
 }
 
 function openHistoryModal(id) {
@@ -299,6 +328,12 @@ function openHistoryModal(id) {
 }
 
 function populateModal(r) {
+    // Show/hide Debug Log tab and reset its content
+    var dlBtn = document.getElementById('hmTab-debuglog-btn');
+    if (dlBtn) dlBtn.style.display = r.has_debug_log ? '' : 'none';
+    var dlTa = document.getElementById('hmDebugLogText');
+    if (dlTa) { dlTa.value = 'Loading…'; dlTa.dataset.loadedFor = ''; }
+
     switchModalTab('details');
     document.getElementById('historyDetailTitle').textContent = r.job_name || 'Print Detail';
 
