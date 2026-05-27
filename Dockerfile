@@ -56,3 +56,23 @@ ENV THE_MOMENT_DB_PATH=/app/data
 
 # Run the application
 CMD ["./main"]
+
+# ─── Development stage (air hot-reload) ────────────────────────────────────
+# Not used in production. Activated via docker-compose.dev.yml build target.
+FROM golang:1.24-alpine AS dev
+
+RUN apk add --no-cache git build-base
+
+WORKDIR /app/src
+
+# Pre-cache modules so first air build is fast
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Install air
+RUN go install github.com/air-verse/air@v1.62.0
+
+# Bake air config into the image at a path outside the source mount
+RUN printf '[build]\ncmd = "CGO_ENABLED=1 go build -o /tmp/moment-bin ."\nbin = "/tmp/moment-bin"\ninclude_ext = ["go", "html", "js", "css", "tmpl"]\nexclude_dir = ["vendor", "testdata", "dev", "backups"]\ndelay = 500\n\n[misc]\nclean_on_exit = true\n' > /app/air.toml
+
+CMD ["air", "-c", "/app/air.toml"]

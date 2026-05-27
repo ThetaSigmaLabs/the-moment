@@ -1070,6 +1070,44 @@ func (b *FilamentBridge) ReconcileActiveSessions() {
 				if sErr := b.SnapshotAssignmentsForPrint(int(printID64), o.printerID, startTime); sErr != nil {
 					log.Printf("[RECONCILE] snapshot failed for print %d: %v", printID64, sErr)
 				}
+				if o.filePath != "" {
+					capturedID := printID64
+					capturedPath := o.filePath
+					capturedPrinterID := o.printerID
+					go func() {
+						configs, err := b.GetAllPrinterConfigs()
+						if err != nil {
+							log.Printf("[RECONCILE] could not load printer configs for thumbnail backfill (print %d): %v", capturedID, err)
+							return
+						}
+						cfg, ok := configs[capturedPrinterID]
+						if !ok || cfg.IPAddress == "" || cfg.IsVirtual {
+							return
+						}
+						b.mutex.RLock()
+						bConfig := b.config
+						b.mutex.RUnlock()
+						if bConfig == nil {
+							return
+						}
+						client := NewPrusaLinkClient(cfg.IPAddress, cfg.APIKey, bConfig.PrusaLinkTimeout, bConfig.PrusaLinkFileDownloadTimeout)
+						gcodeContent, err := client.GetGcodeFileWithRetry(capturedPath, bConfig.PrusaLinkFileDownloadTimeout)
+						if err != nil {
+							log.Printf("[RECONCILE] gcode download failed for recovered print %d: %v", capturedID, err)
+							return
+						}
+						_, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
+						if thumbnailB64 == "" {
+							return
+						}
+						if _, err := b.db.Exec(`UPDATE print_history SET thumbnail_path=? WHERE id=?`, thumbnailB64, capturedID); err != nil {
+							log.Printf("[RECONCILE] failed to update thumbnail for recovered print %d: %v", capturedID, err)
+							return
+						}
+						log.Printf("[RECONCILE] thumbnail backfilled for recovered print %d", capturedID)
+						_ = b.savePrintFile(int(capturedID), "gcode", filepath.Base(capturedPath), gcodeContent)
+					}()
+				}
 			}
 		}
 

@@ -5,7 +5,7 @@ THE_MOMENT_DB_PATH ?= ./the-moment-data
 SPOOLMAN_DB_PATH   ?= ./spoolman-data
 BACKUP_DIR         ?= ./backups
 
-.PHONY: up down logs update ps backup restore test-unit test-integration test-all lint help
+.PHONY: up down logs update ps backup restore test-unit test-integration test-all lint help dev-build dev-up dev-down
 
 up: ## Create data directories and start all services
 	mkdir -p $(THE_MOMENT_DB_PATH) $(SPOOLMAN_DB_PATH)
@@ -21,6 +21,18 @@ update: ## Pull latest images, create dirs, and restart
 	docker compose pull
 	mkdir -p $(THE_MOMENT_DB_PATH) $(SPOOLMAN_DB_PATH)
 	docker compose up -d
+
+DEV_COMPOSE = docker compose -f docker-compose.yml -f docker-compose.dev.yml
+
+dev-build: ## Build the dev image (run once; re-run if go.mod changes)
+	$(DEV_COMPOSE) build the-moment
+
+dev-up: ## Start dev stack with air hot-reload (foreground — Ctrl-C to stop)
+	mkdir -p $(THE_MOMENT_DB_PATH) $(SPOOLMAN_DB_PATH)
+	$(DEV_COMPOSE) up
+
+dev-down: ## Stop dev stack
+	$(DEV_COMPOSE) down
 
 ps: ## Show running containers and their status
 	docker compose ps

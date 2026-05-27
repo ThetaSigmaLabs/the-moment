@@ -8,6 +8,9 @@
 
 services:
   the-moment:
-    image: the-moment:local
+    image: the-moment:dev
     build:
       context: .
+      target: dev
+    volumes:
+      - .:/app/src
