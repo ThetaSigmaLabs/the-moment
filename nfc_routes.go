@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -249,6 +250,10 @@ func (ws *WebServer) nfcCreateAssignmentHandler(c *gin.Context) {
 		return
 	}
 
+	if err := ws.bridge.syncSpoolLocation(body.PrinterID, body.ToolheadIndex, body.SpoolmanSpoolID); err != nil {
+		log.Printf("nfcCreateAssignment: location sync warning: %v", err)
+	}
+
 	ws.BroadcastStatus()
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -263,9 +268,17 @@ func (ws *WebServer) nfcDeleteAssignmentHandler(c *gin.Context) {
 		return
 	}
 
+	prevAssignment, _ := ws.bridge.GetCurrentAssignment(printerID, toolheadIndex)
+
 	if err := ws.bridge.CloseAssignment(printerID, toolheadIndex); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	if prevAssignment != nil && prevAssignment.SpoolmanSpoolID > 0 {
+		if err := ws.bridge.syncSpoolLocationForUnassignment(prevAssignment.SpoolmanSpoolID); err != nil {
+			log.Printf("nfcDeleteAssignment: location sync warning: %v", err)
+		}
 	}
 
 	ws.BroadcastStatus()

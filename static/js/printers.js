@@ -18,6 +18,143 @@ function escapeHtml(value) {
     return div.innerHTML;
 }
 
+// Tracks which printer is currently open in the edit modal (needed by Toolheads tab).
+var _editPrinterCurrentId = null;
+
+function switchEditPrinterTab(tabName) {
+    ['details', 'toolheads'].forEach(function(t) {
+        var el = document.getElementById('editPrinterTab-' + t);
+        if (el) el.style.display = (t === tabName) ? 'block' : 'none';
+    });
+    document.querySelectorAll('#editPrinterTabBar .hm-tab').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+    if (tabName === 'toolheads') {
+        loadEditPrinterToolheadsTab();
+    }
+}
+
+function loadEditPrinterToolheadsTab() {
+    var pid = _editPrinterCurrentId;
+    var container = document.getElementById('editPrinterToolheadsTable');
+    if (!pid || !container) return;
+    container.innerHTML = '<p style="color:#777;">Loading…</p>';
+
+    Promise.all([
+        fetch('/api/printers').then(function(r) { return r.json(); }),
+        fetch('/api/printers/' + pid + '/toolheads/locations').then(function(r) { return r.json(); }),
+        fetch('/api/spoolman/locations').then(function(r) { return r.json(); })
+    ]).then(function(results) {
+        var printerData  = results[0].printers[pid];
+        var locData      = results[1];
+        var spoolmanData = results[2];
+
+        if (!printerData) {
+            container.innerHTML = '<p style="color:#f88;">Printer not found.</p>';
+            return;
+        }
+
+        var link = document.getElementById('editPrinterSpoolmanLink');
+        if (link && spoolmanData.spoolman_url) {
+            link.href = spoolmanData.spoolman_url;
+        }
+
+        var toolheadCount = printerData.toolheads || 1;
+        var toolheadNames = printerData.toolhead_names || {};
+        var savedLocs     = locData.locations || {};
+        var locationList  = spoolmanData.locations || [];
+
+        var html = '<table style="width:100%;border-collapse:collapse;">' +
+            '<thead><tr style="font-size:0.8em;color:#aaa;border-bottom:1px solid #333;">' +
+            '<th style="padding:6px 8px;text-align:left;width:40px;">#</th>' +
+            '<th style="padding:6px 8px;text-align:left;">Name</th>' +
+            '<th style="padding:6px 8px;text-align:left;">Spoolman Location</th>' +
+            '</tr></thead><tbody>';
+
+        for (var i = 0; i < toolheadCount; i++) {
+            var thName   = escapeHtmlAttribute(toolheadNames[i] || ('Toolhead ' + i));
+            var savedLoc = savedLocs[i] || '';
+
+            var opts = '<option value="">— None —</option>';
+            locationList.forEach(function(locName) {
+                var sel = (locName === savedLoc) ? ' selected' : '';
+                opts += '<option value="' + escapeHtmlAttribute(locName) + '"' + sel + '>' + escapeHtml(locName) + '</option>';
+            });
+
+            html += '<tr style="border-bottom:1px solid #2a2a2a;">' +
+                '<td style="padding:8px;color:#aaa;">' + i + '</td>' +
+                '<td style="padding:8px;">' +
+                  '<input type="text" id="th-name-edit-' + i + '" data-toolhead-id="' + i + '"' +
+                  ' value="' + thName + '"' +
+                  ' style="width:100%;padding:6px;border-radius:4px;border:1px solid #555;' +
+                         'background:rgba(255,255,255,0.08);color:#fff;font-size:0.9em;">' +
+                '</td>' +
+                '<td style="padding:8px;">' +
+                  '<select id="th-loc-' + i + '" data-toolhead-id="' + i + '"' +
+                  ' style="width:100%;padding:6px;border-radius:4px;border:1px solid #555;' +
+                         'background:#2a2a2a;color:#fff;font-size:0.9em;">' +
+                  opts +
+                  '</select>' +
+                '</td>' +
+                '</tr>';
+        }
+        html += '</tbody></table>';
+        container.innerHTML = html;
+    }).catch(function(err) {
+        container.innerHTML = '<p style="color:#f88;">Error loading toolheads: ' + escapeHtml(err.message) + '</p>';
+    });
+}
+
+function saveToolheadLocations() {
+    var pid = _editPrinterCurrentId;
+    if (!pid) return;
+
+    var promises = [];
+
+    document.querySelectorAll('[id^="th-name-edit-"]').forEach(function(inp) {
+        var tid  = parseInt(inp.dataset.toolheadId);
+        var name = inp.value.trim();
+        if (name) {
+            promises.push(
+                fetch('/api/printers/' + pid + '/toolheads/' + tid, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({name: name})
+                }).then(function(r) { return r.json(); }).then(function(d) {
+                    if (d.error) throw new Error(d.error);
+                })
+            );
+        }
+    });
+
+    document.querySelectorAll('[id^="th-loc-"]').forEach(function(sel) {
+        var tid     = parseInt(sel.dataset.toolheadId);
+        var locName = sel.value;
+        promises.push(
+            fetch('/api/printers/' + pid + '/toolheads/' + tid + '/location', {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({location_name: locName})
+            }).then(function(r) { return r.json(); }).then(function(d) {
+                if (d.error) throw new Error(d.error);
+            })
+        );
+    });
+
+    var btn = document.getElementById('saveToolheadLocationsBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+    Promise.all(promises)
+        .then(function() {
+            if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+            loadPrinters();
+        })
+        .catch(function(err) {
+            if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+            alert('Error saving: ' + err.message);
+        });
+}
+
 function formatBytes(bytes) {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -621,6 +758,7 @@ function closeAddPrinterModal() {
 }
 
 function closeEditPrinterModal() {
+    switchEditPrinterTab('details');
     document.getElementById('editPrinterModal').style.display = 'none';
     var b = document.querySelector('#editPrinterForm button[type="submit"]');
     if (b) { b.disabled = false; b.textContent = 'Update Printer'; }
@@ -631,6 +769,9 @@ function closeEditPrinterModal() {
         document.getElementById(id).style.display = '';
     });
     document.querySelector('#editPrinterModal .modal-header h3').textContent = 'Edit Printer';
+    // Show tab bar for next open (in case it was hidden for a virtual printer)
+    var tabBar = document.getElementById('editPrinterTabBar');
+    if (tabBar) tabBar.style.display = '';
 }
 
 window.addEventListener('click', function(event) {
@@ -739,6 +880,7 @@ function editPrinter(printerId) {
     fetch('/api/printers').then(function(r) { return r.json(); }).then(function(data) {
         var p = data.printers[printerId];
         if (!p) { alert('Printer not found'); return; }
+        _editPrinterCurrentId = printerId;
         document.getElementById('editPrinterId').value = printerId;
         document.getElementById('editPrinterName').value = p.name || '';
         document.getElementById('editPrinterModel').value = p.model || '';
@@ -749,6 +891,9 @@ function editPrinter(printerId) {
         var printerType = p.printer_type || 'prusalink';
         if (typeEl) { typeEl.value = printerType; }
         onPrinterTypeChange(printerType, 'editPrinter');
+        var tabBar = document.getElementById('editPrinterTabBar');
+        if (tabBar) tabBar.style.display = '';
+        switchEditPrinterTab('details');
         document.getElementById('editPrinterModal').style.display = 'block';
     }).catch(function() { alert('Error loading printer data'); });
 }
@@ -757,6 +902,7 @@ function editVirtualPrinter(printerId) {
     fetch('/api/printers').then(function(r) { return r.json(); }).then(function(data) {
         var p = data.printers[printerId];
         if (!p) { alert('Printer not found'); return; }
+        _editPrinterCurrentId = printerId;
         document.getElementById('editPrinterId').value = printerId;
         document.getElementById('editPrinterIsVirtual').value = 'true';
         document.getElementById('editPrinterName').value = p.name || '';
@@ -766,6 +912,10 @@ function editVirtualPrinter(printerId) {
         ['editPrinterTypeGroup','editPrinterIPGroup','editPrinterAPIKeyGroup','editPrinterModelGroup'].forEach(function(id) {
             document.getElementById(id).style.display = 'none';
         });
+        // Virtual printers have no physical toolheads — hide the Toolheads tab
+        var tabBar = document.getElementById('editPrinterTabBar');
+        if (tabBar) tabBar.style.display = 'none';
+        switchEditPrinterTab('details');
         document.querySelector('#editPrinterModal .modal-header h3').textContent = 'Edit Virtual Printer';
         document.getElementById('editPrinterModal').style.display = 'block';
     }).catch(function() { alert('Error loading printer data'); });

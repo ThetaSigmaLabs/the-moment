@@ -82,73 +82,99 @@
             <h3>Edit Printer</h3>
             <button class="close" onclick="closeEditPrinterModal()">&times;</button>
         </div>
-        <form id="editPrinterForm">
-            <input type="hidden" id="editPrinterId" name="printerId">
-            <input type="hidden" id="editPrinterIsVirtual" name="is_virtual" value="false">
-            <div class="form-group" id="editPrinterTypeGroup">
-                <label for="editPrinterType">Printer Type *</label>
-                <select id="editPrinterType" name="printer_type" onchange="onPrinterTypeChange(this.value,'editPrinter')">
-                    <option value="prusalink">PrusaLink (Prusa printers)</option>
-                    <option value="octoprint">OctoPrint</option>
-                    <option value="bambu">Bambu (MQTT / LAN)</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label for="editPrinterName">Printer Name *</label>
-                <input type="text" id="editPrinterName" name="name" required>
-            </div>
-            <div class="form-group" id="editPrinterIPGroup">
-                <label for="editPrinterIP">Hostname or IP Address *</label>
-                <input type="text" id="editPrinterIP" name="ip_address" required>
-                <small id="editPrinterIPHint"></small>
-            </div>
-            <div class="form-group" id="editPrinterAPIKeyGroup">
-                <label for="editPrinterAPIKey" id="editPrinterAPIKeyLabel">API Key</label>
-                <input type="password" id="editPrinterAPIKey" name="api_key">
-                <small id="editPrinterAPIKeyHint"></small>
-            </div>
-            <div class="form-group" id="editPrinterModelGroup">
-                <label for="editPrinterModel">Printer Model</label>
-                <select id="editPrinterModel" name="model">
-                    <optgroup label="Bambu">
-                        <option value="X1C">X1C</option>
-                        <option value="P1S">P1S</option>
-                        <option value="P1P">P1P</option>
-                        <option value="A1">A1</option>
-                        <option value="A1 Mini">A1 Mini</option>
-                    </optgroup>
-                    <optgroup label="Prusa">
-                        <option value="MK3S+">MK3S+</option>
-                        <option value="MK3S">MK3S</option>
-                        <option value="MINI+">MINI+</option>
-                        <option value="MINI">MINI</option>
-                        <option value="XL">XL</option>
-                    </optgroup>
-                    <option value="Other">Other</option>
-                </select>
-                <small id="editPrinterModelHint"></small>
-            </div>
-            <div class="form-group">
-                <label for="editPrinterToolheads" id="editPrinterToolheadsLabel">Number of Toolheads</label>
-                <select id="editPrinterToolheads" name="toolheads">
-                    <option value="1" selected>1</option>
-                    <option value="2">2</option>
-                    <option value="3">3</option>
-                    <option value="4">4</option>
-                    <option value="5">5</option>
-                    <option value="6">6</option>
-                    <option value="7">7</option>
-                    <option value="8">8</option>
-                    <option value="9">9</option>
-                    <option value="10">10</option>
-                </select>
-                <small id="editPrinterToolheadsHint"></small>
+
+        <!-- Tab bar -->
+        <div id="editPrinterTabBar" style="display:flex;border-bottom:2px solid #2a2a2a;margin:0 -20px 16px;padding:0 20px;">
+            <button class="hm-tab active" data-tab="details" onclick="switchEditPrinterTab('details')">Details</button>
+            <button class="hm-tab" data-tab="toolheads" onclick="switchEditPrinterTab('toolheads')">Toolheads</button>
+        </div>
+
+        <!-- Tab: Details -->
+        <div id="editPrinterTab-details">
+            <form id="editPrinterForm">
+                <input type="hidden" id="editPrinterId" name="printerId">
+                <input type="hidden" id="editPrinterIsVirtual" name="is_virtual" value="false">
+                <div class="form-group" id="editPrinterTypeGroup">
+                    <label for="editPrinterType">Printer Type *</label>
+                    <select id="editPrinterType" name="printer_type" onchange="onPrinterTypeChange(this.value,'editPrinter')">
+                        <option value="prusalink">PrusaLink (Prusa printers)</option>
+                        <option value="octoprint">OctoPrint</option>
+                        <option value="bambu">Bambu (MQTT / LAN)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterName">Printer Name *</label>
+                    <input type="text" id="editPrinterName" name="name" required>
+                </div>
+                <div class="form-group" id="editPrinterIPGroup">
+                    <label for="editPrinterIP">Hostname or IP Address *</label>
+                    <input type="text" id="editPrinterIP" name="ip_address" required>
+                    <small id="editPrinterIPHint"></small>
+                </div>
+                <div class="form-group" id="editPrinterAPIKeyGroup">
+                    <label for="editPrinterAPIKey" id="editPrinterAPIKeyLabel">API Key</label>
+                    <input type="password" id="editPrinterAPIKey" name="api_key">
+                    <small id="editPrinterAPIKeyHint"></small>
+                </div>
+                <div class="form-group" id="editPrinterModelGroup">
+                    <label for="editPrinterModel">Printer Model</label>
+                    <select id="editPrinterModel" name="model">
+                        <optgroup label="Bambu">
+                            <option value="X1C">X1C</option>
+                            <option value="P1S">P1S</option>
+                            <option value="P1P">P1P</option>
+                            <option value="A1">A1</option>
+                            <option value="A1 Mini">A1 Mini</option>
+                        </optgroup>
+                        <optgroup label="Prusa">
+                            <option value="MK3S+">MK3S+</option>
+                            <option value="MK3S">MK3S</option>
+                            <option value="MINI+">MINI+</option>
+                            <option value="MINI">MINI</option>
+                            <option value="XL">XL</option>
+                        </optgroup>
+                        <option value="Other">Other</option>
+                    </select>
+                    <small id="editPrinterModelHint"></small>
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterToolheads" id="editPrinterToolheadsLabel">Number of Toolheads</label>
+                    <select id="editPrinterToolheads" name="toolheads">
+                        <option value="1" selected>1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                        <option value="7">7</option>
+                        <option value="8">8</option>
+                        <option value="9">9</option>
+                        <option value="10">10</option>
+                    </select>
+                    <small id="editPrinterToolheadsHint"></small>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditPrinterModal()">Cancel</button>
+                    <button type="submit" class="btn">Update Printer</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Tab: Toolheads -->
+        <div id="editPrinterTab-toolheads" style="display:none;">
+            <p style="color:#aaa;font-size:0.85em;margin-bottom:12px;">
+                Assign a Spoolman storage location to each toolhead. When a spool is loaded onto a toolhead,
+                The Moment will update its location in Spoolman automatically.
+                <a id="editPrinterSpoolmanLink" href="#" target="_blank" style="color:#a98eff;margin-left:6px;">Open Spoolman &#8599;</a>
+            </p>
+            <div id="editPrinterToolheadsTable">
+                <p style="color:#777;">Loading&hellip;</p>
             </div>
             <div class="modal-actions">
-                <button type="button" class="btn btn-secondary" onclick="closeEditPrinterModal()">Cancel</button>
-                <button type="submit" class="btn">Update Printer</button>
+                <button type="button" class="btn btn-secondary" onclick="closeEditPrinterModal()">Close</button>
+                <button type="button" class="btn" id="saveToolheadLocationsBtn" onclick="saveToolheadLocations()">Save</button>
             </div>
-        </form>
+        </div>
     </div>
 </div>
 

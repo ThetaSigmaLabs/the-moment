@@ -178,6 +178,9 @@ func (ws *WebServer) setupRoutes() {
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
 		api.GET("/printers/:id/toolheads", ws.getToolheadNamesHandler)
 		api.PUT("/printers/:id/toolheads/:toolhead_id", ws.updateToolheadNameHandler)
+		api.GET("/printers/:id/toolheads/locations", ws.getToolheadLocationsHandler)
+		api.PUT("/printers/:id/toolheads/:toolhead_id/location", ws.updateToolheadLocationHandler)
+		api.GET("/spoolman/locations", ws.spoolmanLocationsHandler)
 		api.POST("/detect_printer", ws.detectPrinterHandler)
 
 		// Virtual test printer — file management
@@ -606,10 +609,16 @@ func (ws *WebServer) mapToolheadHandler(c *gin.Context) {
 
 	// Handle unmapping (SpoolID = 0) or mapping (SpoolID > 0)
 	if req.SpoolID == 0 {
-		// Unmap the toolhead
+		// Capture spool ID before unmapping so we can sync its location afterwards.
+		prevSpoolID, _ := ws.bridge.GetToolheadMapping(req.PrinterName, req.ToolheadID)
 		if err := ws.bridge.UnmapToolhead(req.PrinterName, req.ToolheadID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
+		}
+		if prevSpoolID > 0 {
+			if err := ws.bridge.syncSpoolLocationForUnassignment(prevSpoolID); err != nil {
+				log.Printf("mapToolheadHandler: unmap location sync warning: %v", err)
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"message": "Toolhead unmapped successfully"})
 	} else {
@@ -824,6 +833,11 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 				}
 			}
 			printerData["toolhead_names"] = toolheadNamesMap
+		}
+
+		// Get toolhead locations for this printer
+		if toolheadLocs, err := ws.bridge.GetAllToolheadLocations(printerID); err == nil {
+			printerData["toolhead_locations"] = toolheadLocs
 		}
 
 		result[printerID] = printerData
@@ -1094,6 +1108,81 @@ func (ws *WebServer) updateToolheadNameHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Toolhead name updated successfully"})
+}
+
+// getToolheadLocationsHandler returns all configured Spoolman locations for a printer's toolheads.
+func (ws *WebServer) getToolheadLocationsHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	configs, err := ws.bridge.GetAllPrinterConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if _, ok := configs[printerID]; !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Printer not found"})
+		return
+	}
+	locs, err := ws.bridge.GetAllToolheadLocations(printerID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"locations": locs})
+}
+
+// updateToolheadLocationHandler saves the Spoolman location for one toolhead.
+func (ws *WebServer) updateToolheadLocationHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	toolheadID, err := strconv.Atoi(c.Param("toolhead_id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid toolhead ID"})
+		return
+	}
+	configs, err := ws.bridge.GetAllPrinterConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	cfg, ok := configs[printerID]
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Printer not found"})
+		return
+	}
+	if toolheadID < 0 || toolheadID >= cfg.Toolheads {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("Toolhead ID must be between 0 and %d", cfg.Toolheads-1)})
+		return
+	}
+	var req struct {
+		LocationName string `json:"location_name"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+		return
+	}
+	if err := ws.bridge.SetToolheadLocation(printerID, toolheadID, req.LocationName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// spoolmanLocationsHandler returns active Spoolman location names for use in dropdowns.
+func (ws *WebServer) spoolmanLocationsHandler(c *gin.Context) {
+	locations, err := ws.bridge.spoolman.GetLocations()
+	if err != nil {
+		log.Printf("spoolmanLocationsHandler: %v", err)
+		locations = nil
+	}
+	names := make([]string, 0)
+	for _, l := range locations {
+		if !l.Archived && strings.TrimSpace(l.Name) != "" {
+			names = append(names, l.Name)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"locations":    names,
+		"spoolman_url": ws.bridge.spoolman.GetBaseURL(),
+	})
 }
 
 // detectPrinterModel detects printer model from hostname

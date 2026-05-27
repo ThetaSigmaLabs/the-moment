@@ -316,6 +316,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		return nil, fmt.Errorf("failed to migrate printer debug log: %w", err)
 	}
 
+	if err := bridge.migrateToolheadLocations(); err != nil {
+		return nil, fmt.Errorf("failed to migrate toolhead locations: %w", err)
+	}
+
 	bridge.ReconcileActiveSessions()
 
 	// Update Spoolman URL and timeout if config is provided
@@ -828,6 +832,23 @@ func (b *FilamentBridge) migratePrinterDebugLog() error {
 	}
 	b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pdl_hist ON print_debug_logs(print_history_id)`)
 	b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pdl_job  ON print_debug_logs(printer_id, job_id)`)
+	return nil
+}
+
+// migrateToolheadLocations creates the toolhead_locations table for per-toolhead
+// Spoolman location assignments.
+func (b *FilamentBridge) migrateToolheadLocations() error {
+	_, err := b.db.Exec(`
+		CREATE TABLE IF NOT EXISTS toolhead_locations (
+			printer_id    TEXT    NOT NULL,
+			toolhead_id   INTEGER NOT NULL,
+			location_name TEXT    NOT NULL DEFAULT '',
+			updated_at    DATETIME NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (printer_id, toolhead_id)
+		)`)
+	if err != nil {
+		return fmt.Errorf("migrateToolheadLocations: %w", err)
+	}
 	return nil
 }
 
@@ -1950,6 +1971,97 @@ func (b *FilamentBridge) GetAllToolheadNames(printerID string) (map[int]string, 
 	return names, nil
 }
 
+// GetToolheadLocation returns the configured Spoolman location name for a toolhead.
+// Returns "" with no error when no location has been configured.
+func (b *FilamentBridge) GetToolheadLocation(printerID string, toolheadID int) (string, error) {
+	var locationName string
+	err := b.db.QueryRow(
+		"SELECT location_name FROM toolhead_locations WHERE printer_id = ? AND toolhead_id = ?",
+		printerID, toolheadID,
+	).Scan(&locationName)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to get toolhead location: %w", err)
+	}
+	return locationName, nil
+}
+
+// SetToolheadLocation saves the Spoolman location name for a toolhead.
+func (b *FilamentBridge) SetToolheadLocation(printerID string, toolheadID int, locationName string) error {
+	_, err := b.db.Exec(
+		`INSERT OR REPLACE INTO toolhead_locations (printer_id, toolhead_id, location_name, updated_at)
+		 VALUES (?, ?, ?, datetime('now'))`,
+		printerID, toolheadID, strings.TrimSpace(locationName),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set toolhead location: %w", err)
+	}
+	return nil
+}
+
+// GetAllToolheadLocations returns all configured Spoolman location names for a printer,
+// keyed by toolhead index.
+func (b *FilamentBridge) GetAllToolheadLocations(printerID string) (map[int]string, error) {
+	rows, err := b.db.Query(
+		"SELECT toolhead_id, location_name FROM toolhead_locations WHERE printer_id = ? ORDER BY toolhead_id",
+		printerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get toolhead locations: %w", err)
+	}
+	defer rows.Close()
+
+	locs := make(map[int]string)
+	for rows.Next() {
+		var toolheadID int
+		var locationName string
+		if err := rows.Scan(&toolheadID, &locationName); err != nil {
+			return nil, fmt.Errorf("failed to scan toolhead location row: %w", err)
+		}
+		locs[toolheadID] = locationName
+	}
+	return locs, nil
+}
+
+// syncSpoolLocation moves a newly-assigned spool to the toolhead's configured Spoolman
+// location. No-op if no location is configured for the toolhead.
+func (b *FilamentBridge) syncSpoolLocation(printerID string, toolheadID int, spoolID int) error {
+	locationName, err := b.GetToolheadLocation(printerID, toolheadID)
+	if err != nil || locationName == "" {
+		return nil
+	}
+	if err := b.spoolman.UpdateSpoolLocation(spoolID, locationName); err != nil {
+		return fmt.Errorf("syncSpoolLocation spool %d to %q: %w", spoolID, locationName, err)
+	}
+	log.Printf("Synced spool %d location to %q (printer %s toolhead %d)", spoolID, locationName, printerID, toolheadID)
+	return nil
+}
+
+// syncSpoolLocationForUnassignment moves a spool that was removed from a toolhead to
+// the configured default location, if the auto-assign feature is enabled.
+func (b *FilamentBridge) syncSpoolLocationForUnassignment(spoolID int) error {
+	enabled, err := b.GetAutoAssignPreviousSpoolEnabled()
+	if err != nil || !enabled {
+		return nil
+	}
+	locationName, err := b.GetAutoAssignPreviousSpoolLocation()
+	if err != nil || locationName == "" {
+		return nil
+	}
+	loc, err := b.spoolman.FindLocationByName(locationName)
+	if err != nil || loc == nil {
+		log.Printf("syncSpoolLocationForUnassignment: location %q not found in Spoolman, skipping spool %d", locationName, spoolID)
+		return nil
+	}
+	if err := b.spoolman.UpdateSpoolLocation(spoolID, locationName); err != nil {
+		return fmt.Errorf("syncSpoolLocationForUnassignment spool %d to %q: %w", spoolID, locationName, err)
+	}
+	log.Printf("Synced unassigned spool %d to default location %q", spoolID, locationName)
+	return nil
+}
+
 // GetConfigSnapshot returns a snapshot of the current config for safe iteration
 func (b *FilamentBridge) GetConfigSnapshot() *Config {
 	b.mutex.RLock()
@@ -2103,6 +2215,19 @@ func (b *FilamentBridge) SetToolheadMapping(printerName string, toolheadID int, 
 
 	// Unlock before potentially calling AssignSpoolToLocation (which may need locks)
 	b.mutex.Unlock()
+
+	// Sync the new spool's location to the configured per-toolhead Spoolman location.
+	printerConfigs, cfgErr := b.GetAllPrinterConfigs()
+	if cfgErr == nil {
+		for pid, cfg := range printerConfigs {
+			if cfg.Name == printerName {
+				if syncErr := b.syncSpoolLocation(pid, toolheadID, spoolID); syncErr != nil {
+					log.Printf("Warning: SetToolheadMapping location sync: %v", syncErr)
+				}
+				break
+			}
+		}
+	}
 
 	if enabled && previousSpoolID > 0 && previousSpoolID != spoolID {
 		// Get the configured default location
