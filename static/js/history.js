@@ -8,6 +8,7 @@ var _filteredSessions = [];
 var _sortField        = 'print_finished';
 var _sortAsc          = false;
 var _activeEntry      = null;
+var _spoolMap         = {};   // id → SpoolmanSpool, populated on modal open
 var _expandedSessions = {};   // session key → true when expanded
 var _selectedKeys     = {};   // session key → true when selected
 var _currentPage      = 1;
@@ -314,17 +315,33 @@ function copyDebugLog() {
     }
 }
 
+function _formatSpoolLabel(spoolId) {
+    if (!spoolId || spoolId <= 0) return '—';
+    var s = _spoolMap[spoolId];
+    if (!s) return '[' + spoolId + ']';
+    var label = '[' + spoolId + '] ' + (s.material || 'Unknown Material') + ' - ' + (s.brand || 'Unknown Brand') + ' - ' + (s.name || 'Unnamed Spool');
+    if (s.remaining_weight != null) label += ' (' + Math.round(s.remaining_weight) + 'g remaining)';
+    return label;
+}
+
 function openHistoryModal(id) {
-    fetch('/api/history/' + id)
-        .then(function(r) { return r.json(); })
-        .then(function(record) {
-            _activeEntry = record;
-            populateModal(record);
-            document.getElementById('historyDetailModal').style.display = 'block';
-        })
-        .catch(function(err) {
-            alert('Failed to load record: ' + err.message);
-        });
+    Promise.all([
+        fetch('/api/history/' + id).then(function(r) { return r.json(); }),
+        fetch('/api/spools').then(function(r) { return r.json(); })
+    ])
+    .then(function(results) {
+        var record = results[0];
+        var spoolsData = results[1];
+        _spoolMap = {};
+        var spools = spoolsData.spools || spoolsData || [];
+        spools.forEach(function(s) { _spoolMap[s.id] = s; });
+        _activeEntry = record;
+        populateModal(record);
+        document.getElementById('historyDetailModal').style.display = 'block';
+    })
+    .catch(function(err) {
+        alert('Failed to load record: ' + err.message);
+    });
 }
 
 function populateModal(r) {
@@ -398,7 +415,7 @@ function populateModal(r) {
                 '<th style="padding:5px 8px;"></th>' +
                 '</tr>';
             r.filament_usages.forEach(function(fu) {
-                var spoolLabel = fu.spool_id > 0 ? '#' + fu.spool_id : '—';
+                var spoolLabel = _formatSpoolLabel(fu.spool_id);
                 var priceCell, estCostCell;
                 if (fu.price_per_kg != null && fu.price_per_kg > 0) {
                     var estCost = (fu.filament_used_grams / 1000) * fu.price_per_kg;
@@ -413,7 +430,7 @@ function populateModal(r) {
                     '<td style="padding:6px 8px;color:#777;">#' + fu.change_number + '</td>' +
                     '<td style="padding:6px 8px;color:#aaa;" id="fu-spool-' + fu.id + '">' + _esc(spoolLabel) + '</td>' +
                     '<td style="padding:6px 8px;text-align:right;color:#aaa;">' + fu.filament_used_mm.toFixed(0) + '</td>' +
-                    '<td style="padding:6px 8px;text-align:right;color:#c8b8ff;">' + fu.filament_used_grams.toFixed(2) + ' g</td>' +
+                    '<td style="padding:6px 8px;text-align:right;color:#c8b8ff;" id="fu-grams-' + fu.id + '">' + fu.filament_used_grams.toFixed(2) + ' g</td>' +
                     priceCell +
                     estCostCell +
                     '<td style="padding:6px 8px;">' +
@@ -885,9 +902,12 @@ function openReassignPicker(segmentID, printID, gramsUsed) {
     _reassignSegmentID = segmentID;
     _reassignPrintID   = printID;
 
-    var picker = document.getElementById('reassignPicker');
-    var sel    = document.getElementById('reassignSpoolSelect');
+    var picker     = document.getElementById('reassignPicker');
+    var sel        = document.getElementById('reassignSpoolSelect');
+    var gramsInput = document.getElementById('reassignGrams');
     if (!picker || !sel) return;
+
+    if (gramsInput) gramsInput.value = (gramsUsed || 0).toFixed(2);
 
     sel.innerHTML = '<option value="">Loading…</option>';
     picker.style.display = 'block';
@@ -896,11 +916,12 @@ function openReassignPicker(segmentID, printID, gramsUsed) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             var spools = data.spools || data || [];
+            spools.forEach(function(s) { _spoolMap[s.id] = s; });
             sel.innerHTML = '<option value="0">— no spool (clear) —</option>';
             spools.forEach(function(s) {
                 var opt = document.createElement('option');
                 opt.value = s.id;
-                opt.textContent = '#' + s.id + ' · ' + (s.material || '') + ' ' + (s.name || '') + ' (' + (s.remaining_weight || 0).toFixed(0) + 'g left)';
+                opt.textContent = _formatSpoolLabel(s.id);
                 sel.appendChild(opt);
             });
         })
@@ -910,21 +931,25 @@ function openReassignPicker(segmentID, printID, gramsUsed) {
 }
 
 function confirmReassign() {
-    var sel     = document.getElementById('reassignSpoolSelect');
-    var newID   = parseInt(sel ? sel.value : '0', 10) || 0;
-    var picker  = document.getElementById('reassignPicker');
+    var sel        = document.getElementById('reassignSpoolSelect');
+    var gramsInput = document.getElementById('reassignGrams');
+    var newID      = parseInt(sel ? sel.value : '0', 10) || 0;
+    var newGrams   = parseFloat(gramsInput ? gramsInput.value : '0') || 0;
+    var picker     = document.getElementById('reassignPicker');
 
     fetch('/api/prints/' + _reassignPrintID + '/filament/' + _reassignSegmentID + '/reassign', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spool_id: newID })
+        body: JSON.stringify({ spool_id: newID, grams: newGrams })
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.error) { alert('Reassign failed: ' + data.error); return; }
-        // Update the spool label in the row without reloading.
-        var cell = document.getElementById('fu-spool-' + _reassignSegmentID);
-        if (cell) cell.textContent = newID > 0 ? '#' + newID : '—';
+        // Update spool and grams cells in the row without reloading.
+        var spoolCell = document.getElementById('fu-spool-' + _reassignSegmentID);
+        if (spoolCell) spoolCell.textContent = _formatSpoolLabel(newID);
+        var gramsCell = document.getElementById('fu-grams-' + _reassignSegmentID);
+        if (gramsCell && newGrams > 0) gramsCell.textContent = newGrams.toFixed(2) + ' g';
         if (picker) picker.style.display = 'none';
         // Reload cost row to reflect updated price.
         if (_activeEntry) recalcHistoryCost();

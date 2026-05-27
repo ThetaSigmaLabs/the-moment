@@ -976,6 +976,17 @@ func (b *FilamentBridge) DeleteActivePrintSession(printerID string, jobID int) e
 	return err
 }
 
+// DeleteRecoveryStubs removes any print_history rows with recovered=1 that were
+// created for baseFilename when the session was orphaned at restart. Called after
+// a normal completion row has been committed so the stub is no longer needed.
+func (b *FilamentBridge) DeleteRecoveryStubs(printerName, baseFilename string) {
+	stubName := baseFilename + " [RECOVERED]"
+	if _, err := b.db.Exec(`DELETE FROM print_history WHERE recovered=1 AND printer_name=? AND job_name=?`,
+		printerName, stubName); err != nil {
+		log.Printf("[RECONCILE] failed to delete recovery stub for %s/%s: %v", printerName, baseFilename, err)
+	}
+}
+
 // ReconcileActiveSessions runs once at startup to salvage prints that were in-progress
 // when the service last restarted. For each orphaned session a recovery print_history
 // row is written (recovered=1, gcode_unavailable=1) so the print is not silently lost.
@@ -2791,8 +2802,11 @@ func (b *FilamentBridge) handleBambuPrintFinished(printerID string, config Print
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
 		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename,
 			0, "completed", "", sessionID, "bambu")
-		if firstPrintID == 0 && printID > 0 {
-			firstPrintID = printID
+		if printID > 0 {
+			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+			if firstPrintID == 0 {
+				firstPrintID = printID
+			}
 		}
 	}
 	if firstPrintID > 0 {
@@ -2800,6 +2814,8 @@ func (b *FilamentBridge) handleBambuPrintFinished(printerID string, config Print
 			log.Printf("[BAMBU] Warning: failed to snapshot NFC assignments for print %d: %v", firstPrintID, err)
 		}
 	}
+
+	b.DeleteRecoveryStubs(printerName, filepath.Base(filename))
 	return nil
 }
 
@@ -2845,8 +2861,11 @@ func (b *FilamentBridge) handleBambuPrintCancelled(printerID string, config Prin
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
 		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, filename+" [CANCELLED]",
 			0, "cancelled", "", sessionID, "bambu")
-		if firstPrintID == 0 && printID > 0 {
-			firstPrintID = printID
+		if printID > 0 {
+			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+			if firstPrintID == 0 {
+				firstPrintID = printID
+			}
 		}
 	}
 	if firstPrintID > 0 {
@@ -2983,8 +3002,11 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
 		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, jobName+" [CANCELLED]",
 			0, "cancelled", thumbnailB64, sessionID, "prusalink")
-		if firstPrintID == 0 && printID > 0 {
-			firstPrintID = printID
+		if printID > 0 {
+			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+			if firstPrintID == 0 {
+				firstPrintID = printID
+			}
 		}
 	}
 	if firstPrintID > 0 {
@@ -3095,8 +3117,11 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
 		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, jobName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "prusalink")
-		if firstPrintID == 0 && printID > 0 {
-			firstPrintID = printID
+		if printID > 0 {
+			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+			if firstPrintID == 0 {
+				firstPrintID = printID
+			}
 		}
 	}
 	if firstPrintID > 0 {
@@ -3114,6 +3139,7 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 		}
 	}
 
+	b.DeleteRecoveryStubs(printerName, filepath.Base(filename))
 	return nil
 }
 
@@ -3812,8 +3838,11 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 	sessionID := newSessionID()
 	for toolheadID, usedG := range usage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
-		_, _ = b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
+		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "virtual")
+		if printID > 0 {
+			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+		}
 	}
 
 	log.Printf("✅ Virtual '%s': processed '%s', %d toolhead(s), %d skipped, %.0f min",
@@ -3899,6 +3928,7 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 			COALESCE(ph.session_id, '')
 		FROM print_history ph
 		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
+		WHERE COALESCE(ph.recovered, 0) = 0
 		ORDER BY ph.print_finished DESC
 		LIMIT ?`, limit)
 	if err != nil {
@@ -4463,10 +4493,12 @@ func (b *FilamentBridge) AppendFilamentUsage(printID, toolIndex, changeNumber, s
 }
 
 // ReassignFilamentSegment moves the filament usage recorded against segmentID to
-// newSpoolID.  It subtracts the grams from the old spool in Spoolman (if any) and
-// adds them to the new spool, then updates the local DB row and recalculates cost.
+// newSpoolID and optionally updates the gram amount. Pass newGrams=0 to keep the
+// existing weight. Spoolman is adjusted for any spool or gram change, the local DB
+// row is updated, print_history.spool_id is backfilled for the primary segment
+// (change_number==0), and cost is recalculated.
 // segmentID is the print_filament_usage.id primary key.
-func (b *FilamentBridge) ReassignFilamentSegment(printID, segmentID, newSpoolID int) error {
+func (b *FilamentBridge) ReassignFilamentSegment(printID, segmentID, newSpoolID int, newGrams float64) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
@@ -4483,29 +4515,46 @@ func (b *FilamentBridge) ReassignFilamentSegment(printID, segmentID, newSpoolID 
 	if err != nil {
 		return fmt.Errorf("segment %d not found for print %d: %w", segmentID, printID, err)
 	}
-	if gramsUsed <= 0 {
-		return fmt.Errorf("segment has no filament usage to reassign")
+
+	effectiveNewGrams := gramsUsed
+	if newGrams > 0 {
+		effectiveNewGrams = newGrams
 	}
 
-	// Adjust Spoolman inventory: subtract from old spool, add to new spool.
-	if oldSpoolID > 0 && oldSpoolID != newSpoolID {
+	spoolChanged := newSpoolID != oldSpoolID
+	gramsChanged := effectiveNewGrams != gramsUsed
+
+	// Adjust Spoolman: subtract old grams from old spool when spool or grams change.
+	if oldSpoolID > 0 && (spoolChanged || gramsChanged) {
 		if err := b.spoolman.SubtractSpoolUsage(oldSpoolID, gramsUsed); err != nil {
 			log.Printf("⚠️  ReassignFilamentSegment: subtract from spool %d failed: %v", oldSpoolID, err)
 			// Non-fatal — proceed so the DB stays consistent.
 		}
 	}
-	if newSpoolID > 0 && newSpoolID != oldSpoolID {
-		if err := b.spoolman.UpdateSpoolUsage(newSpoolID, gramsUsed); err != nil {
+	// Add effective new grams to new spool when spool or grams change.
+	if newSpoolID > 0 && (spoolChanged || gramsChanged) {
+		if err := b.spoolman.UpdateSpoolUsage(newSpoolID, effectiveNewGrams); err != nil {
 			log.Printf("⚠️  ReassignFilamentSegment: add to spool %d failed: %v", newSpoolID, err)
 		}
 	}
 
-	// Update the local record.
+	// Update the local filament usage record.
 	if _, err := b.db.Exec(
-		`UPDATE print_filament_usage SET spool_id = ? WHERE id = ? AND print_id = ?`,
-		newSpoolID, segmentID, printID,
+		`UPDATE print_filament_usage SET spool_id = ?, filament_used_grams = ? WHERE id = ? AND print_id = ?`,
+		newSpoolID, effectiveNewGrams, segmentID, printID,
 	); err != nil {
 		return fmt.Errorf("updating segment DB record: %w", err)
+	}
+
+	// Keep print_history.spool_id in sync for the primary segment (change_number=0)
+	// so the Details tab and cost fallback path always reflect the current spool.
+	if changeNumber == 0 {
+		if _, err := b.db.Exec(
+			`UPDATE print_history SET spool_id = ? WHERE id = ?`,
+			newSpoolID, printID,
+		); err != nil {
+			log.Printf("⚠️  ReassignFilamentSegment: update print_history.spool_id failed: %v", err)
+		}
 	}
 
 	// Rebuild filament list for cost recalculation.
@@ -4536,8 +4585,8 @@ func (b *FilamentBridge) ReassignFilamentSegment(printID, segmentID, newSpoolID 
 		b.SavePrintCost(printID, bd)
 	}
 
-	log.Printf("🔄 Filament segment %d (print %d T%d.%d) reassigned spool %d → %d (%.2fg)",
-		segmentID, printID, toolIndex, changeNumber, oldSpoolID, newSpoolID, gramsUsed)
+	log.Printf("🔄 Filament segment %d (print %d T%d.%d) reassigned spool %d → %d (%.2fg → %.2fg)",
+		segmentID, printID, toolIndex, changeNumber, oldSpoolID, newSpoolID, gramsUsed, effectiveNewGrams)
 	return nil
 }
 

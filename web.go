@@ -3255,9 +3255,10 @@ func (ws *WebServer) appendFilamentHandler(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"ok": true})
 }
 
-// reassignFilamentHandler moves a print's filament segment to a different spool.
+// reassignFilamentHandler moves a print's filament segment to a different spool and
+// optionally adjusts the recorded gram amount.
 // POST /api/prints/:id/filament/:segment_id/reassign
-// Body: {"spool_id": 42}
+// Body: {"spool_id": 42, "grams": 45.2}  — grams=0 keeps existing weight
 func (ws *WebServer) reassignFilamentHandler(c *gin.Context) {
 	printID, err := strconv.Atoi(c.Param("id"))
 	if err != nil || printID <= 0 {
@@ -3271,19 +3272,20 @@ func (ws *WebServer) reassignFilamentHandler(c *gin.Context) {
 	}
 
 	var body struct {
-		SpoolID int `json:"spool_id"`
+		SpoolID int     `json:"spool_id"`
+		Grams   float64 `json:"grams"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := ws.bridge.ReassignFilamentSegment(printID, segmentID, body.SpoolID); err != nil {
+	if err := ws.bridge.ReassignFilamentSegment(printID, segmentID, body.SpoolID, body.Grams); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "segment reassigned", "new_spool_id": body.SpoolID})
+	c.JSON(http.StatusOK, gin.H{"message": "segment reassigned", "new_spool_id": body.SpoolID, "new_grams": body.Grams})
 }
 
 // ─── Print Attachment Handlers ────────────────────────────────────────────────
