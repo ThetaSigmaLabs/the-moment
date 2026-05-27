@@ -4301,25 +4301,41 @@ func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 strin
 		}
 	}
 
-	// Thumbnail: OrcaSlicer / PrusaSlicer embed JPG base64 in comment lines:
-	//   "; thumbnail_JPG begin 96x96 3656"  ...lines...  "; thumbnail_JPG end"
-	thumbStartRe := regexp.MustCompile(`; thumbnail_(?:JPG|PNG) begin [0-9x]+ [0-9]+`)
-	thumbEndRe := regexp.MustCompile(`; thumbnail_(?:JPG|PNG) end`)
+	// Thumbnail: PrusaSlicer / OrcaSlicer embed image data as base64 in comment lines.
+	// Supported formats (in preference order):
+	//   "; thumbnail_JPG begin 96x96 3656"  ...lines...  "; thumbnail_JPG end"  (JPEG)
+	//   "; thumbnail_PNG begin 96x96 3656"  ...lines...  "; thumbnail_PNG end"  (PNG)
+	//   "; thumbnail begin 640x480 21604"   ...lines...  "; thumbnail end"       (PNG, PrusaSlicer)
+	// QOI format is skipped — browsers cannot display it natively.
 	lineRe := regexp.MustCompile(`(?m)^; ?`)
-
-	startIdx := thumbStartRe.FindStringIndex(text)
-	if startIdx != nil {
+	type thumbSpec struct {
+		startPat string
+		endPat   string
+		mimeType string
+	}
+	specs := []thumbSpec{
+		{`; thumbnail_JPG begin [0-9x]+ [0-9]+`, `; thumbnail_JPG end`, "image/jpeg"},
+		{`; thumbnail_PNG begin [0-9x]+ [0-9]+`, `; thumbnail_PNG end`, "image/png"},
+		{`; thumbnail begin [0-9x]+ [0-9]+`, `; thumbnail end`, "image/png"},
+	}
+	for _, spec := range specs {
+		startIdx := regexp.MustCompile(spec.startPat).FindStringIndex(text)
+		if startIdx == nil {
+			continue
+		}
 		afterStart := text[startIdx[1]:]
-		endIdx := thumbEndRe.FindStringIndex(afterStart)
-		if endIdx != nil {
-			block := afterStart[:endIdx[0]]
-			clean := lineRe.ReplaceAllString(block, "")
-			clean = strings.ReplaceAll(clean, "\n", "")
-			clean = strings.ReplaceAll(clean, "\r", "")
-			clean = strings.TrimSpace(clean)
-			if clean != "" {
-				thumbnailBase64 = "data:image/jpeg;base64," + clean
-			}
+		endIdx := regexp.MustCompile(spec.endPat).FindStringIndex(afterStart)
+		if endIdx == nil {
+			continue
+		}
+		block := afterStart[:endIdx[0]]
+		clean := lineRe.ReplaceAllString(block, "")
+		clean = strings.ReplaceAll(clean, "\n", "")
+		clean = strings.ReplaceAll(clean, "\r", "")
+		clean = strings.TrimSpace(clean)
+		if clean != "" {
+			thumbnailBase64 = "data:" + spec.mimeType + ";base64," + clean
+			break
 		}
 	}
 	return
