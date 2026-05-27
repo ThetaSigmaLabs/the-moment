@@ -1,7 +1,7 @@
 <!-- Filament Status Tab (Default) -->
 <div id="status-tab" class="tab-content {{if .IsFirstRun}}active{{end}}">
     <div id="status">
-        <h2>Printer Status</h2>
+        <h2>Print Ops</h2>
 
         {{if .IsFirstRun}}
         <div class="welcome-banner">
@@ -76,11 +76,15 @@
             {{end}}
 
             <div class="mapping-section">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <h3>Toolhead Mappings</h3>
-                </div>
-                <h4>Map Spools to Toolheads</h4>
-                <div style="margin-top: 15px;">
+                <table class="toolhead-table">
+                    <thead>
+                        <tr>
+                            <th>Toolhead</th>
+                            <th>Assigned Spool</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
                     {{$mapping := index $.Status.ToolheadMappings $printerID}}
                     {{range $toolheadID := generateToolheadIDs $printerConfig.Toolheads}}
                     {{$mappedSpool := index $mapping $toolheadID}}
@@ -90,60 +94,65 @@
                     {{else}}
                         {{$displayName = printf "Toolhead %d" $toolheadID}}
                     {{end}}
-                    <div class="toolhead-mapping-row" style="display: flex; align-items: center; gap: 15px; margin-bottom: 10px; padding: 10px; background: rgba(255,255,255,0.05); border-radius: 5px;" data-printer-id="{{$printerID}}" data-toolhead-id="{{$toolheadID}}">
-                        <div class="toolhead-label" style="min-width: 100px; font-weight: bold;">{{$displayName}}:</div>
-                        <div class="custom-dropdown" style="flex: 1;">
-                            <div class="dropdown-button">
-                                <div style="display: flex; align-items: center; gap: 10px;">
+                    <tr class="toolhead-mapping-row" data-printer-id="{{$printerID}}" data-toolhead-id="{{$toolheadID}}">
+                        <td class="toolhead-label">{{$displayName}}</td>
+                        <td>
+                            <div class="custom-dropdown">
+                                <div class="dropdown-button">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        {{if $mappedSpool.SpoolID}}
+                                        {{range $.Spools}}
+                                        {{if eq .ID $mappedSpool.SpoolID}}
+                                        <div class="color-swatch" data-color="{{.Filament.ColorHex}}"></div>
+                                        <span>[{{.ID}}] {{if .Material}}{{.Material}}{{else}}Unknown Material{{end}} - {{if .Brand}}{{.Brand}}{{else}}Unknown Brand{{end}} - {{if .Name}}{{.Name}}{{else}}Unnamed Spool{{end}}{{if .RemainingWeight}} ({{printf "%.0f" .RemainingWeight}}g remaining){{end}}</span>
+                                        {{end}}
+                                        {{end}}
+                                        {{else}}
+                                        <div class="color-swatch" style="background-color: #ccc;"></div>
+                                        <span>Empty</span>
+                                        {{end}}
+                                    </div>
+                                    <span class="dropdown-arrow">▼</span>
+                                </div>
+                                <div class="dropdown-content">
+                                    <div class="dropdown-search-container">
+                                        <input type="text" class="dropdown-search" placeholder="Search spools..." autocomplete="off">
+                                    </div>
+                                    <div class="dropdown-options-container">
+                                        <div class="dropdown-option" data-value="" data-color="">
+                                            <div class="color-swatch" style="background-color: #ccc;"></div>
+                                            <div class="option-text">Empty</div>
+                                        </div>
+                                        {{range $.Spools}}
+                                        <div class="dropdown-option" data-value="{{.ID}}" data-color="{{.Filament.ColorHex}}" {{if $mappedSpool.SpoolID}}{{if eq .ID $mappedSpool.SpoolID}}class="selected"{{end}}{{end}}>
+                                            <div class="color-swatch" data-color="{{.Filament.ColorHex}}"></div>
+                                            <div class="option-text">[{{.ID}}] {{if .Material}}{{.Material}}{{else}}Unknown Material{{end}} - {{if .Brand}}{{.Brand}}{{else}}Unknown Brand{{end}} - {{if .Name}}{{.Name}}{{else}}Unnamed Spool{{end}}{{if .RemainingWeight}} ({{printf "%.0f" .RemainingWeight}}g remaining){{end}}</div>
+                                        </div>
+                                        {{end}}
+                                        <div class="dropdown-no-results">No spools found</div>
+                                    </div>
+                                </div>
+                                <input type="hidden" name="spool_{{$printerID}}_{{$toolheadID}}" value="{{if $mappedSpool.SpoolID}}{{$mappedSpool.SpoolID}}{{end}}">
+                            </div>
+                        </td>
+                        <td>
+                            <button class="edit-spool-btn {{if not $mappedSpool.SpoolID}}hidden{{end}}"
+                                    data-spool-id="{{if $mappedSpool.SpoolID}}{{$mappedSpool.SpoolID}}{{end}}"
+                                    onclick="openSpoolmanEdit(this.dataset.spoolId)"
                                     {{if $mappedSpool.SpoolID}}
                                     {{range $.Spools}}
                                     {{if eq .ID $mappedSpool.SpoolID}}
-                                    <div class="color-swatch" data-color="{{.Filament.ColorHex}}"></div>
-                                    <span>[{{.ID}}] {{if .Material}}{{.Material}}{{else}}Unknown Material{{end}} - {{if .Brand}}{{.Brand}}{{else}}Unknown Brand{{end}} - {{if .Name}}{{.Name}}{{else}}Unnamed Spool{{end}}{{if .RemainingWeight}} ({{printf "%.0f" .RemainingWeight}}g remaining){{end}}</span>
+                                    data-color-hex="{{.Filament.ColorHex}}"
                                     {{end}}
                                     {{end}}
-                                    {{else}}
-                                    <div class="color-swatch" style="background-color: #ccc;"></div>
-                                    <span>Empty</span>
-                                    {{end}}
-                                </div>
-                                <span class="dropdown-arrow">▼</span>
-                            </div>
-                            <div class="dropdown-content">
-                                <div class="dropdown-search-container">
-                                    <input type="text" class="dropdown-search" placeholder="Search spools..." autocomplete="off">
-                                </div>
-                                <div class="dropdown-options-container">
-                                    <div class="dropdown-option" data-value="" data-color="">
-                                        <div class="color-swatch" style="background-color: #ccc;"></div>
-                                        <div class="option-text">Empty</div>
-                                    </div>
-                                    {{range $.Spools}}
-                                    <div class="dropdown-option" data-value="{{.ID}}" data-color="{{.Filament.ColorHex}}" {{if $mappedSpool.SpoolID}}{{if eq .ID $mappedSpool.SpoolID}}class="selected"{{end}}{{end}}>
-                                        <div class="color-swatch" data-color="{{.Filament.ColorHex}}"></div>
-                                        <div class="option-text">[{{.ID}}] {{if .Material}}{{.Material}}{{else}}Unknown Material{{end}} - {{if .Brand}}{{.Brand}}{{else}}Unknown Brand{{end}} - {{if .Name}}{{.Name}}{{else}}Unnamed Spool{{end}}{{if .RemainingWeight}} ({{printf "%.0f" .RemainingWeight}}g remaining){{end}}</div>
-                                    </div>
-                                    {{end}}
-                                    <div class="dropdown-no-results">No spools found</div>
-                                </div>
-                            </div>
-                            <input type="hidden" name="spool_{{$printerID}}_{{$toolheadID}}" value="{{if $mappedSpool.SpoolID}}{{$mappedSpool.SpoolID}}{{end}}">
-                        </div>
-                        <button class="edit-spool-btn {{if not $mappedSpool.SpoolID}}hidden{{end}}" 
-                                data-spool-id="{{if $mappedSpool.SpoolID}}{{$mappedSpool.SpoolID}}{{end}}"
-                                onclick="openSpoolmanEdit(this.dataset.spoolId)"
-                                {{if $mappedSpool.SpoolID}}
-                                {{range $.Spools}}
-                                {{if eq .ID $mappedSpool.SpoolID}}
-                                data-color-hex="{{.Filament.ColorHex}}"
-                                {{end}}
-                                {{end}}
-                                {{end}}>
-                            ✏️ Edit
-                        </button>
-                    </div>
+                                    {{end}}>
+                                ✏️ Edit
+                            </button>
+                        </td>
+                    </tr>
                     {{end}}
-                </div>
+                    </tbody>
+                </table>
             </div>
         </div>
         {{end}}

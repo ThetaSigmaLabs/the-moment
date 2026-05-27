@@ -5,7 +5,7 @@
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
     margin: 15px 0;
-    padding: 20px 20px 150px 20px;
+    padding: 16px 20px;
     border-radius: 10px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
@@ -23,14 +23,43 @@
 }
 
 .mapping-section {
-    margin-top: 20px;
-    padding-top: 20px;
+    margin-top: 12px;
+    padding-top: 12px;
     border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-.mapping-section h4 {
-    color: #fff;
-    margin-bottom: 15px;
+.toolhead-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 4px;
+}
+
+.toolhead-table thead th {
+    text-align: left;
+    font-size: 0.72em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: rgba(255, 255, 255, 0.4);
+    padding: 0 10px 6px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.toolhead-table .toolhead-mapping-row td {
+    padding: 6px 10px;
+    vertical-align: middle;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.toolhead-table .toolhead-mapping-row:last-child td {
+    border-bottom: none;
+}
+
+.toolhead-label {
+    white-space: nowrap;
+    font-weight: 600;
+    font-size: 0.9em;
+    color: rgba(255, 255, 255, 0.7);
+    width: 110px;
 }
 
 .mapping-item {
