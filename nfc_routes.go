@@ -42,7 +42,7 @@ func (ws *WebServer) nfcSpoolTagHandler(c *gin.Context) {
 	}
 
 	host := c.Request.Host
-	data, err := BuildSpoolTagNDEF(spoolID, host)
+	data, err := BuildSpoolTagNDEF(spoolID, *spool, host)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -543,4 +543,178 @@ func (ws *WebServer) nfcSpoolIDPageHandler(c *gin.Context) {
 	}
 
 	c.HTML(http.StatusOK, "nfc_spool_id.html", data)
+}
+
+// ─── OpenPrintTag field editor ────────────────────────────────────────────────
+
+// nfcSpoolFieldsGetHandler returns current OpenPrintTag field values for a spool,
+// pre-filling from Spoolman standard fields where nfc_* extra fields are not yet set.
+func (ws *WebServer) nfcSpoolFieldsGetHandler(c *gin.Context) {
+	idStr := c.Param("spoolman_id")
+	spoolID, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid spool ID"})
+		return
+	}
+	spool, err := ws.bridge.spoolman.GetSpoolByID(spoolID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	filamentID := 0
+	extruderTemp := 0
+	bedTemp := 0
+	var filExtra map[string]interface{}
+	if spool.Filament != nil {
+		filamentID = spool.Filament.ID
+		extruderTemp = spool.Filament.SettingsExtruderTemp
+		bedTemp = spool.Filament.SettingsBedTemp
+		filExtra = spool.Filament.Extra
+	}
+
+	intFieldOrDefault := func(extra map[string]interface{}, key string, dflt int) int {
+		if v := extraInt(extra, key); v != 0 {
+			return v
+		}
+		return dflt
+	}
+	strFieldOrDefault := func(extra map[string]interface{}, key, dflt string) string {
+		if v := extraStr(extra, key); v != "" {
+			return v
+		}
+		return dflt
+	}
+
+	actualWeight := extraFloat(spool.Extra, "nfc_actual_weight")
+	if actualWeight == 0 && spool.InitialWeight > 0 {
+		actualWeight = spool.InitialWeight
+	}
+	if actualWeight == 0 {
+		actualWeight = spool.RemainingWeight + spool.UsedWeight
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"spool_id":                  spoolID,
+		"filament_id":               filamentID,
+		"nfc_spool_uuid":            GetSpoolExtraField(*spool, "nfc_spool_uuid"),
+		"nfc_actual_weight":         actualWeight,
+		"nfc_manufacturing_date":    GetSpoolExtraField(*spool, "nfc_manufacturing_date"),
+		"nfc_expiration_date":       GetSpoolExtraField(*spool, "nfc_expiration_date"),
+		"nfc_material_class":        strFieldOrDefault(filExtra, "nfc_material_class", "FFF"),
+		"nfc_min_print_temp":        intFieldOrDefault(filExtra, "nfc_min_print_temp", extruderTemp),
+		"nfc_max_print_temp":        intFieldOrDefault(filExtra, "nfc_max_print_temp", extruderTemp),
+		"nfc_min_bed_temp":          intFieldOrDefault(filExtra, "nfc_min_bed_temp", bedTemp),
+		"nfc_max_bed_temp":          intFieldOrDefault(filExtra, "nfc_max_bed_temp", bedTemp),
+		"nfc_country_of_origin":     extraStr(filExtra, "nfc_country_of_origin"),
+		"nfc_material_properties":   extraStr(filExtra, "nfc_material_properties"),
+		"nfc_transmission_distance": extraFloat(filExtra, "nfc_transmission_distance"),
+		"nfc_nominal_length":        extraInt(filExtra, "nfc_nominal_length"),
+	})
+}
+
+// nfcSpoolFieldsPostHandler saves OpenPrintTag field values to Spoolman for a spool.
+// Spool-level fields are written to the spool record; filament-level fields to the filament.
+// All fields are written regardless of whether they are blank.
+func (ws *WebServer) nfcSpoolFieldsPostHandler(c *gin.Context) {
+	idStr := c.Param("spoolman_id")
+	spoolID, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid spool ID"})
+		return
+	}
+
+	var body struct {
+		NfcActualWeight        float64 `json:"nfc_actual_weight"`
+		NfcManufacturingDate   string  `json:"nfc_manufacturing_date"`
+		NfcExpirationDate      string  `json:"nfc_expiration_date"`
+		NfcMaterialClass       string  `json:"nfc_material_class"`
+		NfcMinPrintTemp        int     `json:"nfc_min_print_temp"`
+		NfcMaxPrintTemp        int     `json:"nfc_max_print_temp"`
+		NfcMinBedTemp          int     `json:"nfc_min_bed_temp"`
+		NfcMaxBedTemp          int     `json:"nfc_max_bed_temp"`
+		NfcCountryOfOrigin     string  `json:"nfc_country_of_origin"`
+		NfcMaterialProperties  string  `json:"nfc_material_properties"`
+		NfcTransmissionDist    float64 `json:"nfc_transmission_distance"`
+		NfcNominalLength       int     `json:"nfc_nominal_length"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	spool, err := ws.bridge.spoolman.GetSpoolByID(spoolID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if spool.Filament == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "spool has no filament"})
+		return
+	}
+	filamentID := spool.Filament.ID
+
+	spoolFields := map[string]string{
+		"nfc_actual_weight":      fmt.Sprintf("%g", body.NfcActualWeight),
+		"nfc_manufacturing_date": body.NfcManufacturingDate,
+		"nfc_expiration_date":    body.NfcExpirationDate,
+	}
+	for key, val := range spoolFields {
+		if err := ws.bridge.spoolman.SetSpoolExtraField(spoolID, key, val); err != nil {
+			log.Printf("Warning: failed to set spool extra field %s: %v", key, err)
+		}
+	}
+
+	filamentFields := map[string]string{
+		"nfc_material_class":        body.NfcMaterialClass,
+		"nfc_min_print_temp":        strconv.Itoa(body.NfcMinPrintTemp),
+		"nfc_max_print_temp":        strconv.Itoa(body.NfcMaxPrintTemp),
+		"nfc_min_bed_temp":          strconv.Itoa(body.NfcMinBedTemp),
+		"nfc_max_bed_temp":          strconv.Itoa(body.NfcMaxBedTemp),
+		"nfc_country_of_origin":     body.NfcCountryOfOrigin,
+		"nfc_material_properties":   body.NfcMaterialProperties,
+		"nfc_transmission_distance": fmt.Sprintf("%g", body.NfcTransmissionDist),
+		"nfc_nominal_length":        strconv.Itoa(body.NfcNominalLength),
+	}
+	for key, val := range filamentFields {
+		if err := ws.bridge.spoolman.SetFilamentExtraField(filamentID, key, val); err != nil {
+			log.Printf("Warning: failed to set filament extra field %s: %v", key, err)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// nfcSpoolTrashHandler zeros out remaining weight and moves spool to the configured Trash location.
+func (ws *WebServer) nfcSpoolTrashHandler(c *gin.Context) {
+	idStr := c.Param("spoolman_id")
+	spoolID, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid spool ID"})
+		return
+	}
+
+	spool, err := ws.bridge.spoolman.GetSpoolByID(spoolID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if spool.RemainingWeight > 0 {
+		if err := ws.bridge.spoolman.UpdateSpoolUsage(spoolID, spool.RemainingWeight); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to zero remaining weight: " + err.Error()})
+			return
+		}
+	}
+
+	trashLoc, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTrashLocation)
+	if trashLoc == "" {
+		trashLoc = "Trash"
+	}
+	if err := ws.bridge.spoolman.UpdateSpoolLocation(spoolID, trashLoc); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to move spool to trash: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"archived": true, "location": trashLoc})
 }

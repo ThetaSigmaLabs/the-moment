@@ -420,3 +420,23 @@
 .nfc-instructions li {
     margin-bottom: 8px;
 }
+
+/* Spool archive (trash) button */
+.nfc-trash-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1.1em;
+    opacity: 0.35;
+    padding: 4px 6px;
+    border-radius: 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+    line-height: 1;
+    transition: opacity 0.15s, background 0.15s;
+}
+
+.nfc-trash-btn:hover {
+    opacity: 1;
+    background: rgba(239, 68, 68, 0.18);
+}

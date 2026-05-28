@@ -793,6 +793,41 @@ func (c *SpoolmanClient) SetSpoolExtraField(spoolID int, fieldKey string, value 
 	return c.UpdateSpool(spoolID, body)
 }
 
+// UpdateFilament sends a PATCH request to update a filament record in Spoolman.
+func (c *SpoolmanClient) UpdateFilament(filamentID int, data map[string]interface{}) error {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshaling filament update: %w", err)
+	}
+	req, err := http.NewRequest("PATCH", fmt.Sprintf("%s/api/v1/filament/%d", c.baseURL, filamentID), bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("creating filament PATCH request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("updating filament %d: %w", filamentID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.handleAPIError(resp)
+	}
+	return nil
+}
+
+// SetFilamentExtraField writes a custom field value to a filament via Spoolman PATCH.
+func (c *SpoolmanClient) SetFilamentExtraField(filamentID int, fieldKey string, value string) error {
+	extraValue, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshaling extra field value: %w", err)
+	}
+	return c.UpdateFilament(filamentID, map[string]interface{}{
+		"extra": map[string]string{
+			fieldKey: string(extraValue),
+		},
+	})
+}
+
 // SpoolmanFieldCreate is the request body for creating a Spoolman custom field.
 type SpoolmanFieldCreate struct {
 	Name         string `json:"name"`

@@ -250,6 +250,9 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/nfc/prints/:print_history_id/spool-swap", ws.nfcSpoolSwapHandler)
 		api.GET("/nfc/spoolman-setup-status", ws.nfcSetupStatusHandler)
 		api.POST("/nfc/spoolman-setup", ws.nfcSetupHandler)
+		api.GET("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsGetHandler)
+		api.POST("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsPostHandler)
+		api.POST("/nfc/spools/:spoolman_id/trash", ws.nfcSpoolTrashHandler)
 
 		// Post-print filament data append (from OctoPrint plugin Spoolman commit event)
 		api.POST("/prints/:id/filament", ws.appendFilamentHandler)

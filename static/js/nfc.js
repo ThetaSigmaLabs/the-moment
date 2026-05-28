@@ -85,6 +85,7 @@ async function loadSpoolTags() {
                     <div class="item-name">[${url.spool_id}] ${url.spool_name}</div>
                     <div class="item-details">${url.material} - ${url.brand}${url.remaining_weight != null ? ` - ${Math.round(url.remaining_weight)}g remaining` : ''}</div>
                 </div>
+                <button class="nfc-trash-btn" title="Archive spool (zero weight + move to Trash)">🗑️</button>
             `;
 
             // Add click handler
@@ -95,6 +96,35 @@ async function loadSpoolTags() {
                 item.classList.add('selected');
                 // Show QR code
                 displaySpoolQR(url);
+            });
+
+            // Trash button — archive spool without selecting it
+            item.querySelector('.nfc-trash-btn').addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const remaining = url.remaining_weight != null ? Math.round(url.remaining_weight) : 0;
+                const msg = `Archive "${url.spool_name}"?\n\nThis will set remaining weight to 0 and move it to the Trash location in Spoolman.\n\nCurrent remaining: ${remaining}g`;
+                if (!confirm(msg)) return;
+                try {
+                    const resp = await fetch(`/api/nfc/spools/${url.spool_id}/trash`, { method: 'POST' });
+                    if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({}));
+                        alert('Failed to archive spool: ' + (err.error || resp.statusText));
+                        return;
+                    }
+                    item.remove();
+                    // Reset QR panel if this spool was selected
+                    const qrDisplay = document.getElementById('spool-qr-display');
+                    if (qrDisplay && qrDisplay.style.display !== 'none') {
+                        const selectedName = document.getElementById('spool-selected-name');
+                        if (selectedName && selectedName.textContent.includes(url.spool_name)) {
+                            qrDisplay.style.display = 'none';
+                            const noSel = document.getElementById('spool-no-selection');
+                            if (noSel) noSel.style.display = '';
+                        }
+                    }
+                } catch (err) {
+                    alert('Error archiving spool: ' + err.message);
+                }
             });
 
             container.appendChild(item);
@@ -576,6 +606,173 @@ async function deleteLocation(name) {
     }
 }
 
+
+// ─── OpenPrintTag Field Editor ────────────────────────────────────────────────
+
+let _optSpoolID = null;
+
+function openSpoolTagEditor() {
+    const selectedItem = document.querySelector('#spool-list-container .nfc-list-item.selected');
+    if (!selectedItem) { alert('Select a spool first.'); return; }
+    _optSpoolID = selectedItem.dataset.value;
+    if (!_optSpoolID) { alert('No spool ID found.'); return; }
+
+    _ensureOptModal();
+    document.getElementById('opt-modal').style.display = 'flex';
+    document.getElementById('opt-status').textContent = 'Loading fields…';
+    document.getElementById('opt-form').style.display = 'none';
+
+    fetch(`/api/nfc/spools/${_optSpoolID}/fields`)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('opt-actual-weight').value = data.nfc_actual_weight || '';
+            document.getElementById('opt-manufacturing-date').value = data.nfc_manufacturing_date || '';
+            document.getElementById('opt-expiration-date').value = data.nfc_expiration_date || '';
+            document.getElementById('opt-material-class').value = data.nfc_material_class || 'FFF';
+            document.getElementById('opt-min-print-temp').value = data.nfc_min_print_temp || '';
+            document.getElementById('opt-max-print-temp').value = data.nfc_max_print_temp || '';
+            document.getElementById('opt-min-bed-temp').value = data.nfc_min_bed_temp || '';
+            document.getElementById('opt-max-bed-temp').value = data.nfc_max_bed_temp || '';
+            document.getElementById('opt-country').value = data.nfc_country_of_origin || '';
+            document.getElementById('opt-mat-props').value = data.nfc_material_properties || '';
+            document.getElementById('opt-transmission').value = data.nfc_transmission_distance || '';
+            document.getElementById('opt-nominal-length').value = data.nfc_nominal_length || '';
+            document.getElementById('opt-status').textContent = '';
+            document.getElementById('opt-form').style.display = 'block';
+        })
+        .catch(e => {
+            document.getElementById('opt-status').textContent = 'Error loading fields: ' + e;
+        });
+}
+
+async function saveAndDownloadSpoolTag() {
+    if (!_optSpoolID) return;
+    const btn = document.getElementById('opt-save-btn');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+
+    const body = {
+        nfc_actual_weight:        parseFloat(document.getElementById('opt-actual-weight').value) || 0,
+        nfc_manufacturing_date:   document.getElementById('opt-manufacturing-date').value,
+        nfc_expiration_date:      document.getElementById('opt-expiration-date').value,
+        nfc_material_class:       document.getElementById('opt-material-class').value,
+        nfc_min_print_temp:       parseInt(document.getElementById('opt-min-print-temp').value) || 0,
+        nfc_max_print_temp:       parseInt(document.getElementById('opt-max-print-temp').value) || 0,
+        nfc_min_bed_temp:         parseInt(document.getElementById('opt-min-bed-temp').value) || 0,
+        nfc_max_bed_temp:         parseInt(document.getElementById('opt-max-bed-temp').value) || 0,
+        nfc_country_of_origin:    document.getElementById('opt-country').value,
+        nfc_material_properties:  document.getElementById('opt-mat-props').value,
+        nfc_transmission_distance: parseFloat(document.getElementById('opt-transmission').value) || 0,
+        nfc_nominal_length:       parseInt(document.getElementById('opt-nominal-length').value) || 0,
+    };
+
+    try {
+        const resp = await fetch(`/api/nfc/spools/${_optSpoolID}/fields`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) throw new Error(await resp.text());
+
+        // Trigger .bin download
+        window.location.href = `/api/nfc/spool-tag/${_optSpoolID}`;
+        closeOptModal();
+    } catch (e) {
+        alert('Error: ' + e);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save to Spoolman & Download .bin';
+    }
+}
+
+function closeOptModal() {
+    const m = document.getElementById('opt-modal');
+    if (m) m.style.display = 'none';
+}
+
+function _ensureOptModal() {
+    if (document.getElementById('opt-modal')) return;
+    const modal = document.createElement('div');
+    modal.id = 'opt-modal';
+    modal.style.cssText = 'display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; align-items:center; justify-content:center;';
+    modal.addEventListener('click', e => { if (e.target === modal) closeOptModal(); });
+    modal.innerHTML = `
+      <div style="background:#1e1e2e; border-radius:10px; padding:24px; width:min(540px,95vw); max-height:90vh; overflow-y:auto; color:#cdd6f4;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+          <h3 style="margin:0;">📲 OpenPrintTag Fields</h3>
+          <button onclick="closeOptModal()" style="background:none;border:none;color:#cdd6f4;font-size:1.4em;cursor:pointer;">✕</button>
+        </div>
+        <p style="font-size:0.85em;color:#888;margin:0 0 16px;">Fields are saved to Spoolman, then the CBOR+URL .bin is downloaded. Write it to your ICODE SLIX2 tag via NFC Tools "Write Dump".</p>
+        <div id="opt-status" style="color:#f38ba8; margin-bottom:12px;"></div>
+        <div id="opt-form" style="display:none;">
+          <p style="font-size:0.8em; font-weight:bold; color:#89b4fa; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.05em;">Spool details</p>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px;">
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Actual Weight (g)
+              <input id="opt-actual-weight" type="number" step="0.1" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <div></div>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Manufacturing Date
+              <input id="opt-manufacturing-date" type="date" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Expiration Date
+              <input id="opt-expiration-date" type="date" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+          </div>
+          <p style="font-size:0.8em; font-weight:bold; color:#89b4fa; margin:0 0 8px; text-transform:uppercase; letter-spacing:0.05em;">Print settings (filament)</p>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Material Class
+              <input id="opt-material-class" type="text" placeholder="FFF" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Country of Origin
+              <input id="opt-country" type="text" placeholder="CZ" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Min Print Temp (°C)
+              <input id="opt-min-print-temp" type="number" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Max Print Temp (°C)
+              <input id="opt-max-print-temp" type="number" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Min Bed Temp (°C)
+              <input id="opt-min-bed-temp" type="number" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Max Bed Temp (°C)
+              <input id="opt-max-bed-temp" type="number" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Nominal Length (mm)
+              <input id="opt-nominal-length" type="number" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em;">
+              Transmission Distance
+              <input id="opt-transmission" type="number" step="0.001" style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+            <label style="display:flex;flex-direction:column;gap:4px;font-size:0.85em; grid-column:1/-1;">
+              Material Properties (JSON array, e.g. ["abrasive"])
+              <input id="opt-mat-props" type="text" placeholder='["matte"]' style="padding:6px 8px;background:#313244;border:1px solid #45475a;border-radius:6px;color:#cdd6f4;">
+            </label>
+          </div>
+          <div style="display:flex; gap:10px; margin-top:20px;">
+            <button id="opt-save-btn" onclick="saveAndDownloadSpoolTag()" style="flex:1; padding:10px; background:#7c3aed; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:0.95em;">
+              Save to Spoolman &amp; Download .bin
+            </button>
+            <button onclick="closeOptModal()" style="padding:10px 16px; background:#313244; color:#cdd6f4; border:none; border-radius:6px; cursor:pointer;">
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+}
 
 // QR Code Modal Functions
 function showQrCode(url, title, qrCodeBase64) {

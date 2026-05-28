@@ -6,6 +6,7 @@ package main
 
 import (
 	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -13,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	cbor "github.com/fxamacker/cbor/v2"
 )
 
 // NFCSession represents an active NFC scanning session
@@ -351,47 +354,314 @@ func PrinterSlug(name string) string {
 	return s
 }
 
-// buildNDEFURI constructs a minimal NDEF message containing one Well-Known URI record.
-// The URI prefix 0x03 covers "http://" so only the remainder is stored in payload.
-func buildNDEFURI(uri string) ([]byte, error) {
-	const prefixCode = 0x03 // "http://"
-	const httpPrefix = "http://"
+// ─── OpenPrintTag CBOR encoding ──────────────────────────────────────────────
 
+// optMaterialTypes maps Spoolman material strings to OpenPrintTag material_type integer enum.
+// Integer values per the OpenPrintTag specification.
+var optMaterialTypes = map[string]int{
+	"PLA": 0, "PETG": 1, "TPU": 2, "ABS": 3, "ASA": 4, "PC": 5,
+	"PCTG": 6, "PP": 7, "PA6": 8, "PA11": 9, "PA12": 10, "PA66": 11,
+	"CPE": 12, "TPE": 13, "HIPS": 14, "PHA": 15, "PET": 16, "PEI": 17,
+	"PBT": 18, "PVB": 19, "PVA": 20, "PEKK": 21, "PEEK": 22, "BVOH": 23,
+	"TPC": 24, "PPS": 25, "PPSU": 26, "PVC": 27, "PEBA": 28, "PVDF": 29,
+	"PPA": 30, "PCL": 31, "PES": 32, "PMMA": 33, "POM": 34, "PPE": 35,
+	"PS": 36, "PSU": 37, "TPI": 38, "SBS": 39, "OBC": 40, "EVA": 41,
+}
+
+func parseHexColor(hexStr string) []byte {
+	hexStr = strings.TrimPrefix(hexStr, "#")
+	if len(hexStr) != 6 {
+		return nil
+	}
+	b, err := hex.DecodeString(hexStr)
+	if err != nil || len(b) != 3 {
+		return nil
+	}
+	return b
+}
+
+func parseUUIDBytes(uuidStr string) []byte {
+	cleaned := strings.ReplaceAll(uuidStr, "-", "")
+	if len(cleaned) != 32 {
+		return nil
+	}
+	b, err := hex.DecodeString(cleaned)
+	if err != nil || len(b) != 16 {
+		return nil
+	}
+	return b
+}
+
+func parseDateToUnix(dateStr string) int64 {
+	if dateStr == "" {
+		return 0
+	}
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return 0
+	}
+	return t.Unix()
+}
+
+// extraInt reads an integer from a Spoolman extra field map, handling both
+// float64 (JSON number decode) and string representations.
+func extraInt(extra map[string]interface{}, key string) int {
+	if extra == nil {
+		return 0
+	}
+	v, ok := extra[key]
+	if !ok {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return int(val)
+	case int:
+		return val
+	case string:
+		n, _ := strconv.Atoi(val)
+		return n
+	}
+	return 0
+}
+
+// extraFloat reads a float64 from a Spoolman extra field map.
+func extraFloat(extra map[string]interface{}, key string) float64 {
+	if extra == nil {
+		return 0
+	}
+	v, ok := extra[key]
+	if !ok {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return val
+	case int:
+		return float64(val)
+	case string:
+		f, _ := strconv.ParseFloat(val, 64)
+		return f
+	}
+	return 0
+}
+
+// extraStr reads a string from a Spoolman extra field map.
+func extraStr(extra map[string]interface{}, key string) string {
+	if extra == nil {
+		return ""
+	}
+	v, ok := extra[key]
+	if !ok {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// buildOpenPrintTagPayload encodes spool data as an OpenPrintTag CBOR payload.
+// Payload layout: [meta CBOR map][main CBOR map][aux CBOR map (optional)].
+// Only fields with meaningful values are included to keep the tag compact.
+func buildOpenPrintTagPayload(spool SpoolmanSpool) ([]byte, error) {
+	em, err := cbor.EncOptions{Sort: cbor.SortCanonical}.EncMode()
+	if err != nil {
+		return nil, fmt.Errorf("cbor enc mode: %w", err)
+	}
+
+	mainMap := make(map[int]interface{})
+
+	if uuidStr := extraStr(spool.Extra, "nfc_spool_uuid"); uuidStr != "" {
+		if uuidBytes := parseUUIDBytes(uuidStr); uuidBytes != nil {
+			mainMap[0] = uuidBytes // instance_uuid
+		}
+	}
+
+	if spool.Filament != nil {
+		fil := spool.Filament
+
+		if matType, ok := optMaterialTypes[strings.ToUpper(fil.Material)]; ok {
+			mainMap[9] = matType // material_type
+		}
+		if fil.Name != "" {
+			mainMap[10] = fil.Name // material_name
+		}
+		if fil.Vendor != nil && fil.Vendor.Name != "" {
+			mainMap[11] = fil.Vendor.Name // brand_name
+		}
+		if ts := parseDateToUnix(extraStr(spool.Extra, "nfc_manufacturing_date")); ts != 0 {
+			mainMap[14] = ts // manufactured_date
+		}
+		if ts := parseDateToUnix(extraStr(spool.Extra, "nfc_expiration_date")); ts != 0 {
+			mainMap[15] = ts // expiration_date
+		}
+		if fil.Weight > 0 {
+			mainMap[16] = fil.Weight // nominal_netto_full_weight (g)
+		}
+		if aw := extraFloat(spool.Extra, "nfc_actual_weight"); aw > 0 {
+			mainMap[17] = aw // actual_netto_full_weight
+		} else if spool.InitialWeight > 0 {
+			mainMap[17] = spool.InitialWeight
+		}
+		if fil.SpoolWeight > 0 {
+			mainMap[18] = fil.SpoolWeight // empty_container_weight (g)
+		}
+		if colorBytes := parseHexColor(fil.ColorHex); colorBytes != nil {
+			mainMap[19] = colorBytes // primary_color (RGB bytes)
+		}
+		if td := extraFloat(fil.Extra, "nfc_transmission_distance"); td > 0 {
+			mainMap[27] = td // transmission_distance
+		}
+		if fil.Density > 0 {
+			mainMap[29] = fil.Density // density (g/cm³)
+		}
+		if fil.Diameter > 0 {
+			mainMap[30] = fil.Diameter // filament_diameter (mm)
+		}
+		if v := extraInt(fil.Extra, "nfc_min_print_temp"); v > 0 {
+			mainMap[34] = v // min_print_temperature (°C)
+		}
+		if v := extraInt(fil.Extra, "nfc_max_print_temp"); v > 0 {
+			mainMap[35] = v // max_print_temperature (°C)
+		}
+		if v := extraInt(fil.Extra, "nfc_min_bed_temp"); v > 0 {
+			mainMap[37] = v // min_bed_temperature (°C)
+		}
+		if v := extraInt(fil.Extra, "nfc_max_bed_temp"); v > 0 {
+			mainMap[38] = v // max_bed_temperature (°C)
+		}
+		if fil.Material != "" {
+			mainMap[52] = fil.Material // material_abbreviation
+		}
+		if v := extraInt(fil.Extra, "nfc_nominal_length"); v > 0 {
+			mainMap[53] = float64(v) // nominal_full_length (mm)
+		}
+		if coo := extraStr(fil.Extra, "nfc_country_of_origin"); coo != "" {
+			mainMap[55] = coo // country_of_origin
+		}
+	}
+
+	auxMap := make(map[int]interface{})
+	if spool.UsedWeight > 0 {
+		auxMap[0] = spool.UsedWeight // consumed_weight (g)
+	}
+
+	mainBytes, err := em.Marshal(mainMap)
+	if err != nil {
+		return nil, fmt.Errorf("encoding main section: %w", err)
+	}
+	var auxBytes []byte
+	if len(auxMap) > 0 {
+		auxBytes, err = em.Marshal(auxMap)
+		if err != nil {
+			return nil, fmt.Errorf("encoding aux section: %w", err)
+		}
+	}
+
+	// Meta section keys: 0=main_offset, 1=main_size, 2=aux_offset, 3=aux_size.
+	// Meta size depends on offset values which depend on meta size; resolve by iteration.
+	buildMeta := func(metaSize int) map[int]interface{} {
+		m := map[int]interface{}{0: metaSize, 1: len(mainBytes)}
+		if len(auxBytes) > 0 {
+			m[2] = metaSize + len(mainBytes)
+			m[3] = len(auxBytes)
+		}
+		return m
+	}
+	var metaBytes []byte
+	for estimate := 5; estimate <= 25; estimate++ {
+		encoded, encErr := em.Marshal(buildMeta(estimate))
+		if encErr != nil {
+			return nil, fmt.Errorf("encoding meta section: %w", encErr)
+		}
+		if len(encoded) == estimate {
+			metaBytes = encoded
+			break
+		}
+	}
+	if metaBytes == nil {
+		return nil, fmt.Errorf("could not converge meta section size")
+	}
+
+	payload := make([]byte, 0, len(metaBytes)+len(mainBytes)+len(auxBytes))
+	payload = append(payload, metaBytes...)
+	payload = append(payload, mainBytes...)
+	payload = append(payload, auxBytes...)
+	return payload, nil
+}
+
+// ─── NDEF tag generation ──────────────────────────────────────────────────────
+
+// buildNDEFRecord constructs a single NDEF record with explicit message framing flags.
+// tnf: Type Name Format (0x01 = Well Known, 0x02 = MIME Media Type).
+// Short Record (SR) format is used when payload fits in one byte (≤255 bytes).
+func buildNDEFRecord(msgBegin, msgEnd bool, tnf byte, recordType, payload []byte) []byte {
+	shortRecord := len(payload) <= 255
+	var flags byte
+	if msgBegin {
+		flags |= 0x80
+	}
+	if msgEnd {
+		flags |= 0x40
+	}
+	if shortRecord {
+		flags |= 0x10
+	}
+	flags |= tnf & 0x07
+
+	rec := make([]byte, 0, 4+len(recordType)+len(payload))
+	rec = append(rec, flags)
+	rec = append(rec, byte(len(recordType)))
+	if shortRecord {
+		rec = append(rec, byte(len(payload)))
+	} else {
+		plen := uint32(len(payload))
+		rec = append(rec, byte(plen>>24), byte(plen>>16), byte(plen>>8), byte(plen))
+	}
+	rec = append(rec, recordType...)
+	rec = append(rec, payload...)
+	return rec
+}
+
+// buildNDEFURIRecord builds a Well Known URI record (TNF=0x01, type='U').
+// Handles the http:// prefix code (0x03) per the URI record spec.
+func buildNDEFURIRecord(msgBegin, msgEnd bool, uri string) ([]byte, error) {
+	const httpPrefix = "http://"
 	if !strings.HasPrefix(uri, httpPrefix) {
 		return nil, fmt.Errorf("URI must start with http://")
 	}
-	uriRemainder := []byte(uri[len(httpPrefix):])
+	payload := append([]byte{0x03}, []byte(uri[len(httpPrefix):])...)
+	return buildNDEFRecord(msgBegin, msgEnd, 0x01, []byte{0x55}, payload), nil
+}
 
-	// Payload = prefix byte + URI remainder
-	payload := append([]byte{prefixCode}, uriRemainder...)
-	payloadLen := len(payload)
+// BuildSpoolTagNDEF builds an NDEF message for a spool tag (ICODE SLIX2 / NFC-V).
+// Produces a dual-record message: Record 1 = OpenPrintTag CBOR (MIME type),
+// Record 2 = URL pointing to /nfc/s/{spoolID} for iPhone fallback.
+// Falls back to URL-only on CBOR encoding error.
+func BuildSpoolTagNDEF(spoolID int, spool SpoolmanSpool, host string) ([]byte, error) {
+	uri := fmt.Sprintf("http://%s/nfc/s/%d", host, spoolID)
 
-	if payloadLen > 255 {
-		return nil, fmt.Errorf("URI too long for short NDEF record (%d bytes)", payloadLen)
+	cborPayload, err := buildOpenPrintTagPayload(spool)
+	if err != nil {
+		log.Printf("OpenPrintTag CBOR failed for spool %d, using URL-only: %v", spoolID, err)
+		return buildNDEFURIRecord(true, true, uri)
 	}
 
-	// NDEF short record: MB=1, ME=1, SR=1, TNF=0x01 (Well Known) → flags byte = 0xD1
-	// Byte layout: [flags] [type_length=1] [payload_length] [type='U'=0x55] [payload...]
-	record := make([]byte, 0, 4+payloadLen)
-	record = append(record, 0xD1)          // MB | ME | SR | TNF_WELL_KNOWN
-	record = append(record, 0x01)          // type length = 1
-	record = append(record, byte(payloadLen))
-	record = append(record, 0x55)          // type = 'U'
-	record = append(record, payload...)
-	return record, nil
+	mimeType := []byte("application/vnd.openprinttag")
+	rec1 := buildNDEFRecord(true, false, 0x02, mimeType, cborPayload)
+	rec2, err := buildNDEFURIRecord(false, true, uri)
+	if err != nil {
+		log.Printf("NDEF URI record failed for spool %d, using URL-only: %v", spoolID, err)
+		return buildNDEFURIRecord(true, true, uri)
+	}
+	return append(rec1, rec2...), nil
 }
 
-// BuildSpoolTagNDEF builds a single NDEF URI record pointing to /nfc/s/{spoolID}.
-// Returns raw bytes suitable for NFC Tools "Write Dump".
-func BuildSpoolTagNDEF(spoolID int, host string) ([]byte, error) {
-	uri := fmt.Sprintf("http://%s/nfc/s/%d", host, spoolID)
-	return buildNDEFURI(uri)
-}
-
-// BuildLocationTagNDEF builds a single NDEF URI record pointing to /nfc/location/{slug}/{index}.
+// BuildLocationTagNDEF builds a URL-only NDEF message for a location tag (NTAG215).
 func BuildLocationTagNDEF(printerSlug string, toolheadIndex int, host string) ([]byte, error) {
 	uri := fmt.Sprintf("http://%s/nfc/location/%s/%d", host, printerSlug, toolheadIndex)
-	return buildNDEFURI(uri)
+	return buildNDEFURIRecord(true, true, uri)
 }
 
 // clearSpoolFromAllToolheads removes a spool from all toolhead mappings
