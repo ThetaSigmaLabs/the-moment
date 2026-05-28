@@ -83,7 +83,8 @@ class Dashboard {
 
         const statusElement = printerElement.querySelector('.status');
         if (statusElement) {
-            statusElement.textContent = status.state;
+            const stateLabels = { 'ATTENTION': 'Printer Attention' };
+            statusElement.textContent = stateLabels[status.state] || status.state;
             statusElement.className = `status ${status.state.toLowerCase()}`;
         }
 

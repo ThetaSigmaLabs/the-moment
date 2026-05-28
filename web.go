@@ -236,6 +236,7 @@ func (ws *WebServer) setupRoutes() {
 		api.DELETE("/nfc/spool/:id/tag", ws.nfcRemoveTagHandler)
 		api.GET("/nfc/config", ws.nfcConfigHandler)
 		api.POST("/nfc/config", ws.nfcSaveConfigHandler)
+		api.POST("/nfc/sync-locations-now", ws.nfcSyncLocationsNowHandler)
 
 		// NFC Phase 1 — toolhead spool assignments
 		api.GET("/nfc/spool-tag/:spoolman_id", ws.nfcSpoolTagHandler)
@@ -3283,23 +3284,26 @@ func (ws *WebServer) nfcRemoveTagHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "NFC tag removed"})
 }
 
-// nfcConfigHandler returns the configured NFC trash and inventory location names.
+// nfcConfigHandler returns the configured NFC trash and inventory location names plus sync toggle.
 // GET /api/nfc/config
 func (ws *WebServer) nfcConfigHandler(c *gin.Context) {
 	trash, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTrashLocation)
 	inv, _ := ws.bridge.GetConfigValue(ConfigKeyNFCInventoryLocation)
+	syncEnabled, _ := ws.bridge.GetConfigValue(ConfigKeySpoolmanLocationSyncEnabled)
 	c.JSON(http.StatusOK, gin.H{
-		"trash_location":     trash,
-		"inventory_location": inv,
+		"trash_location":                  trash,
+		"inventory_location":              inv,
+		"spoolman_location_sync_enabled":  syncEnabled == "true",
 	})
 }
 
-// nfcSaveConfigHandler saves the NFC trash and inventory location names.
+// nfcSaveConfigHandler saves the NFC trash and inventory location names plus sync toggle.
 // POST /api/nfc/config
 func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
 	var body struct {
-		TrashLocation     string `json:"trash_location"`
-		InventoryLocation string `json:"inventory_location"`
+		TrashLocation              string `json:"trash_location"`
+		InventoryLocation          string `json:"inventory_location"`
+		SpoolmanLocationSyncEnabled bool  `json:"spoolman_location_sync_enabled"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -3313,7 +3317,29 @@ func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	syncVal := "false"
+	if body.SpoolmanLocationSyncEnabled {
+		syncVal = "true"
+	}
+	if err := ws.bridge.SetConfigValue(ConfigKeySpoolmanLocationSyncEnabled, syncVal); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "NFC config saved"})
+}
+
+// nfcSyncLocationsNowHandler triggers an immediate Spoolman→DB location sync.
+// POST /api/nfc/sync-locations-now
+func (ws *WebServer) nfcSyncLocationsNowHandler(c *gin.Context) {
+	changed, err := ws.bridge.SyncSpoolmanLocationsToDB()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if changed {
+		ws.BroadcastStatus()
+	}
+	c.JSON(http.StatusOK, gin.H{"changed": changed})
 }
 
 // ─── Post-print filament segment reassignment ─────────────────────────────────

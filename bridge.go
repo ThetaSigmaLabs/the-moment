@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -298,6 +300,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migrateNFCAssignments(); err != nil {
 		return nil, fmt.Errorf("failed to migrate NFC assignments: %w", err)
+	}
+
+	if err := bridge.migratePendingRunoutEvents(); err != nil {
+		return nil, fmt.Errorf("failed to migrate pending runout events: %w", err)
 	}
 
 	if err := bridge.migratePrintAttachments(); err != nil {
@@ -605,6 +611,26 @@ func (b *FilamentBridge) migrateNFCAssignments() error {
 			return fmt.Errorf("failed to create NFC assignment table: %w", err)
 		}
 	}
+	return nil
+}
+
+// migratePendingRunoutEvents adds the pending_runout_events table (runouts detected mid-print,
+// before print_history rows exist) and the print_progress_pct column to print_spool_events.
+func (b *FilamentBridge) migratePendingRunoutEvents() error {
+	_, err := b.db.Exec(`
+		CREATE TABLE IF NOT EXISTS pending_runout_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			printer_id TEXT NOT NULL,
+			print_start_time DATETIME NOT NULL,
+			toolhead_index INTEGER NOT NULL DEFAULT 0,
+			progress_pct REAL NOT NULL,
+			event_time DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`)
+	if err != nil {
+		return fmt.Errorf("failed to create pending_runout_events table: %w", err)
+	}
+	// Idempotent: ignore "duplicate column" on existing DBs.
+	b.db.Exec(`ALTER TABLE print_spool_events ADD COLUMN print_progress_pct REAL DEFAULT 0.0`)
 	return nil
 }
 
@@ -1288,6 +1314,7 @@ type PrintSpoolEvent struct {
 	NewSpoolmanSpoolID int
 	EventType          string
 	EventTime          time.Time
+	PrintProgressPct   float64
 }
 
 // GetCurrentAssignment returns the active assignment for a printer/toolhead slot, or nil if none.
@@ -1365,6 +1392,29 @@ func (b *FilamentBridge) CloseAssignment(printerID string, toolheadIndex int) er
 	return nil
 }
 
+// CloseAssignmentsBySpool closes all active toolhead assignments for a given spool ID.
+func (b *FilamentBridge) CloseAssignmentsBySpool(spoolmanSpoolID int) error {
+	_, err := b.db.Exec(`
+		UPDATE toolhead_spool_assignments
+		SET unassigned_at = ?
+		WHERE spoolman_spool_id = ? AND unassigned_at IS NULL
+	`, time.Now().UTC(), spoolmanSpoolID)
+	if err != nil {
+		return fmt.Errorf("CloseAssignmentsBySpool: %w", err)
+	}
+	return nil
+}
+
+// ClearToolheadMappingsBySpool removes all Print Ops toolhead mappings for the given spool.
+func (b *FilamentBridge) ClearToolheadMappingsBySpool(spoolID int) error {
+	b.pushSpoolToInventory(spoolID)
+	_, err := b.db.Exec(`DELETE FROM toolhead_mappings WHERE spool_id = ?`, spoolID)
+	if err != nil {
+		return fmt.Errorf("ClearToolheadMappingsBySpool: %w", err)
+	}
+	return nil
+}
+
 // GetPrintSpoolEvents returns all spool events for a given print history ID.
 func (b *FilamentBridge) GetPrintSpoolEvents(printHistoryID int) ([]PrintSpoolEvent, error) {
 	rows, err := b.db.Query(`
@@ -1397,11 +1447,74 @@ func (b *FilamentBridge) GetPrintSpoolEvents(printHistoryID int) ([]PrintSpoolEv
 // AddPrintSpoolEvent inserts a spool event for a print.
 func (b *FilamentBridge) AddPrintSpoolEvent(event PrintSpoolEvent) error {
 	_, err := b.db.Exec(`
-		INSERT INTO print_spool_events (print_history_id, toolhead_index, old_spoolman_spool_id, new_spoolman_spool_id, event_type)
-		VALUES (?, ?, ?, ?, ?)
-	`, event.PrintHistoryID, event.ToolheadIndex, event.OldSpoolmanSpoolID, event.NewSpoolmanSpoolID, event.EventType)
+		INSERT INTO print_spool_events (print_history_id, toolhead_index, old_spoolman_spool_id, new_spoolman_spool_id, event_type, print_progress_pct)
+		VALUES (?, ?, ?, ?, ?, ?)
+	`, event.PrintHistoryID, event.ToolheadIndex, event.OldSpoolmanSpoolID, event.NewSpoolmanSpoolID, event.EventType, event.PrintProgressPct)
 	if err != nil {
 		return fmt.Errorf("AddPrintSpoolEvent: %w", err)
+	}
+	return nil
+}
+
+// PendingRunoutEvent represents a printer attention event (runout or other pause) captured
+// mid-print, before print_history rows are created. Persisted in SQLite so multi-day
+// prints survive server restarts.
+type PendingRunoutEvent struct {
+	ID             int
+	PrinterID      string
+	PrintStartTime time.Time
+	ToolheadIndex  int
+	ProgressPct    float64
+	EventTime      time.Time
+}
+
+// AddPendingRunout records an attention-state event for a printer mid-print.
+func (b *FilamentBridge) AddPendingRunout(printerID string, startTime time.Time, toolheadIndex int, progressPct float64) error {
+	_, err := b.db.Exec(`
+		INSERT INTO pending_runout_events (printer_id, print_start_time, toolhead_index, progress_pct, event_time)
+		VALUES (?, ?, ?, ?, ?)
+	`, printerID, startTime.UTC().Format(time.RFC3339Nano), toolheadIndex, progressPct, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("AddPendingRunout: %w", err)
+	}
+	return nil
+}
+
+// GetPendingRunouts returns all attention events for a printer/start_time, ordered by event_time.
+func (b *FilamentBridge) GetPendingRunouts(printerID string, startTime time.Time) ([]PendingRunoutEvent, error) {
+	rows, err := b.db.Query(`
+		SELECT id, printer_id, print_start_time, toolhead_index, progress_pct, event_time
+		FROM pending_runout_events
+		WHERE printer_id = ? AND julianday(print_start_time) = julianday(?)
+		ORDER BY event_time
+	`, printerID, startTime.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("GetPendingRunouts: %w", err)
+	}
+	defer rows.Close()
+
+	var events []PendingRunoutEvent
+	for rows.Next() {
+		var e PendingRunoutEvent
+		var startStr, eventStr string
+		if err := rows.Scan(&e.ID, &e.PrinterID, &startStr, &e.ToolheadIndex, &e.ProgressPct, &eventStr); err != nil {
+			return nil, fmt.Errorf("GetPendingRunouts scan: %w", err)
+		}
+		e.PrintStartTime, _ = time.Parse(time.RFC3339Nano, startStr)
+		e.EventTime, _ = time.Parse(time.RFC3339Nano, eventStr)
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
+// DeletePendingRunouts removes flushed runout events for a printer/start_time.
+func (b *FilamentBridge) DeletePendingRunouts(printerID string, startTime time.Time) error {
+	_, err := b.db.Exec(`
+		DELETE FROM pending_runout_events
+		WHERE printer_id = ? AND julianday(print_start_time) = julianday(?)
+	`, printerID, startTime.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("DeletePendingRunouts: %w", err)
 	}
 	return nil
 }
@@ -1627,25 +1740,18 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 		ConfigKeyAutoAssignPreviousSpoolLocation: "",          // Default location name for auto-assigned previous spools
 		ConfigKeyNFCTrashLocation:                "Trash",     // Location for empty/done spools (tag ready to re-program)
 		ConfigKeyNFCInventoryLocation:            "Inventory", // Default storage when spool displaced from toolhead
+		ConfigKeySpoolmanLocationSyncEnabled:     "false",     // Bidirectional Spoolman location sync
 	}
 
-	// Check if this is a fresh installation by checking if any config exists
-	var totalCount int
-	err := b.db.QueryRow("SELECT COUNT(*) FROM configuration").Scan(&totalCount)
-	if err != nil {
-		return fmt.Errorf("failed to check config existence: %w", err)
-	}
-
-	// Only insert defaults if this is a fresh installation
-	if totalCount == 0 {
-		for key, value := range defaultConfigs {
-			_, err := b.db.Exec(
-				"INSERT INTO configuration (key, value, description) VALUES (?, ?, ?)",
-				key, value, getConfigDescription(key),
-			)
-			if err != nil {
-				return fmt.Errorf("failed to insert default config %s: %w", key, err)
-			}
+	// INSERT OR IGNORE ensures new keys added in updates are seeded for existing
+	// installations. Existing keys are left unchanged; only missing ones are inserted.
+	for key, value := range defaultConfigs {
+		_, err := b.db.Exec(
+			"INSERT OR IGNORE INTO configuration (key, value, description) VALUES (?, ?, ?)",
+			key, value, getConfigDescription(key),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to seed default config %s: %w", key, err)
 		}
 	}
 
@@ -1667,6 +1773,7 @@ func getConfigDescription(key string) string {
 		ConfigKeyAutoAssignPreviousSpoolLocation: "Default location name where previous spools will be automatically assigned (must exist as a location)",
 		ConfigKeyNFCTrashLocation:                "Spoolman location name for empty/finished spools (NFC tag ready to re-program)",
 		ConfigKeyNFCInventoryLocation:            "Spoolman location name used as default storage when a spool is displaced from a toolhead via NFC",
+		ConfigKeySpoolmanLocationSyncEnabled:     "When true, The Moment writes spool locations to Spoolman on assign/unassign and polls for Spoolman-initiated moves",
 	}
 	if desc, exists := descriptions[key]; exists {
 		return desc
@@ -1790,7 +1897,6 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 // SavePrinterConfig saves a printer configuration
 func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfig) error {
 	b.mutex.Lock()
-	defer b.mutex.Unlock()
 
 	isVirtualInt := 0
 	if config.IsVirtual {
@@ -1804,13 +1910,45 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	if printerType == "" {
 		printerType = PrinterTypePrusaLink
 	}
+
+	// Detect toolhead count decrease: collect spools on removed slots for Spoolman sync.
+	var removedSpoolIDs []int
+	if !config.IsVirtual {
+		var oldToolheads int
+		_ = b.db.QueryRow("SELECT toolheads FROM printer_configs WHERE printer_id = ?", printerID).Scan(&oldToolheads)
+		if config.Toolheads < oldToolheads {
+			for t := config.Toolheads; t < oldToolheads; t++ {
+				var sid int
+				if b.db.QueryRow(
+					"SELECT spool_id FROM toolhead_mappings WHERE printer_name = ? AND toolhead_id = ?",
+					config.Name, t,
+				).Scan(&sid) == nil && sid > 0 {
+					removedSpoolIDs = append(removedSpoolIDs, sid)
+					_, _ = b.db.Exec(
+						"DELETE FROM toolhead_mappings WHERE printer_name = ? AND toolhead_id = ?",
+						config.Name, t,
+					)
+				}
+			}
+		}
+	}
+
 	_, err := b.db.Exec(`
 		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt)
+
+	b.mutex.Unlock()
+
 	if err != nil {
 		return fmt.Errorf("failed to save printer config: %w", err)
 	}
+
+	// Push spools from removed toolheads to inventory in Spoolman (best effort, after lock released).
+	for _, sid := range removedSpoolIDs {
+		b.pushSpoolToInventory(sid)
+	}
+
 	return nil
 }
 
@@ -1818,13 +1956,25 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 // toolhead_mappings (frees spools for re-assignment) and toolhead_names.
 func (b *FilamentBridge) DeletePrinterConfig(printerID string) error {
 	b.mutex.Lock()
-	defer b.mutex.Unlock()
 
 	// Look up the printer name before deleting — mappings are keyed by name
 	var printerName string
 	err := b.db.QueryRow("SELECT name FROM printer_configs WHERE printer_id = ?", printerID).Scan(&printerName)
 	if err != nil {
+		b.mutex.Unlock()
 		return fmt.Errorf("printer %s not found: %w", printerID, err)
+	}
+
+	// Collect spool IDs for Spoolman sync before deleting mappings.
+	var spoolIDsForSync []int
+	if spoolRows, qErr := b.db.Query("SELECT spool_id FROM toolhead_mappings WHERE printer_name = ?", printerName); qErr == nil {
+		for spoolRows.Next() {
+			var sid int
+			if spoolRows.Scan(&sid) == nil {
+				spoolIDsForSync = append(spoolIDsForSync, sid)
+			}
+		}
+		spoolRows.Close()
 	}
 
 	// Remove toolhead spool assignments so those spools become assignable again
@@ -1835,11 +1985,20 @@ func (b *FilamentBridge) DeletePrinterConfig(printerID string) error {
 
 	// Delete the printer itself (ON DELETE CASCADE removes virtual_printer_files)
 	_, err = b.db.Exec("DELETE FROM printer_configs WHERE printer_id = ?", printerID)
+
+	b.mutex.Unlock()
+
 	if err != nil {
 		return fmt.Errorf("failed to delete printer config: %w", err)
 	}
 
 	log.Printf("🗑️  Deleted printer %s (%s) and freed all toolhead spool assignments", printerName, printerID)
+
+	// Push freed spools to inventory in Spoolman (best effort, after lock released).
+	for _, sid := range spoolIDsForSync {
+		b.pushSpoolToInventory(sid)
+	}
+
 	return nil
 }
 
@@ -2062,6 +2221,57 @@ func (b *FilamentBridge) syncSpoolLocationForUnassignment(spoolID int) error {
 	return nil
 }
 
+// --- Spoolman location sync helpers ---
+
+// GetSpoolmanLocationSyncEnabled returns true when the bidirectional Spoolman location sync is on.
+func (b *FilamentBridge) GetSpoolmanLocationSyncEnabled() (bool, error) {
+	val, err := b.GetConfigValue(ConfigKeySpoolmanLocationSyncEnabled)
+	if err != nil {
+		return false, err
+	}
+	return val == "true", nil
+}
+
+// FormatToolheadLocation returns the canonical Spoolman location string for a toolhead.
+// Format: "{printerName} - T{toolheadIndex}"  e.g. "Roci - T0"
+func FormatToolheadLocation(printerName string, toolheadIndex int) string {
+	return fmt.Sprintf("%s - T%d", printerName, toolheadIndex)
+}
+
+// ParseToolheadLocation parses a Spoolman location string produced by FormatToolheadLocation.
+// Returns ok=false if the string does not match the expected format.
+func ParseToolheadLocation(location string) (printerName string, toolheadIndex int, ok bool) {
+	// Expected format: "{name} - T{index}"  e.g. "Roci - T0"
+	const suffix = " - T"
+	idx := strings.LastIndex(location, suffix)
+	if idx < 0 {
+		return "", 0, false
+	}
+	name := location[:idx]
+	indexStr := location[idx+len(suffix):]
+	n, err := strconv.Atoi(indexStr)
+	if err != nil || n < 0 {
+		return "", 0, false
+	}
+	return name, n, true
+}
+
+// pushSpoolToInventory moves a spool's Spoolman location to the configured inventory location.
+// No-op if sync is disabled or inventory location is empty.
+func (b *FilamentBridge) pushSpoolToInventory(spoolID int) {
+	enabled, err := b.GetSpoolmanLocationSyncEnabled()
+	if err != nil || !enabled {
+		return
+	}
+	loc, err := b.GetConfigValue(ConfigKeyNFCInventoryLocation)
+	if err != nil || loc == "" {
+		return
+	}
+	if err := b.spoolman.UpdateSpoolLocation(spoolID, loc); err != nil {
+		log.Printf("Warning: pushSpoolToInventory spool %d → %q: %v", spoolID, loc, err)
+	}
+}
+
 // GetConfigSnapshot returns a snapshot of the current config for safe iteration
 func (b *FilamentBridge) GetConfigSnapshot() *Config {
 	b.mutex.RLock()
@@ -2229,6 +2439,14 @@ func (b *FilamentBridge) SetToolheadMapping(printerName string, toolheadID int, 
 		}
 	}
 
+	// Bidirectional Spoolman location sync: write auto-generated location name to Spoolman.
+	if syncEnabled, _ := b.GetSpoolmanLocationSyncEnabled(); syncEnabled {
+		locationName := FormatToolheadLocation(printerName, toolheadID)
+		if syncErr := b.spoolman.UpdateSpoolLocation(spoolID, locationName); syncErr != nil {
+			log.Printf("Warning: Spoolman location sync on assign spool %d → %q: %v", spoolID, locationName, syncErr)
+		}
+	}
+
 	if enabled && previousSpoolID > 0 && previousSpoolID != spoolID {
 		// Get the configured default location
 		locationName, err := b.GetAutoAssignPreviousSpoolLocation()
@@ -2325,14 +2543,25 @@ func (b *FilamentBridge) GetAllToolheadMappings() (map[string]map[int]ToolheadMa
 // UnmapToolhead removes a spool mapping from a toolhead
 func (b *FilamentBridge) UnmapToolhead(printerName string, toolheadID int) error {
 	b.mutex.Lock()
-	defer b.mutex.Unlock()
+
+	// Get current spool before deleting so we can push it to inventory in Spoolman.
+	var currentSpoolID int
+	_ = b.db.QueryRow(
+		"SELECT spool_id FROM toolhead_mappings WHERE printer_name = ? AND toolhead_id = ?",
+		printerName, toolheadID,
+	).Scan(&currentSpoolID)
 
 	_, err := b.db.Exec(
 		"DELETE FROM toolhead_mappings WHERE printer_name = ? AND toolhead_id = ?",
 		printerName, toolheadID,
 	)
+	b.mutex.Unlock()
 	if err != nil {
 		return fmt.Errorf("failed to unmap toolhead: %w", err)
+	}
+
+	if currentSpoolID > 0 {
+		b.pushSpoolToInventory(currentSpoolID)
 	}
 
 	log.Printf("Unmapped %s toolhead %d", printerName, toolheadID)
@@ -2591,10 +2820,20 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		b.mutex.Unlock()
 
 	case StateAttention:
-		// Filament runout or change required — keep wasPrinting=true so resume works
+		// Printer requires attention (filament runout, door open, etc.).
+		// On first transition: record as a pending runout event so print_history can later
+		// be split into virtual toolhead segments proportional to progress at this point.
 		if prevState != StateAttention {
-			log.Printf("🔴 ATTENTION on %s (%s): filament runout or change required for job: %s",
-				config.IPAddress, printerID, jobName)
+			log.Printf("🟡 ATTENTION on %s (%s): printer requires attention at %.1f%% for job: %s",
+				config.IPAddress, printerID, printProgress, jobName)
+			b.mutex.RLock()
+			startTime := b.printStartTime[printerID]
+			b.mutex.RUnlock()
+			if !startTime.IsZero() {
+				if rErr := b.AddPendingRunout(printerID, startTime, 0, printProgress); rErr != nil {
+					log.Printf("[PRUSALINK] printer=%s failed to record attention event: %v", printerID, rErr)
+				}
+			}
 		}
 		b.mutex.Lock()
 		b.wasPrinting[printerID] = wasPrinting // preserve existing flag
@@ -3151,6 +3390,75 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 	return nil
 }
 
+// filamentSegment describes one virtual toolhead's share of a print's filament usage.
+type filamentSegment struct {
+	virtualToolhead  int
+	originalToolhead int
+	weightG          float64
+	progressStart    float64 // 0..100
+	progressEnd      float64 // 0..100
+}
+
+// splitFilamentByRunouts distributes filament usage across virtual toolhead segments
+// based on printer attention events (runouts/pauses). Toolheads without runout events
+// pass through unchanged. When runouts are present for a toolhead, its usage is split
+// proportionally by progress percentage into N+1 segments numbered sequentially.
+func splitFilamentByRunouts(filamentUsage map[int]float64, runouts []PendingRunoutEvent) []filamentSegment {
+	// Group runouts by original toolhead.
+	runoutsByToolhead := make(map[int][]PendingRunoutEvent)
+	for _, r := range runouts {
+		runoutsByToolhead[r.ToolheadIndex] = append(runoutsByToolhead[r.ToolheadIndex], r)
+	}
+
+	// Sort toolheads for deterministic output.
+	toolheads := make([]int, 0, len(filamentUsage))
+	for th := range filamentUsage {
+		toolheads = append(toolheads, th)
+	}
+	sort.Ints(toolheads)
+
+	var segs []filamentSegment
+	nextVirtual := 0
+	for _, th := range toolheads {
+		totalG := filamentUsage[th]
+		thRunouts := runoutsByToolhead[th]
+
+		if len(thRunouts) == 0 {
+			segs = append(segs, filamentSegment{nextVirtual, th, totalG, 0, 100})
+			nextVirtual++
+			continue
+		}
+
+		// Sort by progress ascending.
+		sort.Slice(thRunouts, func(i, j int) bool {
+			return thRunouts[i].ProgressPct < thRunouts[j].ProgressPct
+		})
+
+		prevPct := 0.0
+		for _, r := range thRunouts {
+			pct := r.ProgressPct
+			if pct < 0.1 {
+				pct = 0.1
+			}
+			if pct > 99.9 {
+				pct = 99.9
+			}
+			if pct <= prevPct {
+				continue // skip duplicate or out-of-order
+			}
+			fraction := (pct - prevPct) / 100.0
+			segs = append(segs, filamentSegment{nextVirtual, th, totalG * fraction, prevPct, pct})
+			nextVirtual++
+			prevPct = pct
+		}
+		// Final segment from last runout to end.
+		fraction := (100.0 - prevPct) / 100.0
+		segs = append(segs, filamentSegment{nextVirtual, th, totalG * fraction, prevPct, 100})
+		nextVirtual++
+	}
+	return segs
+}
+
 func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config PrinterConfig, jobID int, filename string) error {
 	log.Printf("Print finished via PrusaLink (%s): %s", config.IPAddress, filename)
 
@@ -3236,22 +3544,58 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 		return err
 	}
 
+	// Check for printer attention events (runouts/pauses) recorded during the print.
+	// If any exist, split the single-toolhead usage into virtual segments — one per segment
+	// between attention events — so the user can correct spool assignments post-print.
+	runouts, _ := b.GetPendingRunouts(printerID, startTime)
+	segments := splitFilamentByRunouts(filamentUsage, runouts)
+
+	if len(runouts) > 0 {
+		log.Printf("[PRUSALINK] printer=%s splitting %d toolhead(s) into %d segments due to %d attention event(s)",
+			printerID, len(filamentUsage), len(segments), len(runouts))
+	}
+
 	sessionID := newSessionID()
 	var firstPrintID int
-	for toolheadID, usedG := range filamentUsage {
-		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
-		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, jobName,
+	type segResult struct {
+		printID         int
+		virtualToolhead int
+		spoolID         int
+		progressStart   float64
+	}
+	var segResults []segResult
+
+	for _, seg := range segments {
+		spoolID, _ := b.GetToolheadMapping(printerName, seg.originalToolhead)
+		printID, _ := b.LogPrintUsageFull(printerName, seg.virtualToolhead, spoolID, seg.weightG, jobName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "prusalink")
 		if printID > 0 {
-			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+			_ = b.AppendFilamentUsage(printID, seg.virtualToolhead, 0, spoolID, 0, seg.weightG)
 			if firstPrintID == 0 {
 				firstPrintID = printID
 			}
+			segResults = append(segResults, segResult{printID, seg.virtualToolhead, spoolID, seg.progressStart})
 		}
 	}
+
+	_ = b.DeletePendingRunouts(printerID, startTime)
+
 	if firstPrintID > 0 {
 		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
 			log.Printf("Warning: failed to snapshot NFC assignments for print %d: %v", firstPrintID, err)
+		}
+		// Add start spool events for virtual toolhead segments (attention-event splits).
+		// T0's start event is already covered by SnapshotAssignmentsForPrint above.
+		for _, sr := range segResults {
+			if sr.virtualToolhead > 0 && sr.spoolID > 0 {
+				_ = b.AddPrintSpoolEvent(PrintSpoolEvent{
+					PrintHistoryID:     firstPrintID,
+					ToolheadIndex:      sr.virtualToolhead,
+					NewSpoolmanSpoolID: sr.spoolID,
+					EventType:          "start",
+					PrintProgressPct:   sr.progressStart,
+				})
+			}
 		}
 		// Save gcode to disk; best-effort — never aborts the print record.
 		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
@@ -4836,6 +5180,133 @@ func (b *FilamentBridge) CloseBambuClients() {
 	b.bambuClients = make(map[string]BambuStatusProvider)
 }
 
+// SyncSpoolmanLocationsToDB reads all Spoolman spools and updates toolhead_mappings when a spool's
+// location matches the canonical format "{printer_name} - T{index}". Also clears DB mappings when
+// the spool has been moved away from the toolhead location in Spoolman.
+// Returns (changed, error) — caller should call ws.BroadcastStatus() when changed is true.
+// No-op if spoolman_location_sync_enabled is false.
+func (b *FilamentBridge) SyncSpoolmanLocationsToDB() (bool, error) {
+	enabled, err := b.GetSpoolmanLocationSyncEnabled()
+	if err != nil || !enabled {
+		return false, nil
+	}
+
+	spools, err := b.spoolman.GetAllSpools()
+	if err != nil {
+		return false, fmt.Errorf("SyncSpoolmanLocationsToDB: get spools: %w", err)
+	}
+
+	printerConfigs, err := b.GetAllPrinterConfigs()
+	if err != nil {
+		return false, fmt.Errorf("SyncSpoolmanLocationsToDB: get printer configs: %w", err)
+	}
+
+	// Build lookup: canonical location name → (printerName, toolheadIndex)
+	type slot struct {
+		printerName string
+		toolheadIdx int
+	}
+	knownLocations := map[string]slot{}
+	for _, cfg := range printerConfigs {
+		if cfg.IsVirtual {
+			continue
+		}
+		for t := 0; t < cfg.Toolheads; t++ {
+			knownLocations[FormatToolheadLocation(cfg.Name, t)] = slot{cfg.Name, t}
+		}
+	}
+
+	// Build current DB state: spool_id → (printerName, toolheadIdx)
+	b.mutex.RLock()
+	rows, err := b.db.Query("SELECT printer_name, toolhead_id, spool_id FROM toolhead_mappings")
+	b.mutex.RUnlock()
+	if err != nil {
+		return false, fmt.Errorf("SyncSpoolmanLocationsToDB: read mappings: %w", err)
+	}
+	type dbMapping struct {
+		printerName string
+		toolheadIdx int
+	}
+	dbBySpoolID := map[int]dbMapping{}
+	dbBySlot := map[string]int{} // "printerName|toolheadIdx" → spoolID
+	for rows.Next() {
+		var pName string
+		var tID, sID int
+		if rows.Scan(&pName, &tID, &sID) == nil {
+			dbBySpoolID[sID] = dbMapping{pName, tID}
+			dbBySlot[fmt.Sprintf("%s|%d", pName, tID)] = sID
+		}
+	}
+	rows.Close()
+
+	changed := false
+
+	// Build a quick lookup of Spoolman location by spool ID.
+	spoolLocation := map[int]string{}
+	for _, spool := range spools {
+		spoolLocation[spool.ID] = spool.Location
+	}
+
+	// Pass 1 (removals): for each DB mapping, if the spool's Spoolman location no longer matches → remove.
+	// Run removals before additions so that a slot reassignment (spool A replaced by spool B in Spoolman)
+	// settles in a single sync cycle rather than requiring two.
+	for spoolID, m := range dbBySpoolID {
+		expectedLoc := FormatToolheadLocation(m.printerName, m.toolheadIdx)
+		actualLoc, exists := spoolLocation[spoolID]
+		if exists && actualLoc == expectedLoc {
+			continue // still correct
+		}
+		// Location changed or spool not found in Spoolman — clear the DB mapping.
+		b.mutex.Lock()
+		_, _ = b.db.Exec(
+			"DELETE FROM toolhead_mappings WHERE printer_name = ? AND toolhead_id = ? AND spool_id = ?",
+			m.printerName, m.toolheadIdx, spoolID,
+		)
+		b.mutex.Unlock()
+		log.Printf("SyncSpoolmanLocationsToDB: DB→cleared spool %d from %s T%d (Spoolman location now %q)", spoolID, m.printerName, m.toolheadIdx, actualLoc)
+		// Update in-memory state so Pass 2 doesn't see a stale conflict on this slot.
+		slotKey := fmt.Sprintf("%s|%d", m.printerName, m.toolheadIdx)
+		delete(dbBySlot, slotKey)
+		delete(dbBySpoolID, spoolID)
+		changed = true
+	}
+
+	// Pass 2 (additions): for each Spoolman spool with a known-format location, ensure DB matches.
+	for _, spool := range spools {
+		s, ok := knownLocations[spool.Location]
+		if !ok {
+			continue
+		}
+		slotKey := fmt.Sprintf("%s|%d", s.printerName, s.toolheadIdx)
+		if existing, has := dbBySlot[slotKey]; has && existing == spool.ID {
+			continue // already correct
+		}
+		// Conflict: another spool still mapped to this slot in DB — skip with warning.
+		if existing, has := dbBySlot[slotKey]; has && existing != spool.ID {
+			log.Printf("SyncSpoolmanLocationsToDB: conflict — spool %d has location %q but DB maps slot %s to spool %d; skipping",
+				spool.ID, spool.Location, slotKey, existing)
+			continue
+		}
+		// Insert/replace the mapping.
+		b.mutex.Lock()
+		_, dbErr := b.db.Exec(
+			"INSERT OR REPLACE INTO toolhead_mappings (printer_name, toolhead_id, spool_id, mapped_at) VALUES (?, ?, ?, ?)",
+			s.printerName, s.toolheadIdx, spool.ID, time.Now(),
+		)
+		b.mutex.Unlock()
+		if dbErr != nil {
+			log.Printf("SyncSpoolmanLocationsToDB: failed to update mapping spool %d → %s T%d: %v", spool.ID, s.printerName, s.toolheadIdx, dbErr)
+			continue
+		}
+		log.Printf("SyncSpoolmanLocationsToDB: Spoolman→DB spool %d → %s T%d", spool.ID, s.printerName, s.toolheadIdx)
+		dbBySlot[slotKey] = spool.ID
+		dbBySpoolID[spool.ID] = dbMapping{s.printerName, s.toolheadIdx}
+		changed = true
+	}
+
+	return changed, nil
+}
+
 // All The Moment location management functions have been removed - locations are now managed in Spoolman only
 // REMOVED: CreateLocationFromSpoolman
 // REMOVED: GetAllThe MomentLocations
@@ -4844,6 +5315,4 @@ func (b *FilamentBridge) CloseBambuClients() {
 // REMOVED: DeleteLocation
 // REMOVED: GetLocationStatus
 // REMOVED: LocationStatus struct
-// REMOVED: AutoSyncSpoolmanLocations
-// REMOVED: ImportSpoolmanLocations
 // REMOVED: StartLocationSync

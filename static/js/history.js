@@ -379,6 +379,11 @@ function populateModal(r) {
         rows.push(['Total cost', '<strong style="color:#c8b8ff;">' + _fmtCost(r.total_cost, r.currency) + '</strong>']);
     }
 
+    // PrusaLink virtual segment — toolhead_id > 0 means this was split from an attention event.
+    if (r.source === 'prusalink' && r.toolhead_id > 0) {
+        rows.push(['Note', '<span style="color:#ffc107;font-size:0.85em;">Attention-event segment. If a different spool was loaded, reassign it below.</span>']);
+    }
+
     // OctoPrint-specific precision and timing details
     if (r.source === 'octoprint') {
         if (r.total_duration_sec > 0) {

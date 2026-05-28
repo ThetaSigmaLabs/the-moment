@@ -49,6 +49,10 @@ const (
 	ConfigKeyNFCTrashLocation    = "nfc_trash_location"
 	ConfigKeyNFCInventoryLocation = "nfc_inventory_location"
 
+	// Spoolman location sync: keeps Spoolman spool location fields in sync with The Moment toolhead assignments.
+	// Format written to Spoolman: "{printer_name} - T{toolhead_index}" (e.g. "Roci - T0").
+	ConfigKeySpoolmanLocationSyncEnabled = "spoolman_location_sync_enabled"
+
 	// Cost calculation config keys
 	ConfigKeyCostElectricityRate = "cost_electricity_rate" // $/kWh
 	ConfigKeyCostPrinterWattage  = "cost_printer_wattage"  // Watts

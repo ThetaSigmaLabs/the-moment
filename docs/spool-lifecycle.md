@@ -19,10 +19,11 @@ Before The Moment can work with a spool, it must exist in Spoolman.
 
 ## 2. Program the NFC Tag
 
-Spool tags use **ICODE SLIX2** (NFC-V / ISO 15693) stickers. Each tag carries two NDEF records:
+Spool tags use **NTAG213** stickers (Phase 1). Each tag carries one NDEF record:
 
-- **Record 1:** OpenPrintTag CBOR — filament specs (temperatures, material type, diameter, brand, UUID) for future hardware readers
-- **Record 2:** URL — `http://{moment-host}/nfc/spool/{spoolman-id}` — opens The Moment in a phone browser when scanned
+- **URL** — `http://{moment-host}/nfc/spool/{spoolman-id}` — opens The Moment in a phone browser when scanned
+
+> **Phase 2 note:** When INBXX Semi-Smart V2 ships (targeted Q3 2026), spool tags will be upgraded to ICODE SLIX2 with a second NDEF record containing OpenPrintTag CBOR for hardware readers. The URL record and `nfc_*` Spoolman fields are already in place; only CBOR generation needs to be added. See the Phase 2 section in CLAUDE.md.
 
 ### Steps
 
@@ -36,9 +37,10 @@ Spool tags use **ICODE SLIX2** (NFC-V / ISO 15693) stickers. Each tag carries tw
 5. Click **Save to Spoolman & Download .bin** — the file saves to your downloads (e.g. `spool-42.bin`)
    - All field values are written back to Spoolman's `nfc_*` custom fields for future use
    - A unique UUID (`nfc_spool_uuid`) is auto-generated if this spool doesn't have one yet
+   - The `.bin` file contains a URL-only NDEF record (no CBOR in Phase 1)
 6. On iPhone, open **NFC Tools Pro** → **Write** → **Write Dump**
 7. Select the downloaded `.bin` file
-8. Hold the iPhone near the NFC-V sticker — it writes in under a second
+8. Hold the iPhone near the NTAG213 sticker — it writes in under a second
 9. Affix the sticker to the spool
 
 The tag is now programmed. You only need to redo this if the filament spec changes significantly (new brand, different material). The URL on the tag never changes as long as the Spoolman spool ID stays the same.
@@ -74,6 +76,10 @@ Each toolhead slot has an **NTAG215** location tag sticker. Location tags contai
 ### Via the NFC Management tab
 
 In The Moment dashboard → **NFC Management** → **Spool Tags** — select a spool and assign it directly from the UI without scanning any tags.
+
+### Spoolman location sync (optional)
+
+If **Spoolman location sync** is enabled in Settings → Advanced, assigning a spool also updates its location in Spoolman to `{Printer Name} - T{toolhead_index}` (e.g. `"Ender3 - T0"`). Unassigning resets the location to the configured inventory location. Changes made directly in Spoolman are picked up by The Moment on the next poll (every 5 minutes). See [Spoolman Location Sync](spoolman-location-sync.md) for full details.
 
 ---
 

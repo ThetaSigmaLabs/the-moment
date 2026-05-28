@@ -24,6 +24,12 @@ function switchTab(tabName) {
     // Add active class to clicked tab
     event.target.classList.add('active');
 
+    // Sync Spoolman locations when Print Ops tab is opened so changes made in
+    // Spoolman are reflected immediately rather than waiting for the 5-min poll.
+    if (tabName === 'status') {
+        fetch('/api/nfc/sync-locations-now', { method: 'POST' }).catch(() => {});
+    }
+
     // Load configuration when settings tab is opened
     if (tabName === 'settings') {
         // Load data for the currently active settings sub-tab
@@ -288,8 +294,14 @@ function loadAdvancedSettings() {
         .then(data => {
             var inv = document.getElementById('nfcInventoryLocation');
             var trash = document.getElementById('nfcTrashLocation');
+            var syncToggle = document.getElementById('spoolmanLocationSyncEnabled');
+            var syncRow = document.getElementById('spoolmanLocationSyncRow');
             if (inv)   inv.value   = data.inventory_location || '';
             if (trash) trash.value = data.trash_location     || '';
+            if (syncToggle) {
+                syncToggle.checked = !!data.spoolman_location_sync_enabled;
+                if (syncRow) syncRow.style.display = syncToggle.checked ? '' : 'none';
+            }
         })
         .catch(function() {});
 }
@@ -297,10 +309,11 @@ function loadAdvancedSettings() {
 function saveNFCConfig() {
     var inv   = (document.getElementById('nfcInventoryLocation')  || {}).value || '';
     var trash = (document.getElementById('nfcTrashLocation')       || {}).value || '';
+    var syncEnabled = !!(document.getElementById('spoolmanLocationSyncEnabled') || {}).checked;
     fetch('/api/nfc/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inventory_location: inv, trash_location: trash })
+        body: JSON.stringify({ inventory_location: inv, trash_location: trash, spoolman_location_sync_enabled: syncEnabled })
     })
     .then(r => r.json())
     .then(function() { alert('NFC locations saved.'); })
@@ -453,34 +466,6 @@ function loadAutoAssignSettings() {
         })
         .catch(error => {
             console.error('Error loading auto-assign settings:', error);
-        });
-}
-
-function saveAutoAssignSettings() {
-    const enabled = document.getElementById('autoAssignPreviousSpoolEnabled').checked;
-    const locationSelect = document.getElementById('autoAssignPreviousSpoolLocation');
-    const location = locationSelect ? locationSelect.value.trim() : '';
-
-    const settings = {
-        enabled: enabled,
-        location: location
-    };
-
-    fetch('/api/config/auto-assign-previous-spool', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings)
-    })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                alert('Error saving auto-assign settings: ' + data.error);
-            } else {
-                alert('Auto-assign settings saved successfully!');
-            }
-        })
-        .catch(error => {
-            alert('Error saving auto-assign settings: ' + error.message);
         });
 }
 

@@ -716,5 +716,21 @@ func (ws *WebServer) nfcSpoolTrashHandler(c *gin.Context) {
 		return
 	}
 
+	if err := ws.bridge.spoolman.UpdateSpool(spoolID, map[string]interface{}{"archived": true}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to archive spool in Spoolman: " + err.Error()})
+		return
+	}
+
+	if err := ws.bridge.CloseAssignmentsBySpool(spoolID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear toolhead assignments: " + err.Error()})
+		return
+	}
+
+	if err := ws.bridge.ClearToolheadMappingsBySpool(spoolID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear toolhead mappings: " + err.Error()})
+		return
+	}
+
+	ws.BroadcastStatus()
 	c.JSON(http.StatusOK, gin.H{"archived": true, "location": trashLoc})
 }

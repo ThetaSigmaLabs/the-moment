@@ -5,8 +5,13 @@
 ## Contents
 
 | Page | Description |
-|---|---|
+| --- | --- |
 | [Spool Lifecycle](spool-lifecycle.md) | Complete lifecycle of a filament spool: from setup through printing to archiving |
+| [Spoolman Location Sync](spoolman-location-sync.md) | Optional bidirectional sync between toolhead assignments and Spoolman spool locations |
+| [PrusaLink Print Handling](prusalink-print-handling.md) | How The Moment tracks PrusaLink prints, attention events (runouts), and what requires manual correction in print history |
+| [OctoPrint Plugin](octoprint-plugin.md) | How to install, configure, and use the OctoPrint plugin; what data it sends; troubleshooting |
+| [Cost Tracking](cost-tracking.md) | How print cost is calculated: the formula, global settings, per-printer overrides, high-temp detection, and filament pricing |
+| [Virtual Test Printers](virtual-printers.md) | How to create a virtual printer, upload G-code, simulate prints, and export/import printer libraries |
 
 ## Overview
 

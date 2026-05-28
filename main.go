@@ -178,6 +178,9 @@ func main() {
 			ticker := time.NewTicker(config.PollInterval)
 			defer ticker.Stop()
 
+			locationSyncTicker := time.NewTicker(config.LocationSyncInterval)
+			defer locationSyncTicker.Stop()
+
 			// Run initial check
 			bridge.MonitorPrinters()
 			// Broadcast initial status
@@ -190,6 +193,12 @@ func main() {
 					bridge.MonitorPrinters()
 					// Broadcast status after each monitoring cycle
 					webServer.BroadcastStatus()
+				case <-locationSyncTicker.C:
+					if changed, err := bridge.SyncSpoolmanLocationsToDB(); err != nil {
+						log.Printf("Spoolman location sync error: %v", err)
+					} else if changed {
+						webServer.BroadcastStatus()
+					}
 				case <-sigChan:
 					return
 				}

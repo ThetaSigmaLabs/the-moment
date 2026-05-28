@@ -24,9 +24,10 @@ import (
 
 // SpoolRecord represents a spool stored in the mock.
 type SpoolRecord struct {
-	ID          int     `json:"id"`
-	UsedWeight  float64 `json:"used_weight"`
+	ID            int     `json:"id"`
+	UsedWeight    float64 `json:"used_weight"`
 	InitialWeight float64 `json:"initial_weight"`
+	Location      string  `json:"location"`
 }
 
 // UsageUpdate records a single call The Moment made to update a spool.
@@ -35,14 +36,21 @@ type UsageUpdate struct {
 	UsedWeight float64 // The used_weight value sent in the PATCH body
 }
 
+// LocationUpdate records a PATCH call that set a spool's location.
+type LocationUpdate struct {
+	SpoolID      int
+	LocationName string
+}
+
 // MockSpoolman is a fake Spoolman server.
 type MockSpoolman struct {
 	Server *httptest.Server
 
-	mu      sync.RWMutex
-	spools  map[int]*SpoolRecord
-	updates []UsageUpdate // All PATCH /api/v1/spool/:id calls received
-	offline bool          // When true, all requests receive 503
+	mu              sync.RWMutex
+	spools          map[int]*SpoolRecord
+	updates         []UsageUpdate    // All PATCH /api/v1/spool/:id calls with used_weight
+	locationUpdates []LocationUpdate // All PATCH /api/v1/spool/:id calls with location
+	offline         bool             // When true, all requests receive 503
 }
 
 // NewMockSpoolman creates and starts a fake Spoolman server pre-loaded with
@@ -92,6 +100,7 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 				"used_weight":      spool.UsedWeight,
 				"initial_weight":   spool.InitialWeight,
 				"remaining_weight": remaining,
+				"location":         spool.Location,
 				"filament": map[string]interface{}{
 					"id":       spool.ID,
 					"name":     fmt.Sprintf("Test PLA %d", spool.ID),
@@ -170,12 +179,21 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 				return
 			}
 
-			// Record the update
+			// Record weight update
 			if usedWeight, ok := body["used_weight"].(float64); ok {
 				spool.UsedWeight = usedWeight
 				mock.updates = append(mock.updates, UsageUpdate{
 					SpoolID:    spoolID,
 					UsedWeight: usedWeight,
+				})
+			}
+
+			// Record and persist location update
+			if loc, ok := body["location"].(string); ok {
+				spool.Location = loc
+				mock.locationUpdates = append(mock.locationUpdates, LocationUpdate{
+					SpoolID:      spoolID,
+					LocationName: loc,
 				})
 			}
 
@@ -264,6 +282,29 @@ func (m *MockSpoolman) ResetUpdates() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.updates = nil
+	m.locationUpdates = nil
+}
+
+// LocationUpdates returns a copy of all location updates received so far.
+func (m *MockSpoolman) LocationUpdates() []LocationUpdate {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]LocationUpdate, len(m.locationUpdates))
+	copy(result, m.locationUpdates)
+	return result
+}
+
+// LocationUpdatesForSpool returns all location updates for a specific spool ID.
+func (m *MockSpoolman) LocationUpdatesForSpool(spoolID int) []LocationUpdate {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []LocationUpdate
+	for _, u := range m.locationUpdates {
+		if u.SpoolID == spoolID {
+			result = append(result, u)
+		}
+	}
+	return result
 }
 
 // SetOffline makes the mock return HTTP 503 for all requests when true,
@@ -272,4 +313,14 @@ func (m *MockSpoolman) SetOffline(offline bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.offline = offline
+}
+
+// SetSpoolLocation directly sets the location field on a mock spool, simulating
+// a user editing the spool location in Spoolman's own UI.
+func (m *MockSpoolman) SetSpoolLocation(spoolID int, location string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if spool, ok := m.spools[spoolID]; ok {
+		spool.Location = location
+	}
 }

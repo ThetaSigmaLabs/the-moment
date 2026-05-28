@@ -173,6 +173,7 @@
 .status.PAUSED    { background: #cce5ff; color: #004085; }
 .status.STOPPED   { background: #f8d7da; color: #721c24; }
 .status.ATTENTION { background: #ffeeba; color: #856404; }
+.status.attention { background: #ffeeba; color: #856404; }
 .status.FINISHED  { background: #d4edda; color: #155724; }
 
 /* Color Swatches */
