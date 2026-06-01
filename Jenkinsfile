@@ -11,19 +11,10 @@ pipeline {
     stages {
         // ── Gate: tests must pass before any builds ────────────────────────
         stage('Tests') {
-            parallel {
-                stage('Unit Tests') {
-                    agent { label 'linux-arm64' }
-                    steps {
-                        sh 'go test ./... -count=1'
-                    }
-                }
-                stage('Integration Tests') {
-                    agent { label 'linux-arm64' }
-                    steps {
-                        sh 'go test -tags=integration ./... -count=1 -v'
-                    }
-                }
+            agent { label 'linux-arm64' }
+            steps {
+                sh 'go test ./... -count=1'
+                sh 'go test -tags=integration ./... -count=1 -v'
             }
         }
 
