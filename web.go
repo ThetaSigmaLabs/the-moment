@@ -175,6 +175,7 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/printers", ws.addPrinterHandler)
 		api.PUT("/printers/:id", ws.updatePrinterHandler)
 		api.PATCH("/printers/:id/debug-log", ws.togglePrinterDebugLogHandler)
+		api.GET("/printers/:id/comm-log", ws.commLogHandler)
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
 		api.GET("/printers/:id/toolheads", ws.getToolheadNamesHandler)
 		api.PUT("/printers/:id/toolheads/:toolhead_id", ws.updateToolheadNameHandler)
@@ -227,6 +228,8 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/cost/calculate", ws.calculateCostHandler)
 		api.GET("/print-errors", ws.getPrintErrorsHandler)
 		api.POST("/print-errors/:id/acknowledge", ws.acknowledgePrintErrorHandler)
+		api.GET("/pending-downloads", ws.getPendingDownloadsHandler)
+		api.POST("/pending-downloads/:id/retry", ws.retryPendingDownloadHandler)
 		api.GET("/nfc/assign", ws.nfcAssignHandler)
 		api.GET("/nfc/urls", ws.nfcUrlsHandler)
 		api.GET("/nfc/session/status", ws.nfcSessionStatusHandler)
@@ -922,6 +925,31 @@ func (ws *WebServer) togglePrinterDebugLogHandler(c *gin.Context) {
 		log.Printf("Warning: failed to reload config after debug-log toggle: %v", err)
 	}
 	c.JSON(http.StatusOK, gin.H{"debug_log": cfg.DebugLog})
+}
+
+// commLogHandler returns recent in-memory communication log entries for a printer.
+// Query param: since=<id> (int64) returns entries with ID > since; omit for last 100.
+func (ws *WebServer) commLogHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	sinceStr := c.Query("since")
+
+	cl := ws.bridge.getCommLog(printerID)
+
+	var entries []CommLogEntry
+	if sinceStr == "" {
+		entries = cl.Recent(100)
+	} else {
+		since, err := strconv.ParseInt(sinceStr, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid since parameter"})
+			return
+		}
+		entries = cl.Since(since)
+	}
+	if entries == nil {
+		entries = []CommLogEntry{}
+	}
+	c.JSON(http.StatusOK, gin.H{"printer_id": printerID, "entries": entries})
 }
 
 // updatePrinterHandler updates an existing printer configuration
@@ -2364,6 +2392,47 @@ func (ws *WebServer) acknowledgePrintErrorHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Error acknowledged"})
 }
 
+// getPendingDownloadsHandler returns all queued G-code downloads with their retry status.
+func (ws *WebServer) getPendingDownloadsHandler(c *gin.Context) {
+	downloads, err := ws.bridge.GetPendingGcodeDownloads()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if downloads == nil {
+		downloads = []PendingGcodeDownload{}
+	}
+	c.JSON(http.StatusOK, gin.H{"pending_downloads": downloads})
+}
+
+// retryPendingDownloadHandler immediately retries a single queued G-code download by ID.
+// On success, the print_history record is created and the queue entry removed.
+func (ws *WebServer) retryPendingDownloadHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	// Run the full retry cycle — it will process this (and any other) queued item.
+	if err := ws.bridge.RetryPendingGcodeDownloads(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Check if this specific entry was resolved.
+	downloads, _ := ws.bridge.GetPendingGcodeDownloads()
+	for _, d := range downloads {
+		if d.ID == id {
+			// Still present — retry failed.
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": d.LastError})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
 // reloadBridgeConfig reloads the bridge configuration after changes
 func (ws *WebServer) reloadBridgeConfig() error {
 	// Reload configuration to include changes
@@ -3498,7 +3567,7 @@ func (ws *WebServer) downloadPrintAttachmentHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "attachment not found"})
 		return
 	}
-	absPath := ws.bridge.dataDir() + "/" + a.FilePath
+	absPath := ws.bridge.gcodePath() + "/" + a.FilePath
 	c.Header("Content-Disposition", "attachment; filename=\""+a.Filename+"\"")
 	c.File(absPath)
 }

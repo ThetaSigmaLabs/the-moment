@@ -324,9 +324,9 @@ async function autoMapSpool(dropdown, selectedValue, selectedText, selectedColor
         if (data.error) {
             // Handle conflict errors specifically
             if (data.error.includes('is already assigned to')) {
-                alert(`Spool assignment conflict: ${data.error}`);
+                showToast(`Spool assignment conflict: ${data.error}`);
             } else {
-                alert(`Error mapping spool: ${data.error}`);
+                showToast(`Error mapping spool: ${data.error}`);
             }
 
             // Revert to previous selection
@@ -373,7 +373,7 @@ async function autoMapSpool(dropdown, selectedValue, selectedText, selectedColor
 
     } catch (error) {
         console.error('Error mapping spool:', error);
-        alert('Error mapping spool: ' + error.message);
+        showToast('Error mapping spool: ' + error.message);
 
         // Revert to previous selection
         button.innerHTML = originalContent;
@@ -450,7 +450,7 @@ function openSpoolmanEdit(spoolId) {
 
     const spoolmanBaseURL = document.body.dataset.spoolmanUrl;
     if (!spoolmanBaseURL) {
-        alert('Spoolman URL not configured. Please check your settings.');
+        showToast('Spoolman URL not configured. Please check your settings.');
         return;
     }
 

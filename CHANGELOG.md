@@ -5,21 +5,50 @@ All notable changes to The Moment will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.0.0-alpha] - 2026-05-29
+
+First public alpha release. Feature-complete and running in production on real hardware.
+
+### Added
+
+- **NFC Phase 1** — generate NDEF `.bin` files for spool tags (URL → `/nfc/spool/{id}`) and location tags (URL → `/nfc/location/{slug}/{index}`); write via NFC Tools Pro on iPhone
+- **OpenPrintTag CBOR** — spool tags encode a full OpenPrintTag-compatible CBOR record (materialName, brandName, temperatures, color, weight, UUID, manufacturing/expiry dates, material properties)
+- **Spoolman location sync** — bidirectional sync between toolhead assignments and Spoolman spool `location` field; configurable 5-minute poll plus immediate sync on tab open; toggle in Settings → Advanced
+- **Spoolman custom fields** — auto-registers 14 `nfc_*` custom fields on startup (temperatures, UUID, weight, dates, country of origin, material properties, transmission distance)
+- **Multi-toolhead session tracking** — all per-tool rows for one print share a `session_id`; history groups them as a single logical job
+- **Print history thumbnails** — G-code thumbnails extracted and stored; displayed in history view
+- **Filament-change tracking** — mid-print spool swaps recorded as separate `change_number` entries
+- **Virtual printer import/export** — export a virtual printer with its G-code library as JSON; import on another instance
+- **Per-printer cost overrides** — wattage, preheat charge, high-temp extra wattage, depreciation rate all configurable per printer
+- **High-temp material detection** — automatically adds extra wattage cost for ABS, ASA, PA, PC materials
+- **OctoPrint plugin** — pushes print start/finish/cancel/fail/pause events with per-tool filament usage and spool IDs
+- **Bambu MQTT support** — connects via MQTT over TLS; AMS slots map to toolhead indices
+- **Spool trash workflow** — archived spools returned to inventory location in Spoolman
+- **QR code generation** — QR codes for spools, filament types, and locations alongside NFC `.bin` files
+- **Real-time WebSocket dashboard** — live printer status and toolhead assignments without page refresh
+
+### Fixed
+
+- OctoPrint double-deduction bug: `LogOctoPrintRecord` was writing to `pending_spoolman_updates` causing Spoolman to subtract used weight twice when the OctoPrint-Spoolman plugin was also active. Removed the write; responsibility boundary is now clean (OctoPrint owns Spoolman inventory updates for OctoPrint prints)
+- SQLite DATETIME comparison: wrapped all timestamp comparisons in `julianday()` to fix incorrect ordering with `modernc.org/sqlite` v1.14.x NUMERIC affinity
+- PrusaLink thumbnail extraction for CORE One L firmware variants
+- NFC URL host detection uses `c.Request.Host` (adapts across LAN, hostname, and VPN access) — no static IP configuration required
+
+### Changed
+
+- Module path updated to `github.com/ThetaSigmaLabs/the-moment`
+- Deployment uses bind-mount data directories (not Docker volumes) so data lives on the host filesystem
+
 ## [v0.3.0] - 2026-04-18
 
 ### Changed
 
-- Fork FilaBridge (needo37/filabridge) as The Moment under new maintainer (maudy2u)
-- Rename project, update module path, env vars, and binary name, OctoPrint Plugin, Virtual Printer
--**The problem**: LogOctoPrintRecord was inserting into pending_spoolman_updates for every OctoPrint filament entry with a real spool ID. The OctoPrint Spoolman plugin had already done the same deduction, so Spoolman subtracted each gram twice.
+- Fork FilaBridge (needo37/filabridge) as The Moment under new maintainer
+- Rename project, update module path, env vars, binary name, OctoPrint plugin, and virtual printer
 
-**The fix**: Removed the pending_spoolman_updates block entirely from LogOctoPrintRecord (bridge.go). The responsibility boundary is now clean:
+### Fixed
 
-|| Source | Who owns Spoolman inventory |What The Moment does ||
-PrusaLink |The Moment |Maps toolheads → spools, updates Spoolman via processFilamentUsage
-Virtual printer |The Moment |Parses G-code, updates Spoolman via LogPrintUsageFull
-OctoPrint |OctoPrint |Spoolman plugin History + cost only — no Spoolman writes
-**Test added**: TestLogOctoPrintRecord_NoSpoolmanUpdate sends a payload with real spool IDs (42 and 99) and asserts pending_spoolman_updates stays empty. This test would have caught the bug before the fix, and will catch any regression that re-introduces it.
+- OctoPrint Spoolman double-deduction: removed `pending_spoolman_updates` writes from `LogOctoPrintRecord`; added `TestLogOctoPrintRecord_NoSpoolmanUpdate` to prevent regression
 
 ## [v0.2.4] - 2025-12-08
 

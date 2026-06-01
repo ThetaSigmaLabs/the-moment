@@ -395,20 +395,20 @@ async function acknowledgeError(errorId) {
             if (contentType && contentType.includes('application/json')) {
                 try {
                     const errorData = await response.json();
-                    alert('Failed to acknowledge error: ' + (errorData.error || 'Unknown error'));
+                    showToast('Failed to acknowledge error: ' + (errorData.error || 'Unknown error', 'error'));
                 } catch (jsonError) {
                     console.error('Failed to parse error response as JSON:', jsonError);
-                    alert('Failed to acknowledge error: Invalid server response');
+                    showToast('Failed to acknowledge error: Invalid server response', 'error');
                 }
             } else {
                 // Response is not JSON, get text
                 const errorText = await response.text();
                 console.error('Non-JSON error response:', errorText);
-                alert('Failed to acknowledge error: ' + (errorText || 'Unknown error'));
+                showToast('Failed to acknowledge error: ' + (errorText || 'Unknown error', 'error'));
             }
         }
     } catch (error) {
         console.error('Error acknowledging print error:', error);
-        alert('Failed to acknowledge error: ' + error.message);
+        showToast('Failed to acknowledge error: ' + error.message);
     }
 }

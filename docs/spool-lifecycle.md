@@ -23,7 +23,9 @@ Spool tags use **NTAG213** stickers (Phase 1). Each tag carries one NDEF record:
 
 - **URL** — `http://{moment-host}/nfc/spool/{spoolman-id}` — opens The Moment in a phone browser when scanned
 
-> **Phase 2 note:** When INBXX Semi-Smart V2 ships (targeted Q3 2026), spool tags will be upgraded to ICODE SLIX2 with a second NDEF record containing OpenPrintTag CBOR for hardware readers. The URL record and `nfc_*` Spoolman fields are already in place; only CBOR generation needs to be added. See the Phase 2 section in CLAUDE.md.
+> **Phase 2 note:** When INBXX Semi-Smart V2 ships (targeted Q3 2026), spool tags will be upgraded to ICODE SLIX2 with a second NDEF record containing OpenPrintTag CBOR for hardware readers. The URL record and `nfc_*` Spoolman fields are already in place; only CBOR generation needs to be added.
+
+![Spool Tags](../.github/screenshots/spool_tags.png)
 
 ### Steps
 

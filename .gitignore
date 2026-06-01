@@ -43,15 +43,15 @@ Thumbs.db
 
 # Data directories
 the-moment-data/
-the-moment-data/
 spoolman-data/
 
 # Environment files (use .env.example as template)
 .env
 .dev/
 
-# Claude Code local settings
+# Claude Code local settings and AI agent instructions
 .claude/
+CLAUDE.md
 
 # Build artifacts
 *.zip

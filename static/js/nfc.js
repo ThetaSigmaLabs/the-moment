@@ -108,7 +108,7 @@ async function loadSpoolTags() {
                     const resp = await fetch(`/api/nfc/spools/${url.spool_id}/trash`, { method: 'POST' });
                     if (!resp.ok) {
                         const err = await resp.json().catch(() => ({}));
-                        alert('Failed to archive spool: ' + (err.error || resp.statusText));
+                        showToast('Failed to archive spool: ' + (err.error || resp.statusText));
                         return;
                     }
                     item.remove();
@@ -123,7 +123,7 @@ async function loadSpoolTags() {
                         }
                     }
                 } catch (err) {
-                    alert('Error archiving spool: ' + err.message);
+                    showToast('Error archiving spool: ' + err.message);
                 }
             });
 
@@ -368,7 +368,7 @@ async function copyUrlToClipboard(urlElementId, buttonElement) {
             }, 2000);
         } catch (fallbackErr) {
             console.error('Fallback copy failed:', fallbackErr);
-            alert('Failed to copy URL. Please copy manually.');
+            showToast('Failed to copy URL. Please copy manually.', 'error');
         }
         document.body.removeChild(textArea);
     }
@@ -410,11 +410,11 @@ async function assignNFCTag(spoolID) {
     try {
         const resp = await fetch(`/api/nfc/spool/${spoolID}/tag`, { method: 'POST' });
         const data = await resp.json();
-        if (data.error) { alert('Failed to assign tag: ' + data.error); return; }
-        alert(`NFC tag assigned!\nUUID: ${data.nfc_id}\nProgram this URL to the tag:\n${data.tag_url}`);
+        if (data.error) { showToast('Failed to assign tag: ' + data.error); return; }
+        showToast(`NFC tag assigned!\nUUID: ${data.nfc_id}\nProgram this URL to the tag:\n${data.tag_url}`);
         loadSpoolTags(); // Reload to show updated state
     } catch (e) {
-        alert('Error: ' + e);
+        showToast('Error: ' + e);
     }
 }
 
@@ -423,10 +423,10 @@ async function removeNFCTag(spoolID) {
     try {
         const resp = await fetch(`/api/nfc/spool/${spoolID}/tag`, { method: 'DELETE' });
         const data = await resp.json();
-        if (data.error) { alert('Failed to remove tag: ' + data.error); return; }
+        if (data.error) { showToast('Failed to remove tag: ' + data.error); return; }
         loadSpoolTags();
     } catch (e) {
-        alert('Error: ' + e);
+        showToast('Error: ' + e);
     }
 }
 
@@ -539,7 +539,7 @@ function initializeLocationSearch(locationUrls) {
 async function addLocation() {
     const nameEl = document.getElementById('newLocationName');
     const name = (nameEl.value || '').trim();
-    if (!name) { alert('Please enter a location name'); return; }
+    if (!name) { showToast('Please enter a location name'); return; }
     try {
         const url = apiUrl('/api/locations');
         console.log('POST', url, { name });
@@ -552,7 +552,7 @@ async function addLocation() {
         if (!res.ok) throw new Error(await res.text());
         nameEl.value = '';
         await loadLocationTags();
-    } catch (e) { console.error(e); alert(e.message || 'Network error'); }
+    } catch (e) { console.error(e); showToast(e.message || 'Network error'); }
 }
 
 async function renameLocation(currentName) {
@@ -575,11 +575,11 @@ async function renameLocation(currentName) {
         console.log('Rename result:', result);
         await loadLocationTags();
         if (result.message) {
-            alert(result.message);
+            showToast(result.message);
         }
     } catch (e) {
         console.error('Rename error:', e);
-        alert(e.message || 'Network error');
+        showToast(e.message || 'Network error');
     }
 }
 
@@ -602,7 +602,7 @@ async function deleteLocation(name) {
         await loadLocationTags();
     } catch (e) {
         console.error('Delete error:', e);
-        alert(e.message || 'Network error');
+        showToast(e.message || 'Network error');
     }
 }
 
@@ -613,9 +613,9 @@ let _optSpoolID = null;
 
 function openSpoolTagEditor() {
     const selectedItem = document.querySelector('#spool-list-container .nfc-list-item.selected');
-    if (!selectedItem) { alert('Select a spool first.'); return; }
+    if (!selectedItem) { showToast('Select a spool first.'); return; }
     _optSpoolID = selectedItem.dataset.value;
-    if (!_optSpoolID) { alert('No spool ID found.'); return; }
+    if (!_optSpoolID) { showToast('No spool ID found.'); return; }
 
     _ensureOptModal();
     document.getElementById('opt-modal').style.display = 'flex';
@@ -678,7 +678,7 @@ async function saveAndDownloadSpoolTag() {
         window.location.href = `/api/nfc/spool-tag/${_optSpoolID}`;
         closeOptModal();
     } catch (e) {
-        alert('Error: ' + e);
+        showToast('Error: ' + e);
     } finally {
         btn.disabled = false;
         btn.textContent = 'Save to Spoolman & Download .bin';

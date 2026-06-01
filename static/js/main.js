@@ -45,6 +45,8 @@ function switchTab(tabName) {
                     loadConfiguration();
                 } else if (tabId === 'printers') {
                     loadPrinters();
+                } else if (tabId === 'cost') {
+                    loadCostSettings();
                 } else if (tabId === 'advanced') {
                     loadAdvancedSettings();
                     loadAutoAssignSettings();
@@ -97,6 +99,8 @@ function switchSettingsTab(tabName, clickedElement) {
         loadConfiguration();
     } else if (tabName === 'printers') {
         loadPrinters();
+    } else if (tabName === 'cost') {
+        loadCostSettings();
     } else if (tabName === 'advanced') {
         loadAdvancedSettings();
         loadAutoAssignSettings();
@@ -149,14 +153,14 @@ function saveConfiguration() {
         .then(response => response.json())
         .then(data => {
             if (data.error) {
-                alert('Error saving configuration: ' + data.error);
+                showToast('Error saving configuration: ' + data.error);
             } else {
-                alert('Configuration saved successfully! The Moment will restart.');
+                showToast('Configuration saved successfully! The Moment will restart.', 'success');
                 location.reload();
             }
         })
         .catch(error => {
-            alert('Error saving configuration: ' + error.message);
+            showToast('Error saving configuration: ' + error.message);
         });
 }
 
@@ -212,13 +216,13 @@ function saveAutoAssignSettings() {
         .then(response => response.json())
         .then(data => {
             if (data.error) {
-                alert('Error saving auto-assign settings: ' + data.error);
+                showToast('Error saving auto-assign settings: ' + data.error);
             } else {
-                alert('Auto-assign settings saved successfully!');
+                showToast('Auto-assign settings saved successfully!', 'success');
             }
         })
         .catch(error => {
-            alert('Error saving auto-assign settings: ' + error.message);
+            showToast('Error saving auto-assign settings: ' + error.message);
         });
 }
 
@@ -241,16 +245,16 @@ function saveCostSettings() {
         .then(response => response.json())
         .then(data => {
             if (data.error) {
-                alert('Error saving cost settings: ' + data.error);
+                showToast('Error saving cost settings: ' + data.error);
             } else {
-                alert('Cost settings saved successfully!');
+                showToast('Cost settings saved successfully!', 'success');
                 if (window.costCalculator) {
                     window.costCalculator.loadSettings();
                 }
             }
         })
         .catch(error => {
-            alert('Error saving cost settings: ' + error.message);
+            showToast('Error saving cost settings: ' + error.message);
         });
 }
 
@@ -316,8 +320,8 @@ function saveNFCConfig() {
         body: JSON.stringify({ inventory_location: inv, trash_location: trash, spoolman_location_sync_enabled: syncEnabled })
     })
     .then(r => r.json())
-    .then(function() { alert('NFC locations saved.'); })
-    .catch(function(e) { alert('Failed to save NFC config: ' + e); });
+    .then(function() { showToast('NFC locations saved.', 'success'); })
+    .catch(function(e) { showToast('Failed to save NFC config: ' + e); });
 }
 
 function saveAdvancedSettings() {
@@ -329,15 +333,15 @@ function saveAdvancedSettings() {
 
     // Validate inputs
     if (config.prusalink_timeout < 5 || config.prusalink_timeout > 300) {
-        alert('PrusaLink API timeout must be between 5 and 300 seconds');
+        showToast('PrusaLink API timeout must be between 5 and 300 seconds');
         return;
     }
     if (config.prusalink_file_download_timeout < 10 || config.prusalink_file_download_timeout > 600) {
-        alert('File download timeout must be between 10 and 600 seconds');
+        showToast('File download timeout must be between 10 and 600 seconds');
         return;
     }
     if (config.spoolman_timeout < 5 || config.spoolman_timeout > 300) {
-        alert('Spoolman API timeout must be between 5 and 300 seconds');
+        showToast('Spoolman API timeout must be between 5 and 300 seconds');
         return;
     }
 
@@ -349,14 +353,14 @@ function saveAdvancedSettings() {
         .then(response => response.json())
         .then(data => {
             if (data.error) {
-                alert('Error saving advanced settings: ' + data.error);
+                showToast('Error saving advanced settings: ' + data.error);
             } else {
-                alert('Advanced settings saved successfully! The application will restart to apply changes.');
+                showToast('Advanced settings saved successfully! The application will restart to apply changes.', 'success');
                 location.reload();
             }
         })
         .catch(error => {
-            alert('Error saving advanced settings: ' + error.message);
+            showToast('Error saving advanced settings: ' + error.message);
         });
 }
 

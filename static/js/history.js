@@ -175,7 +175,12 @@ function buildSessionRow(s, i, key, multi, expanded) {
     var usage  = s.total_filament_grams > 0 ? s.total_filament_grams.toFixed(1) + ' g' : '—';
     var time   = _timeFromSession(s);
     var cost   = s.total_cost > 0 ? _fmtCost(s.total_cost, s.currency) : '—';
-    var statusBadge = _statusBadge(s.status);
+    var firstRec = s.records && s.records[0] ? s.records[0] : {};
+    var isRecovered = !!firstRec.recovered;
+    var hasPending  = !!firstRec.has_pending_download;
+    var statusBadge = isRecovered
+        ? '<span style="background:#3d2800;color:#ffa040;padding:2px 8px;border-radius:10px;font-size:0.8em;white-space:nowrap;" title="Print was in-progress when the service restarted. Filament data is incomplete.">incomplete</span>'
+        : _statusBadge(s.status);
     var sourceBadge = _sourceBadge(s.source);
 
     // Quality tags: use first record's tags
@@ -204,7 +209,14 @@ function buildSessionRow(s, i, key, multi, expanded) {
             'border-radius:8px;font-size:0.72em;white-space:nowrap;">' + s.tool_count + ' tools</span>';
     }
     var file = _shortName(s.job_name);
-    var fileCell = expandIcon + _esc(file) + toolBadge;
+    var pendingBadge = '';
+    if (hasPending) {
+        var dlId = firstRec.pending_download_id;
+        pendingBadge = ' <span style="background:#2a1800;color:#ffa040;padding:1px 6px;border-radius:8px;font-size:0.72em;white-space:nowrap;" title="G-code file download is pending. Click Retry to attempt again.">pending download</span>' +
+            ' <button onclick="event.stopPropagation();retryDownload(' + dlId + ', this)" ' +
+            'style="background:#3d2a00;color:#ffa040;border:1px solid #664400;border-radius:4px;padding:0 6px;font-size:0.72em;cursor:pointer;white-space:nowrap;" title="Retry download now">↻ Retry</button>';
+    }
+    var fileCell = expandIcon + _esc(file) + toolBadge + pendingBadge;
 
     // Note: aggregate — show first record's note if any
     var note = '';
@@ -340,7 +352,7 @@ function openHistoryModal(id) {
         document.getElementById('historyDetailModal').style.display = 'block';
     })
     .catch(function(err) {
-        alert('Failed to load record: ' + err.message);
+        showToast('Failed to load record: ' + err.message);
     });
 }
 
@@ -542,10 +554,10 @@ function deleteHistoryAttachment(attachID, printID) {
     fetch('/api/history/attachments/' + attachID, { method: 'DELETE' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             _loadAttachments(printID);
         })
-        .catch(function(e) { alert('Request failed: ' + e); });
+        .catch(function(e) { showToast('Request failed: ' + e); });
 }
 
 function uploadHistoryAttachment() {
@@ -558,11 +570,11 @@ function uploadHistoryAttachment() {
     fetch('/api/history/' + _activeEntry.id + '/attachments', { method: 'POST', body: formData })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Upload failed: ' + data.error); return; }
+            if (data.error) { showToast('Upload failed: ' + data.error); return; }
             input.value = '';
             _loadAttachments(_activeEntry.id);
         })
-        .catch(function(e) { alert('Upload failed: ' + e); });
+        .catch(function(e) { showToast('Upload failed: ' + e); });
 }
 
 function closeHistoryModal() {
@@ -580,7 +592,7 @@ function saveHistoryNote() {
     })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             _activeEntry.notes = note;
             // propagate into _allSessions
             _allSessions.forEach(function(s) {
@@ -591,7 +603,7 @@ function saveHistoryNote() {
             renderTable();
             closeHistoryModal();
         })
-        .catch(function(err) { alert('Error: ' + err.message); });
+        .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 function deleteHistoryEntry() {
@@ -600,7 +612,7 @@ function deleteHistoryEntry() {
     fetch('/api/history/' + _activeEntry.id, { method: 'DELETE' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             // Remove the record from its session; remove the session if empty
             _allSessions = _allSessions.reduce(function(acc, s) {
                 s.records = (s.records || []).filter(function(r) { return r.id !== _activeEntry.id; });
@@ -613,7 +625,7 @@ function deleteHistoryEntry() {
             filterHistory();
             closeHistoryModal();
         })
-        .catch(function(err) { alert('Error: ' + err.message); });
+        .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 function recalcHistoryCost() {
@@ -648,7 +660,7 @@ function recalcHistoryCost() {
     })
         .then(function(r) { return r.json(); })
         .then(function(bd) {
-            if (bd.error) { alert('Error: ' + bd.error); return; }
+            if (bd.error) { showToast('Error: ' + bd.error); return; }
             var costSection = document.getElementById('historyDetailCost');
             var costEmpty   = document.getElementById('hmCostEmpty');
             if (costSection) costSection.style.display = 'block';
@@ -670,7 +682,7 @@ function recalcHistoryCost() {
             });
             renderTable();
         })
-        .catch(function(err) { alert('Error: ' + err.message); });
+        .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 // ─── Bulk Selection & Delete ──────────────────────────────────────────────────
@@ -750,7 +762,7 @@ function recalcSelectedSessions() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.error) { alert('Error: ' + data.error); return; }
+        if (data.error) { showToast('Error: ' + data.error); return; }
         var costMap = {};
         (data.results || []).forEach(function(r) {
             if (!r.error) costMap[r.id] = r.total_cost;
@@ -765,10 +777,10 @@ function recalcSelectedSessions() {
         filterHistory();
         var errCount = (data.results || []).filter(function(r) { return r.error; }).length;
         if (errCount > 0) {
-            alert('Updated ' + data.updated + ' records. ' + errCount + ' failed.');
+            showToast('Updated ' + data.updated + ' records. ' + errCount + ' failed.');
         }
     })
-    .catch(function(err) { alert('Error: ' + err.message); });
+    .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 function deleteSelectedSessions() {
@@ -792,7 +804,7 @@ function deleteSelectedSessions() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.error) { alert('Error: ' + data.error); return; }
+        if (data.error) { showToast('Error: ' + data.error); return; }
         var deleted = {};
         ids.forEach(function(id) { deleted[id] = true; });
         _allSessions = _allSessions.reduce(function(acc, s) {
@@ -806,7 +818,7 @@ function deleteSelectedSessions() {
         _selectedKeys = {};
         filterHistory();
     })
-    .catch(function(err) { alert('Error: ' + err.message); });
+    .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -949,7 +961,7 @@ function confirmReassign() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.error) { alert('Reassign failed: ' + data.error); return; }
+        if (data.error) { showToast('Reassign failed: ' + data.error); return; }
         // Update spool and grams cells in the row without reloading.
         var spoolCell = document.getElementById('fu-spool-' + _reassignSegmentID);
         if (spoolCell) spoolCell.textContent = _formatSpoolLabel(newID);
@@ -959,7 +971,7 @@ function confirmReassign() {
         // Reload cost row to reflect updated price.
         if (_activeEntry) recalcHistoryCost();
     })
-    .catch(function(e) { alert('Request failed: ' + e); });
+    .catch(function(e) { showToast('Request failed: ' + e); });
 }
 
 function cancelReassign() {
@@ -1095,7 +1107,7 @@ function saveHistoryTags() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.error) { alert('Error: ' + data.error); return; }
+        if (data.error) { showToast('Error: ' + data.error); return; }
         var newTags = data.tags || [];
         _activeEntry.tags = newTags;
         // Propagate into _allSessions so the table updates without reload
@@ -1106,7 +1118,7 @@ function saveHistoryTags() {
         });
         renderTable();
     })
-    .catch(function(err) { alert('Error saving tags: ' + err.message); });
+    .catch(function(err) { showToast('Error saving tags: ' + err.message); });
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
@@ -1130,3 +1142,34 @@ document.addEventListener('DOMContentLoaded', function() {
         if (m && e.target === m) closeHistoryModal();
     });
 });
+
+// Immediately retry a pending G-code download by its queue ID.
+// The button is replaced with status text during/after the attempt.
+function retryDownload(id, btn) {
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = '…';
+    fetch('/api/pending-downloads/' + id + '/retry', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.success) {
+                btn.textContent = '✓';
+                btn.style.color = '#6ee7a0';
+                // Reload the history table to reflect the new record.
+                setTimeout(loadHistory, 800);
+            } else {
+                btn.textContent = '✗';
+                btn.style.color = '#ff7070';
+                btn.title = data.message || 'Retry failed';
+                setTimeout(function() {
+                    btn.disabled = false;
+                    btn.textContent = '↻ Retry';
+                    btn.style.color = '#ffa040';
+                }, 3000);
+            }
+        })
+        .catch(function() {
+            btn.disabled = false;
+            btn.textContent = '↻ Retry';
+        });
+}

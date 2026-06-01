@@ -54,7 +54,24 @@
 
     {{template "modals" .}}
 
+    <!-- Communication Log modal -->
+    <div id="comm-log-modal" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;padding:16px;">
+        <div class="comm-log-box">
+            <div class="comm-log-header">
+                <strong>📡 Comm Log — <span id="comm-log-title"></span></strong>
+                <div class="comm-log-actions">
+                    <button class="btn btn-small btn-secondary" onclick="commLogSelectAll()">Select All</button>
+                    <button class="btn btn-small btn-secondary" onclick="commLogCopySelected()">Copy</button>
+                    <button class="btn btn-small btn-secondary" onclick="commLogClear()">Clear</button>
+                    <button class="btn btn-small" onclick="closeCommLog()">✕ Close</button>
+                </div>
+            </div>
+            <div id="comm-log-entries" class="comm-log-entries"></div>
+        </div>
+    </div>
+
     <!-- External JavaScript Files -->
+    <script src="/static/js/toast.js?v={{.AppVersion}}"></script>
     <script src="/static/js/main.js?v={{.AppVersion}}"></script>
     <script src="/static/js/history.js?v={{.AppVersion}}"></script>
     <script src="/static/js/cost-calculator.js?v={{.AppVersion}}"></script>
@@ -62,5 +79,6 @@
     <script src="/static/js/printers.js?v={{.AppVersion}}"></script>
     <script src="/static/js/websocket.js?v={{.AppVersion}}"></script>
     <script src="/static/js/nfc.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/commlog.js?v={{.AppVersion}}"></script>
 </body>
 </html>

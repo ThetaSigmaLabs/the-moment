@@ -151,7 +151,7 @@ function saveToolheadLocations() {
         })
         .catch(function(err) {
             if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
-            alert('Error saving: ' + err.message);
+            showToast('Error saving: ' + err.message);
         });
 }
 
@@ -242,6 +242,7 @@ function buildRealPrinterCard(printerId, printer) {
             'onclick="togglePrinterDebugLog(\'' + printerId + '\')" ' +
             'title="When on, subsequent prints record a poll transcript viewable in Print History">' +
             (printer.debug_log ? '🐛 Debug: ON' : '🐛 Debug: OFF') + '</button>' +
+        '<button class="btn btn-small btn-secondary" onclick="openCommLog(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name || '') + '\')" title="View live communication log">📡 Comm Log</button>' +
         '<button class="btn btn-small btn-danger" onclick="deletePrinter(\'' + printerId + '\')">🗑️ Delete</button>' +
         '</div>' +
         '<div id="toolhead-names-' + printerId + '" class="toolhead-names-section" style="display:none;margin-top:15px;padding:15px;background:rgba(255,255,255,0.05);border-radius:5px;">' +
@@ -309,6 +310,7 @@ function buildVirtualPrinterCard(printerId, printer) {
         '<button class="btn btn-small" onclick="editVirtualPrinter(\'' + printerId + '\')">✏️ Edit</button>' +
         '<button class="btn btn-small" onclick="toggleToolheadNames(\'' + printerId + '\')">🔤 Rename Toolheads</button>' +
         '<button class="btn btn-small" onclick="exportVirtualPrinter(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name) + '\')" title="Download complete printer snapshot as JSON">📤 Export</button>' +
+        '<button class="btn btn-small btn-secondary" onclick="openCommLog(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name || '') + '\')" title="View live communication log">📡 Comm Log</button>' +
         '<button class="btn btn-small btn-danger" onclick="deleteVirtualPrinter(\'' + printerId + '\',\'' + escapeHtmlAttribute(printer.name) + '\')">🗑️ Delete Printer</button>' +
         '</div>' +
         '<div id="toolhead-names-' + printerId + '" class="toolhead-names-section" style="display:none;margin-top:15px;padding:15px;background:rgba(255,255,255,0.05);border-radius:5px;">' +
@@ -368,7 +370,7 @@ function handleFileSelected(event, printerId) {
 function uploadFileForPrinter(printerId, file) {
     var name = file.name.toLowerCase();
     if (!name.endsWith('.gcode') && !name.endsWith('.bgcode')) {
-        alert('Only .gcode and .bgcode files are supported.');
+        showToast('Only .gcode and .bgcode files are supported.');
         return;
     }
 
@@ -459,7 +461,7 @@ function showProcessResult(filename, data, errorMsg) {
     var hdr   = modal ? modal.querySelector('h3') : null;
 
     if (!modal || !body) {
-        alert(errorMsg ? ('Processing failed: ' + errorMsg) :
+        showToast(errorMsg ? ('Processing failed: ' + errorMsg) :
             ('Done! Total: ' + (data && data.total_g ? data.total_g.toFixed(2) : '?') + 'g'));
         return;
     }
@@ -534,7 +536,7 @@ function deleteFile(printerId, fileId, filename) {
     fetch('/api/printers/' + printerId + '/files/' + fileId, { method: 'DELETE' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             var row = document.getElementById('file-row-' + fileId);
             if (row) {
                 row.style.transition = 'opacity 0.3s';
@@ -548,7 +550,7 @@ function deleteFile(printerId, fileId, filename) {
                 }, 300);
             }
         })
-        .catch(function(err) { alert('Error: ' + err.message); });
+        .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 function downloadFile(printerId, fileId, filename) {
@@ -564,7 +566,7 @@ function downloadFile(printerId, fileId, filename) {
 
 function showVirtualPrinterForm() {
     var m = document.getElementById('addVirtualPrinterModal');
-    if (!m) { alert('Modal not found — please refresh.'); return; }
+    if (!m) { showToast('Modal not found — please refresh.'); return; }
     m.style.display = 'block';
     document.getElementById('addVirtualPrinterForm').reset();
 }
@@ -579,10 +581,10 @@ function deleteVirtualPrinter(printerId, name) {
     fetch('/api/printers/' + printerId, { method: 'DELETE' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             loadPrinters();
         })
-        .catch(function(err) { alert('Error: ' + err.message); });
+        .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 // ─── Export / Import ──────────────────────────────────────────────────────────
@@ -599,7 +601,7 @@ function exportVirtualPrinter(printerId, name) {
 
 function showImportPrinterForm() {
     var modal = document.getElementById('importVirtualPrinterModal');
-    if (!modal) { alert('Import modal not found — please refresh.'); return; }
+    if (!modal) { showToast('Import modal not found — please refresh.'); return; }
     modal.style.display = 'block';
     var input = document.getElementById('importFileInput');
     if (input) input.value = '';
@@ -619,12 +621,12 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
         var fileInput = document.getElementById('importFileInput');
         if (!fileInput || !fileInput.files.length) {
-            alert('Please select a .json export file.');
+            showToast('Please select a .json export file.');
             return;
         }
         var file = fileInput.files[0];
         if (!file.name.toLowerCase().endsWith('.json')) {
-            alert('Only .json export files are supported.');
+            showToast('Only .json export files are supported.');
             return;
         }
 
@@ -664,7 +666,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     msg += ' ' + data.files_skipped + ' file(s) could not be restored.';
                 }
                 msg += '\n\n' + data.spool_mappings_note;
-                alert(msg);
+                showToast(msg);
             })
             .catch(function(err) {
                 if (btn) { btn.disabled = false; btn.textContent = orig; }
@@ -684,7 +686,7 @@ document.addEventListener('DOMContentLoaded', function() {
         e.preventDefault();
         var name = (document.getElementById('virtualPrinterName').value || '').trim();
         var toolheads = parseInt(document.getElementById('virtualPrinterToolheads').value) || 1;
-        if (!name) { alert('Printer name is required.'); return; }
+        if (!name) { showToast('Printer name is required.'); return; }
         var btn = form.querySelector('button[type="submit"]');
         var orig = btn ? btn.textContent : '';
         if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
@@ -697,13 +699,13 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 if (btn) { btn.disabled = false; btn.textContent = orig; }
-                if (data.error) { alert('Error: ' + data.error); return; }
+                if (data.error) { showToast('Error: ' + data.error); return; }
                 closeVirtualPrinterModal();
                 loadPrinters();
             })
             .catch(function(err) {
                 if (btn) { btn.disabled = false; btn.textContent = orig; }
-                alert('Error: ' + err.message);
+                showToast('Error: ' + err.message);
             });
     });
 });
@@ -818,7 +820,7 @@ document.getElementById('addPrinterForm').addEventListener('submit', function(e)
             .then(function() { closeAddPrinterModal(); loadPrinters(); })
             .catch(function(err) {
                 if (btn) { btn.disabled = false; btn.textContent = orig; }
-                alert('Error: ' + err.message);
+                showToast('Error: ' + err.message);
             });
     } else {
         if (btn) { btn.disabled = true; btn.textContent = 'Detecting model…'; }
@@ -830,7 +832,7 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
     e.preventDefault();
     var fd = new FormData(this);
     var pid = fd.get('printerId');
-    if (!pid) { alert('Printer ID missing.'); return; }
+    if (!pid) { showToast('Printer ID missing.'); return; }
     var btn = this.querySelector('button[type="submit"]');
     var orig = btn ? (btn.textContent || 'Update Printer') : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
@@ -853,7 +855,7 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
         loadPrinters();
     }).catch(function(err) {
         if (btn) { btn.disabled = false; btn.textContent = orig; }
-        alert('Error: ' + err.message);
+        showToast('Error: ' + err.message);
     });
 });
 
@@ -872,14 +874,14 @@ function detectModelAndAddPrinter(name, ip, key, toolheads, printerType, btn, or
         loadPrinters();
     }).catch(function(err) {
         if (btn) { btn.disabled = false; btn.textContent = orig; }
-        alert('Error: ' + err.message);
+        showToast('Error: ' + err.message);
     });
 }
 
 function editPrinter(printerId) {
     fetch('/api/printers').then(function(r) { return r.json(); }).then(function(data) {
         var p = data.printers[printerId];
-        if (!p) { alert('Printer not found'); return; }
+        if (!p) { showToast('Printer not found'); return; }
         _editPrinterCurrentId = printerId;
         document.getElementById('editPrinterId').value = printerId;
         document.getElementById('editPrinterName').value = p.name || '';
@@ -895,13 +897,13 @@ function editPrinter(printerId) {
         if (tabBar) tabBar.style.display = '';
         switchEditPrinterTab('details');
         document.getElementById('editPrinterModal').style.display = 'block';
-    }).catch(function() { alert('Error loading printer data'); });
+    }).catch(function() { showToast('Error loading printer data', 'error'); });
 }
 
 function editVirtualPrinter(printerId) {
     fetch('/api/printers').then(function(r) { return r.json(); }).then(function(data) {
         var p = data.printers[printerId];
-        if (!p) { alert('Printer not found'); return; }
+        if (!p) { showToast('Printer not found'); return; }
         _editPrinterCurrentId = printerId;
         document.getElementById('editPrinterId').value = printerId;
         document.getElementById('editPrinterIsVirtual').value = 'true';
@@ -918,7 +920,7 @@ function editVirtualPrinter(printerId) {
         switchEditPrinterTab('details');
         document.querySelector('#editPrinterModal .modal-header h3').textContent = 'Edit Virtual Printer';
         document.getElementById('editPrinterModal').style.display = 'block';
-    }).catch(function() { alert('Error loading printer data'); });
+    }).catch(function() { showToast('Error loading printer data', 'error'); });
 }
 
 function deletePrinter(printerId) {
@@ -926,10 +928,10 @@ function deletePrinter(printerId) {
     fetch('/api/printers/' + printerId, { method: 'DELETE' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             loadPrinters();
         })
-        .catch(function(err) { alert('Error: ' + err.message); });
+        .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 function togglePrinterDebugLog(printerId) {
@@ -941,13 +943,13 @@ function togglePrinterDebugLog(printerId) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: enable })
     }).then(function(r) { return r.json(); }).then(function(data) {
-        if (data.error) { alert('Error: ' + data.error); return; }
+        if (data.error) { showToast('Error: ' + data.error); return; }
         if (btn) {
             btn.textContent = data.debug_log ? '🐛 Debug: ON' : '🐛 Debug: OFF';
             btn.style.background = data.debug_log ? '#7a5c1e' : '';
             btn.style.color = data.debug_log ? '#ffd070' : '';
         }
-    }).catch(function(err) { alert('Error: ' + err.message); });
+    }).catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 // ─── Toolhead Names ───────────────────────────────────────────────────────────
@@ -973,7 +975,7 @@ function saveToolheadNames(printerId) {
             updates.push({ toolheadId: parseInt(inp.dataset.toolheadId), name: n });
         }
     });
-    if (updates.length === 0) { alert('No changes to save'); return; }
+    if (updates.length === 0) { showToast('No changes to save'); return; }
     Promise.all(updates.map(function(u) {
         return fetch('/api/printers/' + printerId + '/toolheads/' + u.toolheadId, {
             method: 'PUT',
@@ -985,7 +987,7 @@ function saveToolheadNames(printerId) {
     })).then(function() {
         s.style.display = 'none';
         loadPrinters();
-    }).catch(function(err) { alert('Error: ' + err.message); });
+    }).catch(function(err) { showToast('Error: ' + err.message); });
 }
 
 function cancelToolheadNames(printerId) {

@@ -470,3 +470,131 @@ func TestAPI_CredentialSentinelPreservation(t *testing.T) {
 	}
 	t.Logf("✅ the_moment_api_key preserved (masked) after sentinel round-trip: %s", configBody)
 }
+
+// TestPrinterCostSettingsSaveLoad verifies the full HTTP round-trip for per-printer
+// cost overrides: save via POST, read back via GET, and confirm cost calculation uses them.
+func TestPrinterCostSettingsSaveLoad(t *testing.T) {
+	serverURL, cleanup := testServer(t)
+	defer cleanup()
+
+	// ── Step 1: add a printer so the handler returns it in the printers list ──
+	addResp, addBody := post(t, serverURL+"/api/printers", map[string]interface{}{
+		"name":         "Roci",
+		"ip_address":   "192.168.1.100",
+		"toolheads":    1,
+		"printer_type": "prusalink",
+		"api_key":      "testkey",
+	})
+	if addResp.StatusCode != http.StatusOK {
+		t.Fatalf("add printer: expected 200, got %d: %s", addResp.StatusCode, addBody)
+	}
+
+	// ── Step 2: initial GET – all zeros ───────────────────────────────────────
+	_, initBody := get(t, serverURL+"/api/cost-settings/printers")
+	var initResp struct {
+		Printers []map[string]json.RawMessage `json:"printers"`
+	}
+	if err := json.Unmarshal(initBody, &initResp); err != nil {
+		t.Fatalf("initial GET: bad JSON: %s", initBody)
+	}
+	if len(initResp.Printers) == 0 {
+		t.Fatal("initial GET: no printers returned")
+	}
+	var printerName string
+	for _, p := range initResp.Printers {
+		var name string
+		_ = json.Unmarshal(p["printer_name"], &name)
+		if name != "" {
+			printerName = name
+		}
+		var wattage float64
+		_ = json.Unmarshal(p["print_wattage_w"], &wattage)
+		if wattage != 0 {
+			t.Errorf("initial GET: expected print_wattage_w=0, got %v for %s", wattage, name)
+		}
+	}
+	if printerName == "" {
+		t.Fatal("initial GET: could not determine printer name from response")
+	}
+	t.Logf("✅ initial GET: printer=%q all zeros", printerName)
+
+	// ── Step 3: save print_wattage_w=130 ──────────────────────────────────────
+	saveResp, saveRespBody := post(t, serverURL+"/api/printers/"+printerName+"/cost-settings",
+		map[string]interface{}{
+			"printer_name":    printerName,
+			"print_wattage_w": 130,
+		})
+	if saveResp.StatusCode != http.StatusOK {
+		t.Fatalf("save: expected 200, got %d: %s", saveResp.StatusCode, saveRespBody)
+	}
+	var saveResult map[string]interface{}
+	_ = json.Unmarshal(saveRespBody, &saveResult)
+	if errMsg, ok := saveResult["error"]; ok {
+		t.Fatalf("save: server returned error: %v", errMsg)
+	}
+	t.Logf("✅ save succeeded: %s", saveRespBody)
+
+	// ── Step 4: re-GET and assert 130 is returned ─────────────────────────────
+	_, reloadBody := get(t, serverURL+"/api/cost-settings/printers")
+	var reloadResp struct {
+		Printers []map[string]json.RawMessage `json:"printers"`
+	}
+	if err := json.Unmarshal(reloadBody, &reloadResp); err != nil {
+		t.Fatalf("reload GET: bad JSON: %s", reloadBody)
+	}
+	found := false
+	for _, p := range reloadResp.Printers {
+		var name string
+		_ = json.Unmarshal(p["printer_name"], &name)
+		if name != printerName {
+			continue
+		}
+		found = true
+		var wattage float64
+		_ = json.Unmarshal(p["print_wattage_w"], &wattage)
+		if wattage != 130 {
+			t.Errorf("reload GET: expected print_wattage_w=130, got %v", wattage)
+		} else {
+			t.Logf("✅ reload GET: print_wattage_w=130 persisted for %q", printerName)
+		}
+	}
+	if !found {
+		t.Errorf("reload GET: printer %q not found in response: %s", printerName, reloadBody)
+	}
+
+	// ── Step 5: cost calculation uses the override ────────────────────────────
+	// Set global electricity rate so the override wattage (130 W) is detectable
+	// against the global default (150 W).
+	_, _ = post(t, serverURL+"/api/cost-settings", map[string]interface{}{
+		"currency":          "USD",
+		"electricity_rate":  0.12,
+		"printer_wattage":   150, // global – intentionally different from override
+		"maintenance_rate":  0,
+		"depreciation_rate": 0,
+		"margin_percent":    0,
+	})
+
+	calcHTTP, calcRespBody := post(t, serverURL+"/api/cost/calculate", map[string]interface{}{
+		"filament_grams": 10,
+		"print_time_min": 60, // 1 hour – electricity dominates
+		"spool_id":       0,
+		"printer_name":   printerName,
+	})
+	if calcHTTP.StatusCode != http.StatusOK {
+		t.Fatalf("cost calc: expected 200, got %d: %s", calcHTTP.StatusCode, calcRespBody)
+	}
+	var calcResult map[string]json.RawMessage
+	if err := json.Unmarshal(calcRespBody, &calcResult); err != nil {
+		t.Fatalf("cost calc: bad JSON: %s", calcRespBody)
+	}
+	var electricityCost float64
+	_ = json.Unmarshal(calcResult["electricity_cost"], &electricityCost)
+	// 130 W × 1 hr × $0.12/kWh = $0.0156  (not $0.018 which 150 W would give)
+	expectedCost := 130.0 / 1000.0 * 1.0 * 0.12
+	if electricityCost < expectedCost*0.95 || electricityCost > expectedCost*1.05 {
+		t.Errorf("cost calc: electricity_cost expected ≈%.5f (130 W override), got %.5f\nfull: %s",
+			expectedCost, electricityCost, calcRespBody)
+	} else {
+		t.Logf("✅ cost calc: electricity_cost=%.5f matches 130 W override", electricityCost)
+	}
+}

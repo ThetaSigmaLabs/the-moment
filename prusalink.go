@@ -322,8 +322,10 @@ func (c *PrusaLinkClient) GetGcodeFileWithRetry(filename string, fileDownloadTim
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}
+		// No Client.Timeout — bgcode files can be 100s of MB served over slow USB storage.
+		// ResponseHeaderTimeout ensures the server starts responding within 30s.
+		// Body reading is unbounded; TCP keepalives detect true dead connections.
 		fileClient := &http.Client{
-			Timeout: time.Duration(fileDownloadTimeout) * time.Second,
 			Transport: &http.Transport{
 				DialContext:           fileDialer.DialContext,
 				MaxIdleConns:          10,

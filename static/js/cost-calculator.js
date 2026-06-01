@@ -41,7 +41,7 @@ function saveCostSettings() {
     })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             var btn = document.querySelector('button[onclick="saveCostSettings()"]');
             if (btn) {
                 var orig = btn.textContent;
@@ -49,7 +49,7 @@ function saveCostSettings() {
                 setTimeout(function() { btn.textContent = orig; }, 1800);
             }
         })
-        .catch(function(err) { alert('Error saving: ' + err.message); });
+        .catch(function(err) { showToast('Error saving: ' + err.message); });
 }
 
 // Quick calculator on the settings page
@@ -337,7 +337,7 @@ function savePrinterCostSettings(printerName) {
     })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            if (data.error) { alert('Error: ' + data.error); return; }
+            if (data.error) { showToast('Error: ' + data.error); return; }
             // Flash the save button briefly
             var btns = document.querySelectorAll('#printerCostCards button');
             btns.forEach(function(b) {
@@ -348,7 +348,7 @@ function savePrinterCostSettings(printerName) {
                 }
             });
         })
-        .catch(function(err) { alert('Error saving: ' + err.message); });
+        .catch(function(err) { showToast('Error saving: ' + err.message); });
 }
 
 function _escHtml(s) {
@@ -361,18 +361,10 @@ function _fmtCurrencySimple(n) {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
-// Load cost settings whenever the cost tab is opened
+// Load cost settings on page ready. Tab-visit reloads are handled by
+// switchSettingsTab('cost') in main.js to avoid a race where the async
+// response rebuilt the cards after the user had started typing.
 document.addEventListener('DOMContentLoaded', function() {
-    // Hook into settings tab switching
-    var costTabBtn = document.querySelector('button[onclick*="switchSettingsTab(\'cost\'"]') ||
-                     document.querySelector('button[onclick*="cost"]');
-    if (costTabBtn) {
-        costTabBtn.addEventListener('click', function() {
-            setTimeout(loadCostSettings, 50);
-            setTimeout(loadPrinterCostSettings, 100);
-        });
-    }
-    // Also load on page ready in case cost tab is default
     loadCostSettings();
     loadPrinterCostSettings();
 });

@@ -113,3 +113,102 @@
     padding: 5px 10px;
     font-size: 12px;
 }
+
+/* ── Communication Log dialog ────────────────────────────────────────────── */
+
+.comm-log-box {
+    background: #1a1a2e;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 10px;
+    width: 100%;
+    max-width: 900px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+.comm-log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    background: rgba(255,255,255,0.04);
+    flex-shrink: 0;
+    gap: 12px;
+    font-size: 0.95em;
+    color: #fff;
+}
+
+.comm-log-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.comm-log-entries {
+    overflow-x: auto;
+    overflow-y: auto;
+    flex: 1;
+    font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.78em;
+    padding: 4px 0;
+}
+
+.cl-row {
+    display: grid;
+    grid-template-columns: 20px 80px 32px 100px minmax(300px, max-content);
+    align-items: center;
+    gap: 8px;
+    padding: 3px 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    cursor: default;
+    user-select: text;
+    min-width: max-content;
+}
+
+.cl-row:hover {
+    background: rgba(255,255,255,0.05);
+}
+
+.cl-check {
+    cursor: pointer;
+    accent-color: #7c5cfc;
+}
+
+.cl-time   { color: rgba(255,255,255,0.45); white-space: nowrap; }
+.cl-dir    { font-weight: 700; text-align: center; }
+.cl-type   { color: rgba(255,255,255,0.5); font-size: 0.9em; }
+.cl-summary { white-space: nowrap; color: #e0e0e0; }
+
+/* Direction colour coding */
+.cl-tx   { border-left: 3px solid #4fc3f7; }
+.cl-rx   { border-left: 3px solid #81c784; }
+.cl-ev   { border-left: 3px solid #ffd54f; }
+.cl-error{ border-left: 3px solid #ef9a9a; }
+
+.cl-tx .cl-dir   { color: #4fc3f7; }
+.cl-rx .cl-dir   { color: #81c784; }
+.cl-ev .cl-dir   { color: #ffd54f; }
+.cl-error .cl-dir{ color: #ef9a9a; }
+
+.cl-detail {
+    grid-column: 2 / -1;
+    color: rgba(255,255,255,0.4);
+    font-size: 0.88em;
+    padding: 2px 0 4px 0;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* Empty state */
+.comm-log-entries:empty::after {
+    content: 'No events yet — waiting for printer activity…';
+    display: block;
+    text-align: center;
+    color: rgba(255,255,255,0.3);
+    padding: 32px 16px;
+    font-size: 0.9em;
+}

@@ -2,10 +2,13 @@
 
 **The Moment** is a Go microservice that bridges 3D printers to [Spoolman](https://github.com/Donkie/Spoolman) for filament inventory tracking, cost estimation, and print history logging. It adds NFC tag support so physical filament spools carry OpenPrintTag-compatible data and can be assigned to printer toolheads by scanning an NFC tag.
 
+![The Moment Dashboard](../.github/screenshots/dashboard.png)
+
 ## Contents
 
 | Page | Description |
 | --- | --- |
+| [Deployment](deployment.md) | How to run The Moment: Docker, pre-built binary, VS Code dev mode, and full environment variable reference |
 | [Spool Lifecycle](spool-lifecycle.md) | Complete lifecycle of a filament spool: from setup through printing to archiving |
 | [Spoolman Location Sync](spoolman-location-sync.md) | Optional bidirectional sync between toolhead assignments and Spoolman spool locations |
 | [PrusaLink Print Handling](prusalink-print-handling.md) | How The Moment tracks PrusaLink prints, attention events (runouts), and what requires manual correction in print history |
@@ -26,5 +29,5 @@ The Moment runs as a Docker container alongside Spoolman. Key capabilities:
 ## Quick Links
 
 - [README](../README.md) — setup and deployment
-- [CLAUDE.md](../CLAUDE.md) — developer guide and architecture
+- [CONTRIBUTING](../CONTRIBUTING.md) — developer guide, architecture, and contributing
 - [CHANGELOG](../CHANGELOG.md) — release history

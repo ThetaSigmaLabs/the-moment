@@ -3,6 +3,9 @@
 This page explains how The Moment calculates the cost of each print, what each setting does,
 and how per-printer overrides interact with global defaults.
 
+<!-- screenshot needed: Settings → Cost Settings page (global + per-printer tabs) -->
+<!-- screenshot needed: History entry expanded with cost breakdown detail -->
+
 _Source: `cost.go`_
 
 ---

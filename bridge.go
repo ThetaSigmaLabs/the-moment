@@ -67,6 +67,10 @@ type FilamentBridge struct {
 	bambuMutex        sync.RWMutex
 	// bambuClientFactory creates a new Bambu client; overridable in tests.
 	bambuClientFactory func(ip, serial, accessCode string) BambuStatusProvider
+
+	// commLogs holds in-memory communication event ring buffers, one per printer.
+	commLogs   map[string]*PrinterCommLog
+	commLogsMu sync.RWMutex
 }
 
 // ToolheadMapping represents a mapping between a printer toolhead and a spool
@@ -123,6 +127,18 @@ type PrintHistory struct {
 
 	// HasDebugLog is true when a debug poll transcript exists for this print.
 	HasDebugLog bool `json:"has_debug_log,omitempty"`
+
+	// Recovered is true when this row is a reconciliation stub (print was in-progress
+	// when the service restarted; filament data may be zero). Previously hidden; now
+	// surfaced in the UI with an "Incomplete Data" badge.
+	Recovered        bool `json:"recovered,omitempty"`
+	GcodeUnavailable bool `json:"gcode_unavailable,omitempty"`
+
+	// HasPendingDownload is true when a pending_gcode_downloads entry exists for this
+	// record. The G-code file is still being retried; filament data will populate once
+	// the retry succeeds.
+	HasPendingDownload bool `json:"has_pending_download,omitempty"`
+	PendingDownloadID  int  `json:"pending_download_id,omitempty"`
 }
 
 // PrintFilamentUsage is per-tool filament data stored for a unified print record.
@@ -268,6 +284,7 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		previousState:    make(map[string]string),
 		printStartTime:   make(map[string]time.Time),
 		bambuClients:     make(map[string]BambuStatusProvider),
+		commLogs:         make(map[string]*PrinterCommLog),
 	}
 	bridge.bambuClientFactory = func(ip, serial, accessCode string) BambuStatusProvider {
 		return NewBambuMQTTClient(ip, serial, accessCode, newBambuDebugLogger(bridge))
@@ -336,15 +353,21 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 	return bridge, nil
 }
 
+// getCommLog returns the PrinterCommLog for printerID, creating it lazily.
+func (b *FilamentBridge) getCommLog(printerID string) *PrinterCommLog {
+	b.commLogsMu.Lock()
+	defer b.commLogsMu.Unlock()
+	if _, ok := b.commLogs[printerID]; !ok {
+		b.commLogs[printerID] = &PrinterCommLog{}
+	}
+	return b.commLogs[printerID]
+}
+
 // initDatabase initializes the SQLite database
 func (b *FilamentBridge) initDatabase() error {
-	dbFile := DefaultDBFileName
+	dbFile := getDBFilePath()
 	if b.config != nil && b.config.DBFile != "" {
 		dbFile = b.config.DBFile
-	}
-	// Check for environment variable (path only, append filename)
-	if envDBPath := os.Getenv("THE_MOMENT_DB_PATH"); envDBPath != "" {
-		dbFile = filepath.Join(envDBPath, DefaultDBFileName)
 	}
 
 	db, err := sql.Open("sqlite3", dbFile)
@@ -1059,6 +1082,7 @@ func (b *FilamentBridge) ReconcileActiveSessions() {
 		WHERE NOT EXISTS (
 			SELECT 1 FROM processed_jobs p
 			WHERE p.printer_id = s.printer_id AND p.job_id = s.job_id
+			  AND p.outcome != 'recovered'
 		)`)
 	if err != nil {
 		log.Printf("[RECONCILE] query failed: %v", err)
@@ -1175,6 +1199,22 @@ func (b *FilamentBridge) ReconcileActiveSessions() {
 		if dErr := b.DeleteActivePrintSession(o.printerID, o.jobID); dErr != nil {
 			log.Printf("[RECONCILE] delete session failed: printer=%s job=%d: %v", o.printerID, o.jobID, dErr)
 		}
+
+		// Restore in-memory tracking state so the first MonitorPrinters() tick can
+		// detect FINISHED/IDLE and write a proper print_history row even if the print
+		// completed during startup (between this reconcile and the first poll).
+		b.mutex.Lock()
+		b.wasPrinting[o.printerID] = true
+		if b.currentJobFile[o.printerID] == "" {
+			b.currentJobFile[o.printerID] = o.filePath
+		}
+		if b.currentJobID[o.printerID] == 0 {
+			b.currentJobID[o.printerID] = o.jobID
+		}
+		if b.printStartTime[o.printerID].IsZero() {
+			b.printStartTime[o.printerID] = startTime
+		}
+		b.mutex.Unlock()
 	}
 }
 
@@ -1185,7 +1225,7 @@ type PrintAttachment struct {
 	FileType       string `json:"file_type"` // "gcode", "slicer", "other"
 	Filename       string `json:"filename"`
 	FileSize       int64  `json:"file_size"`
-	FilePath       string `json:"file_path"` // relative to DataDir
+	FilePath       string `json:"file_path"` // relative to GcodePath
 	StoredAt       string `json:"stored_at"`
 }
 
@@ -1246,7 +1286,7 @@ func (b *FilamentBridge) DeletePrintAttachment(id int) error {
 	if err != nil {
 		return err
 	}
-	absPath := filepath.Join(b.dataDir(), a.FilePath)
+	absPath := filepath.Join(b.gcodePath(), a.FilePath)
 	if rmErr := os.Remove(absPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 		log.Printf("Warning: could not delete attachment file %s: %v", absPath, rmErr)
 	}
@@ -1254,12 +1294,12 @@ func (b *FilamentBridge) DeletePrintAttachment(id int) error {
 	return err
 }
 
-// dataDir returns the resolved data directory for file attachments.
-func (b *FilamentBridge) dataDir() string {
-	if b.config != nil && b.config.DataDir != "" {
-		return b.config.DataDir
+// gcodePath returns the root directory for print history file attachments.
+func (b *FilamentBridge) gcodePath() string {
+	if b.config != nil && b.config.GcodePath != "" {
+		return b.config.GcodePath
 	}
-	return "the-moment-data"
+	return getGcodePath()
 }
 
 // fileTypeFromName returns the attachment file_type based on filename extension.
@@ -1277,7 +1317,7 @@ func fileTypeFromName(filename string) string {
 // savePrintFile writes content to disk under DataDir and inserts a print_attachments record.
 // fileType should be "gcode", "slicer", or "other". Safe to call even when DataDir is not yet set.
 func (b *FilamentBridge) savePrintFile(printID int, fileType, filename string, content []byte) error {
-	dir := b.dataDir()
+	dir := b.gcodePath()
 	now := time.Now()
 	subDir := filepath.Join(dir, "print-files", fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", int(now.Month())))
 	if err := os.MkdirAll(subDir, 0755); err != nil {
@@ -1767,7 +1807,7 @@ func getConfigDescription(key string) string {
 		ConfigKeyPollInterval:                    "Polling interval in seconds",
 		ConfigKeyWebPort:                         "Port for web interface",
 		ConfigKeyPrusaLinkTimeout:                "PrusaLink API timeout in seconds",
-		ConfigKeyPrusaLinkFileDownloadTimeout:    "PrusaLink file download timeout in seconds",
+		ConfigKeyPrusaLinkFileDownloadTimeout:    "PrusaLink file download header timeout in seconds (body reading is unbounded to support large bgcode files)",
 		ConfigKeySpoolmanTimeout:                 "Spoolman API timeout in seconds",
 		ConfigKeyAutoAssignPreviousSpoolEnabled:  "Enable automatic assignment of previous spool to default location when assigning new spool to toolhead",
 		ConfigKeyAutoAssignPreviousSpoolLocation: "Default location name where previous spools will be automatically assigned (must exist as a location)",
@@ -2287,6 +2327,8 @@ func (b *FilamentBridge) GetConfigSnapshot() *Config {
 		SpoolmanURL:                  b.config.SpoolmanURL,
 		PollInterval:                 b.config.PollInterval,
 		DBFile:                       b.config.DBFile,
+		GcodePath:                    b.config.GcodePath,
+		UploadsPath:                  b.config.UploadsPath,
 		WebPort:                      b.config.WebPort,
 		PrusaLinkTimeout:             b.config.PrusaLinkTimeout,
 		PrusaLinkFileDownloadTimeout: b.config.PrusaLinkFileDownloadTimeout,
@@ -2672,6 +2714,14 @@ func (b *FilamentBridge) MonitorPrinters() {
 				b.mutex.Unlock()
 			}()
 
+			// Throttle: skip if the state cache says it's too soon to poll again.
+			// Kept here (not inside monitorPrusaLink) so direct calls in tests bypass it.
+			if cached, err := b.GetLastKnownState(printerID); err == nil {
+				if !cached.NextPollAt.IsZero() && time.Now().Before(cached.NextPollAt) {
+					return
+				}
+			}
+
 			if err := fn(printerID, config); err != nil {
 				log.Printf("Error monitoring printer %s (%s): %v", config.IPAddress, printerID, err)
 			}
@@ -2689,21 +2739,13 @@ func (b *FilamentBridge) MonitorPrinters() {
 //	IDLE / FINISHED   → if wasPrinting: print completed normally → process full G-code usage
 //	STOPPED           → if wasPrinting: job was cancelled → log partial usage from progress %
 func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig) error {
-	// Enforce per-printer variable poll intervals. next_poll_at is written by
-	// UpsertLastKnownState based on the last observed state (ATTENTION=3s,
-	// PRINTING=5s, IDLE=20s, etc.). With the current 30s global ticker this
-	// guard is mostly a no-op, but it activates automatically when the ticker
-	// is tightened in future.
-	if cached, err := b.GetLastKnownState(printerID); err == nil {
-		if !cached.NextPollAt.IsZero() && time.Now().Before(cached.NextPollAt) {
-			return nil
-		}
-	}
-
 	client := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
+	cl := b.getCommLog(printerID)
 
+	cl.Append("TX", "poll_status", "GET /api/v1/status", "")
 	status, err := client.GetStatus()
 	if err != nil {
+		cl.Append("RX", "error", fmt.Sprintf("GET /api/v1/status failed: %v", err), "")
 		failures, _ := b.IncrementFailureCount(printerID)
 		if failures == 1 {
 			log.Printf("[PRUSALINK] printer=%s poll_failure=1 error=%v", printerID, err)
@@ -2712,11 +2754,30 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		}
 		return nil
 	}
+	{
+		nozzleTemp := 0.0
+		bedTemp := 0.0
+		if t, ok := status.Printer.Temperature["tool0"]; ok {
+			nozzleTemp = t.Actual
+		}
+		if t, ok := status.Printer.Temperature["bed"]; ok {
+			bedTemp = t.Actual
+		}
+		cl.Append("RX", "poll_status", fmt.Sprintf("state=%s nozzle=%.0f°C bed=%.0f°C", status.Printer.State, nozzleTemp, bedTemp), "")
+	}
 
+	cl.Append("TX", "poll_job", "GET /api/v1/job", "")
 	jobInfo, err := client.GetJobInfo()
 	if err != nil {
+		cl.Append("RX", "error", fmt.Sprintf("GET /api/v1/job failed: %v", err), "")
 		log.Printf("Warning: Failed to get job info from %s (%s): %v", config.IPAddress, printerID, err)
 		jobInfo = &PrusaLinkJob{}
+	} else {
+		jobSummary := "no active job"
+		if jobInfo.File.Name != "" {
+			jobSummary = fmt.Sprintf("job_id=%d file=%q progress=%.1f%%", jobInfo.ID, jobInfo.File.DisplayName, jobInfo.Progress)
+		}
+		cl.Append("RX", "poll_job", jobSummary, "")
 	}
 
 	currentState := status.Printer.State
@@ -2749,6 +2810,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	log.Printf("Printer %s (%s): state=%s (prev=%s), wasPrinting=%v, job=%s, file=%s",
 		config.IPAddress, printerID, currentState, prevState, wasPrinting, jobName, storedJobFile)
 	logStateTransition(printerID, prevState, currentState, jobInfo.ID, printProgress)
+	if prevState != currentState && prevState != "" {
+		cl.Append("EV", "state_change", fmt.Sprintf("%s → %s", prevState, currentState), "")
+	}
 
 	// Debug poll log — one line per poll while a job is active.
 	if config.DebugLog && jobInfo.ID != 0 {
@@ -3023,12 +3087,16 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 	}
 	b.bambuMutex.Unlock()
 
+	bambuCL := b.getCommLog(printerID)
+
 	status, err := client.GetCurrentStatus()
 	if err != nil {
 		// No MQTT message received yet — still connecting or printer is off.
+		bambuCL.Append("RX", "error", fmt.Sprintf("GetCurrentStatus: %v", err), "")
 		log.Printf("[BAMBU] No status yet from %s (%s): %v", printerID, config.Name, err)
 		return nil
 	}
+	bambuCL.Append("RX", "mqtt_recv", fmt.Sprintf("state=%s progress=%d%% file=%q", status.GcodeState, status.McPercent, status.GcodeFile), "")
 
 	currentState := mapBambuState(status.GcodeState)
 	progressPct := float64(status.McPercent)
@@ -3038,6 +3106,10 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 	storedJobFile := b.currentJobFile[printerID]
 	prevState := b.previousState[printerID]
 	b.mutex.RUnlock()
+
+	if prevState != currentState && prevState != "" {
+		bambuCL.Append("EV", "state_change", fmt.Sprintf("%s → %s", prevState, currentState), "")
+	}
 
 	log.Printf("[BAMBU] Printer %s (%s): state=%s (prev=%s), wasPrinting=%v, progress=%.1f%%, file=%s",
 		printerID, config.Name, currentState, prevState, wasPrinting, progressPct, storedJobFile)
@@ -3971,7 +4043,7 @@ func (b *FilamentBridge) enqueuePendingGcodeDownload(printerName, printerIP, fil
 // the file parses with no usage data — both are unrecoverable conditions.
 func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 	rows, err := b.db.Query(`
-		SELECT id, printer_name, printer_ip, filename, job_type, progress_pct
+		SELECT id, printer_name, printer_ip, filename, job_type, progress_pct, attempts
 		FROM pending_gcode_downloads
 		ORDER BY created_at ASC`)
 	if err != nil {
@@ -3985,11 +4057,12 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 		filename    string
 		jobType     string
 		progressPct float64
+		attempts    int
 	}
 	var downloads []pendingDownload
 	for rows.Next() {
 		var d pendingDownload
-		if err := rows.Scan(&d.id, &d.printerName, &d.printerIP, &d.filename, &d.jobType, &d.progressPct); err != nil {
+		if err := rows.Scan(&d.id, &d.printerName, &d.printerIP, &d.filename, &d.jobType, &d.progressPct, &d.attempts); err != nil {
 			log.Printf("Warning: failed to scan pending G-code download row: %v", err)
 			continue
 		}
@@ -4032,6 +4105,7 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 		prusaClient := NewPrusaLinkClient(cfg.IPAddress, cfg.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
 		gcodeContent, err := prusaClient.GetGcodeFileWithRetry(d.filename, b.config.PrusaLinkFileDownloadTimeout)
 		if err != nil {
+			newAttempts := d.attempts + 1
 			_, _ = b.db.Exec(`
 				UPDATE pending_gcode_downloads
 				SET last_attempt = CURRENT_TIMESTAMP,
@@ -4039,6 +4113,18 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 				    last_error   = ?
 				WHERE id = ?`, err.Error(), d.id)
 			log.Printf("⚠️  G-code retry failed for %s (%s): %v", d.printerName, d.filename, err)
+
+			// Drop permanent failures so they don't accumulate forever.
+			errStr := err.Error()
+			isPermanent := strings.Contains(errStr, "API error: 404") || // file gone
+				strings.Contains(errStr, "API error: 403") || // access denied
+				newAttempts >= 24 // ~3 days at default retry interval
+			if isPermanent {
+				msg := fmt.Sprintf("G-code download gave up after %d attempts for %s: %s", newAttempts, d.filename, errStr)
+				log.Printf("⚠️  %s", msg)
+				b.addPrintError(d.printerName, d.filename, msg)
+				_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
+			}
 			continue
 		}
 
@@ -4052,7 +4138,7 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 			continue
 		}
 
-		jobName := d.filename
+		jobName := filepath.Base(d.filename)
 		if d.jobType == "cancelled" {
 			scale := (d.progressPct / 100.0) * 0.95
 			if scale > 1.0 {
@@ -4095,12 +4181,22 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 				firstPrintID = printID
 			}
 		}
+		// Back-calculate print_started from the known print duration.
+		// LogPrintUsageFull only does this when currentJobFile is set (live prints);
+		// in the retry path that map is always empty so we fix it here.
+		if printTimeMin > 0 {
+			printStarted := time.Now().Add(-time.Duration(printTimeMin) * time.Minute)
+			_, _ = b.db.Exec(`UPDATE print_history SET print_started = ? WHERE session_id = ?`,
+				printStarted, sessionID)
+		}
 		if firstPrintID > 0 {
 			if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(d.filename), gcodeContent); err != nil {
 				log.Printf("Warning: could not save gcode file for retried print %d: %v", firstPrintID, err)
 			}
 		}
 
+		// Clean up recovery stubs that were created when the app restarted mid-print.
+		b.DeleteRecoveryStubs(d.printerName, filepath.Base(d.filename))
 		_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
 		successCount++
 		log.Printf("✅ G-code retry succeeded: %s (%s %s)", d.filename, d.printerName, d.jobType)
@@ -4119,6 +4215,43 @@ func (b *FilamentBridge) GetPendingGcodeDownloadCount() int {
 		return 0
 	}
 	return count
+}
+
+// PendingGcodeDownload is the API-visible record for a queued G-code retry.
+type PendingGcodeDownload struct {
+	ID          int    `json:"id"`
+	PrinterName string `json:"printer_name"`
+	PrinterIP   string `json:"printer_ip"`
+	Filename    string `json:"filename"`
+	JobType     string `json:"job_type"`
+	Attempts    int    `json:"attempts"`
+	LastError   string `json:"last_error"`
+	CreatedAt   string `json:"created_at"`
+	LastAttempt string `json:"last_attempt"`
+}
+
+// GetPendingGcodeDownloads returns all queued G-code downloads.
+func (b *FilamentBridge) GetPendingGcodeDownloads() ([]PendingGcodeDownload, error) {
+	rows, err := b.db.Query(`
+		SELECT id, printer_name, printer_ip, filename, job_type,
+		       attempts, COALESCE(last_error, ''),
+		       COALESCE(created_at, ''), COALESCE(last_attempt, '')
+		FROM pending_gcode_downloads
+		ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending G-code downloads: %w", err)
+	}
+	defer rows.Close()
+	var result []PendingGcodeDownload
+	for rows.Next() {
+		var p PendingGcodeDownload
+		if err := rows.Scan(&p.ID, &p.PrinterName, &p.PrinterIP, &p.Filename, &p.JobType,
+			&p.Attempts, &p.LastError, &p.CreatedAt, &p.LastAttempt); err != nil {
+			continue
+		}
+		result = append(result, p)
+	}
+	return result, nil
 }
 
 // isVirtualPrinterToolheadLocation checks if a location name matches the pattern
@@ -4394,10 +4527,11 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 			COALESCE(ph.cancel_reason, ''),
 			COALESCE(ph.time_precision, 'approximate'),
 			COALESCE(ph.filament_precision, 'estimated'),
-			COALESCE(ph.session_id, '')
+			COALESCE(ph.session_id, ''),
+			COALESCE(ph.recovered, 0),
+			COALESCE(ph.gcode_unavailable, 0)
 		FROM print_history ph
 		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
-		WHERE COALESCE(ph.recovered, 0) = 0
 		ORDER BY ph.print_finished DESC
 		LIMIT ?`, limit)
 	if err != nil {
@@ -4408,6 +4542,7 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 	var records []PrintHistory
 	for rows.Next() {
 		var r PrintHistory
+		var recovered, gcodeUnavailable int
 		if err := rows.Scan(
 			&r.ID, &r.PrinterName, &r.ToolheadID, &r.SpoolID, &r.FilamentUsed,
 			&r.PrintStarted, &r.PrintFinished, &r.JobName,
@@ -4416,14 +4551,45 @@ func (b *FilamentBridge) GetPrintHistory(limit int) ([]PrintHistory, error) {
 			&r.Source, &r.TotalDurationSec, &r.PrintDurationSec,
 			&r.PauseDurationSec, &r.PauseCount, &r.CancelReason,
 			&r.TimePrecision, &r.FilamentPrecision, &r.SessionID,
+			&recovered, &gcodeUnavailable,
 		); err != nil {
 			log.Printf("Warning: failed to scan print history row: %v", err)
 			continue
 		}
+		r.Recovered = recovered != 0
+		r.GcodeUnavailable = gcodeUnavailable != 0
 		records = append(records, r)
 	}
 	if records == nil {
 		records = []PrintHistory{}
+	}
+
+	// Match pending G-code downloads to recovered stubs so the UI can show a retry button.
+	pendings, _ := b.GetPendingGcodeDownloads()
+	if len(pendings) > 0 {
+		// Index by printer_name → list of pending downloads.
+		type pending struct {
+			id       int
+			baseName string // filepath.Base(filename), e.g. "KOGI3D~1.BGC"
+		}
+		byPrinter := map[string][]pending{}
+		for _, p := range pendings {
+			byPrinter[p.PrinterName] = append(byPrinter[p.PrinterName], pending{p.ID, filepath.Base(p.Filename)})
+		}
+		for i, r := range records {
+			if !r.Recovered {
+				continue
+			}
+			// Stub job_name = "<base> [RECOVERED]"; strip the suffix to get <base>.
+			baseName := strings.TrimSuffix(r.JobName, " [RECOVERED]")
+			for _, p := range byPrinter[r.PrinterName] {
+				if strings.EqualFold(p.baseName, baseName) {
+					records[i].HasPendingDownload = true
+					records[i].PendingDownloadID = p.id
+					break
+				}
+			}
+		}
 	}
 
 	// Bulk-fetch quality tags for all returned records.
@@ -4613,7 +4779,7 @@ func (b *FilamentBridge) UpdatePrintNote(id int, note string) error {
 func (b *FilamentBridge) DeletePrintHistoryEntry(id int) error {
 	attachments, _ := b.GetPrintAttachments(id)
 	for _, a := range attachments {
-		absPath := filepath.Join(b.dataDir(), a.FilePath)
+		absPath := filepath.Join(b.gcodePath(), a.FilePath)
 		if err := os.Remove(absPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Printf("Warning: could not delete attachment file %s: %v", absPath, err)
 		}
@@ -4745,6 +4911,9 @@ func (b *FilamentBridge) ClearOrphanedMappings() (int, error) {
 // It inserts the top-level print_history row, per-tool filament rows, pause rows,
 // calculates cost, and queues Spoolman filament-usage updates.
 func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
+	b.getCommLog(p.PrinterID).Append("RX", "push_recv",
+		fmt.Sprintf("OctoPrint push: status=%s file=%q", p.Status, p.FileName), "")
+
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 
@@ -4763,12 +4932,14 @@ func (b *FilamentBridge) LogOctoPrintRecord(p OctoPrintPayload) (int, error) {
 	if p.SessionID == "" {
 		p.SessionID = newSessionID()
 	} else {
-		// Idempotency: if this session_id was already recorded (e.g. the plugin
-		// retried a push that actually succeeded), return the existing ID.
+		// Idempotency: if the exact same file in this session was already recorded
+		// (e.g. the plugin retried a push that actually succeeded), return the existing ID.
+		// Match on both session_id and job_name so multi-toolhead sessions (same session_id,
+		// different filenames) each get their own row.
 		var existingID int
 		err := b.db.QueryRow(
-			`SELECT id FROM print_history WHERE session_id = ? LIMIT 1`,
-			p.SessionID,
+			`SELECT id FROM print_history WHERE session_id = ? AND job_name = ? LIMIT 1`,
+			p.SessionID, p.FileName,
 		).Scan(&existingID)
 		if err == nil {
 			return existingID, nil

@@ -57,7 +57,9 @@ Copy `.env.example` to `.env` and adjust. `.env` is gitignored — never commit 
 | --- | --- | --- | --- |
 | `THE_MOMENT_PORT` | `docker-compose.yml`, `main.go` | `5000` | Host-side port The Moment listens on |
 | `SPOOLMAN_PORT` | `docker-compose.yml` | `7912` | Host-side port Spoolman listens on |
-| `THE_MOMENT_DB_PATH` | `docker-compose.yml`, `config.go` | `./the-moment-data` | Host directory for SQLite DB and config files. Bind-mounted to `/app/data` in container. |
+| `THE_MOMENT_DB_PATH` | `docker-compose.yml`, `config.go` | `./the-moment-data/db` | Host directory for SQLite DB. Bind-mounted to `/app/data/db` in container. Dev: `.dev/db`. |
+| `THE_MOMENT_GCODE_PATH` | `docker-compose.yml`, `config.go` | `./the-moment-data/gcode` | Host directory for print history file attachments (gcode, slicer, etc.). Bind-mounted to `/app/data/gcode`. Dev: `.dev/gcode`. |
+| `THE_MOMENT_UPLOADS_PATH` | `docker-compose.yml`, `config.go` | `./the-moment-data/uploads` | Host directory for virtual printer uploaded files. Bind-mounted to `/app/data/uploads`. Dev: `.dev/uploads`. |
 | `SPOOLMAN_DB_PATH` | `docker-compose.yml` | `./spoolman-data` | Host directory for Spoolman's SQLite DB. Bind-mounted to `/home/spoolman/data`. |
 | `BACKUP_DIR` | `Makefile` | `./backups` | Where `make backup` writes timestamped `.tar.gz` archives. |
 | `SPOOLMAN_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | Internal URL to reach Spoolman. Set to `http://spoolman:8000` in `docker-compose.yml` for Docker DNS. Only applied on first run; ignored after that. |

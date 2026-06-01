@@ -2,6 +2,11 @@
 
 When this optional feature is enabled, The Moment keeps Spoolman's spool `location` field in sync with toolhead assignments — in both directions.
 
+![Filament Status with location assignments](../.github/screenshots/filament_tags.png)
+*Spool location assignments visible in the Filament Status tab*
+
+<!-- screenshot needed: Settings → Advanced showing NFC Spool Locations toggle -->
+
 ---
 
 ## Enabling

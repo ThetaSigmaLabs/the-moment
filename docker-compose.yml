@@ -1,37 +1,33 @@
 # =============================================================================
-# The Moment + Spoolman — Production LAN Stack
+# The Moment + Spoolman — Full Stack
 # =============================================================================
 #
+# Quick start — no git clone needed:
+#
+#   curl -O https://raw.githubusercontent.com/ThetaSigmaLabs/the-moment/main/docker-compose.yml
+#   curl -O https://raw.githubusercontent.com/ThetaSigmaLabs/the-moment/main/.env.example
+#   cp .env.example .env        # review ports and timezone; defaults work out of the box
+#   docker compose up -d
+#
 # Services:
-#   spoolman    — Filament inventory database (port ${SPOOLMAN_PORT:-7912})
-#   the-moment  — PrusaLink ↔ Spoolman bridge (port ${THE_MOMENT_PORT:-5000})
+#   spoolman    — Filament inventory database  → http://<server-ip>:${SPOOLMAN_PORT:-7912}
+#   the-moment  — Printer bridge and web UI    → http://<server-ip>:${THE_MOMENT_PORT:-5000}
 #
-# Printer wiring:
-#   Prusa CORE One L  → PrusaLink → The Moment → Spoolman
-#   Ender 3 V3 SE     → Moonraker → Spoolman (native integration — no bridge needed)
+# Common operations:
+#   docker compose up -d                            # start
+#   docker compose logs -f                          # tail logs
+#   docker compose pull && docker compose up -d     # update to latest images
+#   docker compose down                             # stop
 #
-# Ender 3 V3 SE setup:
-#   In moonraker.conf add:
-#     [spoolman]
-#     server: http://<THIS-SERVER-IP>:${SPOOLMAN_PORT:-7912}
-#     sync_rate: 5
-#
-# Usage:
-#   docker compose up -d            # start
-#   docker compose logs -f          # tail logs
-#   docker compose pull && docker compose up -d   # update
-#
-# Access:
-#   Spoolman:   http://<server-ip>:${SPOOLMAN_PORT:-7912}
-#   The Moment: http://<server-ip>:${THE_MOMENT_PORT:-5000}
+# Makefile shortcuts (if you have the repo cloned):
+#   make up / make down / make logs / make update / make backup
 # =============================================================================
 
 services:
 
   # ---------------------------------------------------------------------------
   # Spoolman — filament inventory database
-  # Natively integrates with Klipper/Moonraker (Ender 3 V3 SE)
-  # The Moment also connects here for PrusaLink printers
+  # Also integrates natively with Klipper/Moonraker via its built-in plugin
   # ---------------------------------------------------------------------------
   spoolman:
     image: ghcr.io/donkie/spoolman:latest
@@ -42,8 +38,8 @@ services:
     volumes:
       - ${SPOOLMAN_DB_PATH:-./spoolman-data}:/home/spoolman/data
     environment:
-      # Timezone — adjust to your local zone
-      TZ: America/Halifax
+      # Timezone — set TZ in .env.example (e.g. TZ=America/New_York)
+      TZ: ${TZ:-UTC}
       # Optional: enable debug logging
       # SPOOLMAN_LOGGING_LEVEL: DEBUG
     networks:
@@ -56,8 +52,8 @@ services:
       start_period: 10s
 
   # ---------------------------------------------------------------------------
-  # The Moment — bridges PrusaLink printers to Spoolman
-  # Handles: CORE One L (and any other PrusaLink-compatible printer)
+  # The Moment — bridges your printers to Spoolman
+  # Supports: PrusaLink, OctoPrint, Bambu (MQTT), virtual test printers
   # ---------------------------------------------------------------------------
   the-moment:
     image: ghcr.io/thetasigmalabs/the-moment:latest
@@ -69,12 +65,15 @@ services:
     ports:
       - "${THE_MOMENT_PORT:-5000}:${THE_MOMENT_PORT:-5000}"
     volumes:
-      # SQLite database + config — bind-mounted from host for easy backup/portability
-      - ${THE_MOMENT_DB_PATH:-./the-moment-data}:/app/data
+      # Three bind mounts — one per data type — so each can be backed up or relocated independently.
+      - ${THE_MOMENT_DB_PATH:-./the-moment-data/db}:/app/data/db
+      - ${THE_MOMENT_GCODE_PATH:-./the-moment-data/gcode}:/app/data/gcode
+      - ${THE_MOMENT_UPLOADS_PATH:-./the-moment-data/uploads}:/app/data/uploads
     environment:
       THE_MOMENT_PORT: ${THE_MOMENT_PORT:-5000}
-      # Tell The Moment where the SQLite database lives inside the container
-      THE_MOMENT_DB_PATH: /app/data
+      THE_MOMENT_DB_PATH: /app/data/db
+      THE_MOMENT_GCODE_PATH: /app/data/gcode
+      THE_MOMENT_UPLOADS_PATH: /app/data/uploads
 
       # Point The Moment at the Spoolman service on the internal Docker network.
       # Uses the service name "spoolman" — Docker DNS resolves this automatically.

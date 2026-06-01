@@ -42,7 +42,8 @@ type Config struct {
 	PollInterval                 time.Duration
 	LocationSyncInterval         time.Duration
 	DBFile                       string
-	DataDir                      string // root directory for file attachments
+	GcodePath                    string // root directory for print history file attachments
+	UploadsPath                  string // root directory for virtual printer uploaded files
 	WebPort                      string
 	PrusaLinkTimeout             int
 	PrusaLinkFileDownloadTimeout int
@@ -101,7 +102,8 @@ func LoadConfig(bridge *FilamentBridge) (*Config, error) {
 		PollInterval:                 time.Duration(pollInterval) * time.Second,
 		LocationSyncInterval:         time.Duration(locationSyncInterval) * time.Minute,
 		DBFile:                       getDBFilePath(),
-		DataDir:                      getDataDir(),
+		GcodePath:                    getGcodePath(),
+		UploadsPath:                  getUploadsPath(),
 		WebPort:                      configValues[ConfigKeyWebPort],
 		PrusaLinkTimeout:             prusaLinkTimeout,
 		PrusaLinkFileDownloadTimeout: prusaLinkFileDownloadTimeout,
@@ -151,18 +153,27 @@ func resolvePrinterName(config PrinterConfig) string {
 	return fmt.Sprintf("Printer_%s", config.IPAddress)
 }
 
-// getDBFilePath returns the database file path, checking environment variable first
+// getDBFilePath returns the database file path from THE_MOMENT_DB_PATH env var.
+// THE_MOMENT_DB_PATH is the directory; the DB filename is appended automatically.
 func getDBFilePath() string {
 	if dbPath := os.Getenv("THE_MOMENT_DB_PATH"); dbPath != "" {
 		return filepath.Join(dbPath, DefaultDBFileName)
 	}
-	return DefaultDBFileName
+	return filepath.Join("the-moment-data", "db", DefaultDBFileName)
 }
 
-// getDataDir returns the root directory for file attachments (gcode, slicer files, etc.)
-func getDataDir() string {
-	if d := os.Getenv("THE_MOMENT_DATA_DIR"); d != "" {
+// getGcodePath returns the root directory for print history file attachments (gcode, slicer, etc.)
+func getGcodePath() string {
+	if d := os.Getenv("THE_MOMENT_GCODE_PATH"); d != "" {
 		return d
 	}
-	return "the-moment-data"
+	return filepath.Join("the-moment-data", "gcode")
+}
+
+// getUploadsPath returns the root directory for virtual printer uploaded files.
+func getUploadsPath() string {
+	if d := os.Getenv("THE_MOMENT_UPLOADS_PATH"); d != "" {
+		return d
+	}
+	return filepath.Join("the-moment-data", "uploads")
 }

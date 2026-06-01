@@ -3,306 +3,261 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Go Version](https://img.shields.io/badge/Go-1.24-00ADD8?logo=go)](https://golang.org/)
 [![GitHub release](https://img.shields.io/github/v/release/ThetaSigmaLabs/the-moment)](https://github.com/ThetaSigmaLabs/the-moment/releases)
+[![GitHub Stars](https://img.shields.io/github/stars/ThetaSigmaLabs/the-moment?style=social)](https://github.com/ThetaSigmaLabs/the-moment/stargazers)
 
-A high-performance Go microservice that bridges your 3D printers and [Spoolman](https://github.com/Donkie/Spoolman) for automatic filament inventory management, complete print history, and per-print cost tracking across all your printers.
+**Automatic filament tracking, print history, and cost accounting for every 3D printer you own — connected to [Spoolman](https://github.com/Donkie/Spoolman) in real time.**
 
-The Moment is derived from [FilaBridge](https://github.com/needo37/filabridge) by [needo37](https://github.com/needo37). This fork adds a full print history, cost accounting, OctoPrint plugin support, virtual test printers, per-printer cost overrides, session tracking, and significantly expands the test suite.
+Every gram used. Every minute spent. Every dollar it cost. Logged automatically, the moment a print finishes.
+
+---
+
+![The Moment Dashboard](.github/screenshots/dashboard.png)
+*Live printer status with toolhead spool assignments across all printers*
+
+---
+
+## Deploy in 3 Commands
+
+No git clone. No build step. Just Docker.
+
+```bash
+curl -O https://raw.githubusercontent.com/ThetaSigmaLabs/the-moment/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/ThetaSigmaLabs/the-moment/main/.env.example && cp .env.example .env
+docker compose up -d
+```
+
+Open `http://<your-server-ip>:5000` → Settings → Add Printer. Done.
+
+> **Prerequisites**: Docker with Compose, and [Spoolman](https://github.com/Donkie/Spoolman) — The Moment bundles Spoolman in the compose file so you get both with those three commands.
+
+---
 
 ## The Problem
 
-Running multiple 3D printers with Spoolman means manually updating filament usage after every print. With multi-material prints on a Prusa XL this is tedious and error-prone, and you have no record of what it cost or how long it took.
+You finish a print. Now you have to open Spoolman, find the spool, calculate how much filament you used, update the weight, log the print time, figure out what it cost in electricity and filament, and write a note so you remember which printer ran it.
+
+You don't. Nobody does.
+
+## The Solution
+
+The Moment sits between your printers and Spoolman. When a print finishes it automatically: deducts filament from Spoolman, logs the print with duration and cost, records which spool was on which toolhead, and stores a thumbnail if your slicer embedded one. You never touch Spoolman manually again.
+
+---
 
 ## Features
 
-### Printer Support
+### Filament & Spool Tracking
 
-- 🔗 **PrusaLink**: Works with any PrusaLink-compatible printer (Prusa CORE One, XL, MK4, Mini, and more)
-- 🐙 **OctoPrint**: Plugin pushes print events from any OctoPrint-managed printer directly to The Moment
-- 🐼 **Bambu**: Connects via MQTT over TLS; AMS slots map to toolheads — assign Spoolman spools via NFC just like any multi-toolhead printer
-- 🧪 **Virtual Test Printers**: Upload G-code files and simulate prints to validate Spoolman integration without hardware
+- **Automatic deduction** — filament weight updated in Spoolman the moment a print finishes
+- **Multi-toolhead** — each toolhead tracks its own spool independently (tested with 5-toolhead Prusa XL)
+- **Filament-change tracking** — spool swaps mid-print recorded as separate entries; each change gets its own usage row
+- **Location tracking** — spools carry their location (printer toolhead or storage shelf) in Spoolman; bidirectional sync keeps them in agreement
 
-### Filament & Inventory
+![Filament Status](.github/screenshots/filament_tags.png)
+*Assign spools to toolheads; search by name, material, brand, or color*
 
-- 🎯 **Multi-Toolhead Support**: Seamlessly handles single and multi-toolhead printers (tested with 5-toolhead Prusa XL)
-- 📈 **Smart Usage Tracking**: Automatically parses G-code files to accurately track filament consumption per toolhead
-- 🔄 **Filament-Change Tracking**: Records each spool swap mid-print as a separate `change_number` entry in history
-- 🔍 **Smart Spool Search**: Search and filter spools by ID, material, brand, or name with real-time filtering
-- 📍 **Location Tracking**: Track spools in custom locations (dryboxes, shelves) or printer toolheads
+### Complete Print History
+
+- **Every print logged** — source printer, spool used, filament consumed (grams), duration, cost breakdown
+- **Session grouping** — multi-toolhead prints grouped as one job; expand to see per-tool detail
+- **Thumbnails** — G-code preview images extracted from PrusaSlicer/OrcaSlicer and displayed in history
+- **Notes** — add freeform notes to any history entry after the fact
+- **Searchable, deletable** — clean up test prints; filter by printer or date
 
 ### Cost Accounting
 
-- 💰 **Full Cost Breakdown**: Filament cost (from Spoolman), electricity, maintenance, depreciation, and margin
-- 🖨️ **Per-Printer Overrides**: Each printer can have its own wattage, preheat charge, high-temp extra wattage, and depreciation rate
-- 🌡️ **High-Temp Detection**: Automatically adds extra wattage cost when Spoolman identifies the material as ABS, ASA, PA, or PC
-- 🔥 **Preheat Accounting**: One-time electricity charge per print for bed/hotend warmup
-- 🧮 **Quick Calculator**: Test your cost settings with arbitrary filament and time values without printing
-- 💱 **Currency Support**: Configurable ISO currency code (USD, CAD, EUR, GBP, etc.)
+- **Filament cost** — priced from Spoolman's per-spool cost, prorated by grams used
+- **Electricity** — configurable kWh rate × print wattage × duration
+- **Preheat charge** — one-time electricity cost for bed and hotend warmup
+- **High-temp surcharge** — automatically applied when Spoolman identifies the material as ABS, ASA, PA, or PC
+- **Maintenance and depreciation** — per-hour rates spread across print time
+- **Profit margin** — optional markup for print-as-a-service
+- **Per-printer overrides** — each printer has its own wattage, preheat spec, and depreciation rate
+- **Quick calculator** — test cost settings with arbitrary filament weight and time, no hardware required
+- **Currency** — configurable ISO code (USD, CAD, EUR, GBP, etc.)
 
-### Print History
+### NFC Tags — Physical Filament Intelligence
 
-- 📋 **Full History**: Every completed print — from PrusaLink, OctoPrint, or virtual printers — is stored with filament used, print time, cost breakdown, and source
-- 🔖 **Session Grouping**: Multi-toolhead prints share a `session_id` so all per-tool rows appear as one logical job
-- 📝 **Notes**: Add freeform notes to any history entry after the fact
-- 🗑️ **Delete Entries**: Remove individual history records
-- 🖼️ **Thumbnails**: Gcode thumbnails are stored and displayed in history (where available)
+Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assigned to that toolhead in The Moment and Spoolman simultaneously.
 
-### Infrastructure & Management
+- **Spool tags** — NTAG213/215 programmed via NFC Tools Pro; URL opens a mobile-optimized assignment page
+- **Location tags** — one per printer toolhead; tap spool then location (or location then spool) within 5 minutes
+- **QR codes** — generated alongside every NFC tag for environments where NFC isn't available
+- **OpenPrintTag CBOR** — spool tags encode a full [OpenPrintTag](https://specs.openprinttag.org)-compatible CBOR record: temperatures, color, weight, UUID, manufacturing date, material properties
 
-- 💾 **Persistent Storage**: SQLite database — no external DB required
-- ⚡ **High Performance**: Single lightweight binary, minimal resource usage
-- 🌐 **Real-time Dashboard**: Web interface with live updates via WebSocket
-- 🔧 **Web-based Config**: No config files needed — manage everything through the web UI
-- ⚠️ **Error Handling**: Print error detection with acknowledgment system
-- 🔓 **Stuck Spool Cleanup**: Detect and release spool assignments orphaned by deleted printers
-- 📥 **Virtual Printer Import/Export**: Export a virtual printer (with its G-code library) to JSON; import it on another instance
-- 🏷️ **NFC / QR Codes**: Generate QR codes and program NFC tags for spools, filaments, and locations
-- 📱 **Two-step NFC Workflow**: Tap spool then location (or location then spool) for instant assignment
+![NFC Tag Management](.github/screenshots/spool_tags.png)
+*Generate NFC tag files and QR codes for every spool in your Spoolman library*
 
-## Screenshots
+![Location Tags](.github/screenshots/location_tags.png)
+*Location tags for each printer toolhead and storage locations*
 
-![The Moment Dashboard](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/dashboard.png?raw=true)
-*Main dashboard showing printer status and toolhead mappings*
+### Supported Printers
 
-![Spool Tags Management](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/spool_tags.png?raw=true)
-*NFC Management interface for generating QR codes for individual spools*
+| Printer | Interface | Multi-toolhead | Status |
+|---|---|---|---|
+| Any PrusaLink printer (CORE One, XL, MK4, Mini+) | PrusaLink API | Yes (XL tested with 5 heads) | Fully supported |
+| Any OctoPrint printer (Ender, CR-10, Voron, etc.) | OctoPrint plugin | Single-head | Fully supported |
+| Bambu X1C, P1S, A1, A1 Mini | MQTT over LAN | AMS slots → toolheads | Supported (not hardware-tested) |
+| INDX 8-head | TBD | 8 toolheads | Future |
 
-![Filament Tags Management](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/filament_tags.png?raw=true)
-*Filament type QR code generation for new unopened spools*
+### Virtual Test Printers
 
-![Location Tags Management](https://github.com/ThetaSigmaLabs/the-moment/blob/main/.github/screenshots/location_tags.png?raw=true)
-*Location management interface for creating printer toolhead and storage location QR codes*
+Simulate prints without hardware. Upload a G-code file, click Process — filament usage is parsed from the file, Spoolman is updated, and a full history entry with cost breakdown is created. Use it to validate your cost settings before your first real print.
 
-## Prerequisites
+Export a virtual printer with its G-code library as JSON; import it on another instance.
 
-- A PrusaLink-compatible printer **and/or** an OctoPrint instance **and/or** a Bambu printer on your LAN
-- Spoolman running and reachable on your network
-- **For building from source**: Go 1.24 or higher
-- **(Optional) For NFC features**: NFC-capable smartphone and NFC tags (NTAG213/215/216 recommended)
-- **(Recommendation) NFC Tools Pro** mobile app (for programming tags)
+---
 
 ## Installation
 
-### Option 1: Docker (Easiest)
+### Option 1: Docker (recommended)
 
-1. **Run Spoolman** (if not already running):
-
-   ```bash
-   docker run -d --name spoolman -p 8000:8000 \
-     -v spoolman-data:/home/spoolman/data \
-     ghcr.io/donkie/spoolman:latest
-   ```
-
-2. **Run The Moment**:
-
-   ```bash
-   docker run -d --name the-moment -p 5000:5000 \
-     -v .:/app/data \
-     ghcr.io/thetasigmalabs/the-moment:latest
-   ```
-
-3. **Configure**: Open `http://localhost:5000` → Settings → Printers → Add Printer
-
-**Using docker-compose (recommended for full stack):**
+The three-command deploy above gets you running. For a Makefile-driven workflow after the initial deploy:
 
 ```bash
-git clone https://github.com/ThetaSigmaLabs/the-moment.git
-cd the-moment
-docker-compose up -d
+make setup   # creates .env from .env.example + data directories
+make up      # start The Moment + Spoolman
+make logs    # tail live logs
+make update  # pull latest images and restart
+make backup  # archive all data to ./backups/
 ```
 
-The `docker-compose.yml` sets `THE_MOMENT_DB_PATH=/app/data` so the database persists in the mounted volume.
+Run `make help` to see all available targets.
+
+Full deployment documentation: [docs/deployment.md](docs/deployment.md)
 
 ### Option 2: Pre-built Binary
 
-1. Download the latest release for your platform from the [Releases page](https://github.com/ThetaSigmaLabs/the-moment/releases):
-   - Linux (amd64, arm64)
-   - macOS (amd64/Intel, arm64/Apple Silicon)
-   - Windows (amd64)
+Download the latest binary for your platform from the [Releases page](https://github.com/ThetaSigmaLabs/the-moment/releases):
 
-2. Make it executable (Linux/macOS):
+| Platform | File |
+|---|---|
+| Linux amd64 | `the-moment-linux-amd64` |
+| Linux arm64 (Raspberry Pi, Odroid) | `the-moment-linux-arm64` |
+| macOS Intel | `the-moment-darwin-amd64` |
+| macOS Apple Silicon | `the-moment-darwin-arm64` |
+| Windows | `the-moment-windows-amd64.exe` |
 
-   ```bash
-   chmod +x the-moment
-   ```
+```bash
+chmod +x the-moment-linux-arm64
+./the-moment-linux-arm64
+```
 
-3. Start Spoolman (if not already running) — see Step 1 above.
-
-4. Start The Moment:
-
-   ```bash
-   ./the-moment
-   ```
-
-5. Open `http://localhost:5000` and configure via Settings.
+Start Spoolman separately or via Docker, then open `http://localhost:5000`.
 
 ### Option 3: Build from Source
 
 ```bash
 git clone https://github.com/ThetaSigmaLabs/the-moment.git
 cd the-moment
-go mod download
 go build -o the-moment .
 ./the-moment
 ```
 
-## Bambu Printer Setup
-
-Bambu printers (X1C, P1S, A1, A1 Mini, etc.) connect via MQTT over TLS directly on your LAN — no cloud relay.
-
-**Requirements:**
-
-- LAN mode enabled on the printer (Bambu Handy → Settings → LAN Only Mode or LAN Mode)
-- The printer's LAN IP address
-- The printer's serial number and access code (shown in Bambu Handy → Settings → Device or on the printer screen under Network)
-
-**Add the printer in The Moment:**
-
-1. Go to **Settings → Printers → Add Printer**
-2. Set **Type** to `Bambu`
-3. Enter the LAN IP in **IP Address**
-4. Enter credentials as `serial:accesscode` in **API Key** (e.g. `00M09C380500001:abc12345`)
-5. Set **Toolheads** to the number of AMS slots (4 for one AMS unit, 8 for two, 1 for no AMS)
-6. Save — The Moment will connect on the next poll cycle
-
-**AMS slot → toolhead mapping:**
-
-Each AMS tray maps to a toolhead index: `(ams_unit * 4) + tray`. Assign Spoolman spools to these slots via the NFC Tags tab or directly in the Filament Status tab, exactly as with any other multi-toolhead printer.
-
-### Bambu Debug Logging
-
-If a Bambu printer is not connecting or not recording print events, enable debug logging to capture the full MQTT transcript:
-
-**Option 1 — environment variable** (set in `.env`, requires container restart):
-
-```bash
-BAMBU_DEBUG=1
-```
-
-**Option 2 — DB config key** (hot-toggle, no restart):
-
-In Settings → Advanced, add a config entry `bambu_debug` = `true`.
-
-**Collect the log:**
-
-```bash
-# All Bambu debug lines from Docker
-docker logs the-moment 2>&1 | grep "BAMBU"
-
-# Tail live
-docker logs -f the-moment 2>&1 | grep "BAMBU"
-```
-
-The log captures TLS handshake outcome, MQTT CONNACK code, raw JSON payloads, AMS slot parsing, and state machine transitions. Provide this transcript in a GitHub issue or to Claude when diagnosing integration problems.
+Go 1.24 or higher is required.
 
 ---
 
-## OctoPrint Plugin
+## Printer Setup
 
-The Moment ships an OctoPrint plugin (`octoprint-plugin/`) that pushes print events to The Moment API so non-Prusa printers share the same history and cost tracking.
+### PrusaLink
 
-**What the plugin sends:**
+1. Settings → Printers → Add Printer
+2. Set Type to `PrusaLink`, enter the printer's LAN IP and API key
+3. Set Toolheads to `1` (or `5` for XL)
+4. Save — The Moment polls on the next cycle
 
-- Print start, finish, cancel, and fail events
-- Pause events with timestamps and reasons
-- Per-tool filament usage (split by spool when a filament change occurs mid-print)
-- Spool IDs from OctoPrint-SpoolManager or Spoolman plugin (optional)
-- A UUID `session_id` so all tool rows for one job group correctly in history
+The Moment must be configured before the first print. Prints that occur before the printer is added are not recorded.
+
+### OctoPrint
+
+The Moment ships an OctoPrint plugin that pushes print events directly.
 
 **Plugin setup:**
 
-1. Copy or install the plugin from `octoprint-plugin/`
-2. In OctoPrint Settings → **The Moment**, set:
-   - **URL**: `http://<your-the-moment-host>:5000`
-   - **Printer ID**: a short identifier matching the name you'll use in The Moment, e.g. `ender3-v3-se`
-   - **API Key**: leave blank unless you've configured one in The Moment
-3. In The Moment, go to **Settings → Printers → Add Printer** and create an entry whose name matches the Printer ID above
+1. Install the plugin: Settings → Plugin Manager → Upload `octoprint-the-moment.zip` from the [Releases page](https://github.com/ThetaSigmaLabs/the-moment/releases)
+2. In OctoPrint → Settings → The Moment: set **URL** to `http://<your-server>:5000` and **Printer ID** to a short name like `ender3`
+3. In The Moment → Settings → Printers → Add Printer with the same name
 
-> **Setup order note:** The Moment will accept print records from any authenticated OctoPrint instance, even before a matching printer config is created. However, printer-specific cost rates (wattage, depreciation) only apply once the config exists, and they are not applied retroactively. Create the printer config in The Moment before your first print to get accurate costs from the start.
+> The Moment accepts print records from any authenticated OctoPrint instance even before the printer config exists — no print data is ever lost. Create the config before the first print to get accurate per-printer cost rates from day one.
+
+Full plugin documentation: [docs/octoprint-plugin.md](docs/octoprint-plugin.md)
+
+### Bambu (X1C, P1S, A1, A1 Mini)
+
+Bambu printers connect via MQTT over TLS on your LAN — no cloud relay, no Bambu account required.
+
+**Requirements:**
+
+- LAN mode enabled (Bambu Handy → Settings → LAN Only Mode)
+- Printer's LAN IP address
+- Serial number and access code (Bambu Handy → Settings → Device, or on the printer screen under Network)
+
+**Add the printer:**
+
+1. Settings → Printers → Add Printer → Type: `Bambu`
+2. IP Address: the printer's LAN IP
+3. API Key: `serial:accesscode` (e.g. `00M09C380500001:abc12345`)
+4. Toolheads: number of AMS slots (4 for one AMS, 8 for two, 1 for no AMS)
+5. Save
+
+Each AMS tray maps to a toolhead: `(ams_unit × 4) + tray`. Assign Spoolman spools to those slots the same way as any other printer.
+
+**Troubleshooting Bambu:** Enable `BAMBU_DEBUG=1` in `.env` (requires restart), then:
+
+```bash
+docker logs -f the-moment 2>&1 | grep "BAMBU"
+```
+
+---
 
 ## Configuration
 
-All configuration lives in the SQLite database. For Docker, set `THE_MOMENT_DB_PATH` to control where the file is stored (defaults to `/app/data` in Docker, current directory otherwise).
+All configuration lives in the SQLite database and is managed through the web UI. No config files.
 
-### First Run
+### Web Interface
 
-1. Open `http://localhost:5000`
-2. Go to **Settings → Printers → Add Printer**
-3. Enter a name, hostname/IP, and API key
-4. Optionally set toolhead count and names
-5. Go to **Settings → Cost Settings** to configure electricity rate, wattage, maintenance, depreciation, margin, and currency
-
-### Printer creation requirements by interface
-
-| Interface | Must create printer before first print? | What happens if you don't |
-| --- | --- | --- |
-| **PrusaLink** | **Yes** | The Moment only polls configured printers. Prints that occur before the printer is added are never recorded. |
-| **Bambu** | **Yes** | Same as PrusaLink — pull-based. The Moment only polls printers it knows about. |
-| **Virtual** | **Yes** | Virtual printers are created explicitly — there is no push path. |
-| **OctoPrint** | **Recommended, not required** | Print records are accepted and stored regardless. Printer-specific cost rates (wattage, depreciation) are not applied until a matching config exists, and are not applied retroactively. |
-
-## Usage
-
-### Running the Service
-
-```bash
-# Default (0.0.0.0:5000)
-./the-moment
-
-# Custom host and port
-./the-moment --host 127.0.0.1 --port 8080
-```
-
-### Web Interface Tabs
-
-| Tab | Description |
-| --- | --- |
-| **Dashboard** | Live printer status, current jobs, toolhead spool assignments |
+| Tab | What it does |
+|---|---|
+| **Dashboard** | Live printer status, current jobs, toolhead-to-spool assignments |
 | **Filament Status** | Assign spools to toolheads; smart search by name, material, brand |
 | **History** | Full print history with cost breakdown, notes, thumbnails; grouped by session |
-| **NFC Tags** | Generate QR codes for spools, filament types, and locations |
-| **Settings** | Printers, cost settings (global + per-printer), advanced timeouts, spool assignment |
-
-### Virtual Test Printers
-
-Virtual printers let you validate Spoolman integration and cost calculations without needing hardware:
-
-1. **Settings → Printers → Add Virtual Test Printer**
-2. Upload G-code files to the virtual printer
-3. Click **Process** to simulate the print — filament usage is parsed from the G-code, Spoolman is updated, and a history entry is created with full cost breakdown
-4. Export/import virtual printers (with their G-code libraries) as JSON for sharing or backup
+| **NFC Tags** | Generate QR codes and NFC tag files for spools, filament types, and locations |
+| **Settings** | Printers, cost settings (global + per-printer), advanced timeouts, Spoolman connection |
 
 ### Cost Settings
 
-**Global settings** (Settings → Cost Settings):
+**Global** (Settings → Cost Settings):
 
-- Electricity rate ($/kWh)
-- Default printer wattage (W)
-- Maintenance rate ($/hour)
-- Depreciation rate ($/hour)
-- Profit margin (%)
-- Currency (ISO code)
+| Setting | Purpose |
+|---|---|
+| Electricity rate | $/kWh |
+| Default wattage | Printer power draw in watts |
+| Maintenance rate | $/hour for wear and consumables |
+| Depreciation rate | $/hour or derived from purchase cost ÷ lifespan |
+| Profit margin | % markup for print-as-a-service |
+| Currency | ISO code: USD, EUR, GBP, CAD, AUD, etc. |
 
-**Per-printer overrides** (Settings → Cost Settings → Per-Printer Overrides):
+**Per-printer** (Settings → Cost Settings → Per-Printer Overrides): wattage, preheat charge, high-temp extra wattage, depreciation rate — all override the global defaults for that printer only.
 
-- Print wattage — overrides global default for this printer
-- Preheat wattage + time — one-time electricity charge per print
-- High-temp extra wattage — automatically applied when Spoolman material is ABS, ASA, PA, or PC
-- Purchase cost + estimated lifespan — derives depreciation per hour
-- Direct depreciation per hour — overrides the derived value
+### NFC Spool Assignment Workflow
 
-### NFC Tag Management
+1. NFC Tags tab → generate a spool tag for each physical spool
+2. NFC Tags tab → generate location tags for each printer toolhead
+3. Write the tags using [NFC Tools Pro](https://apps.apple.com/app/nfc-tools/id1252962749) on iPhone
+4. To assign: tap the spool tag → tap the toolhead location tag (within 5 minutes)
+5. Spoolman location field updates automatically
 
-1. Go to the **NFC Tags** tab
-2. Generate QR codes for spools, filament types, or locations
-3. Scan the QR code with NFC Tools Pro to write the URL to an NFC tag
-4. To assign: tap the spool tag, then the location tag (or location then spool) within 5 minutes
+---
 
 ## API Reference
+
+The Moment exposes a REST API for integration with other tools and the OctoPrint plugin.
 
 ### Printers & Config
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|---|---|---|
 | `GET` | `/api/status` | Current printer status and spool mappings |
 | `GET` | `/api/printers` | List all configured printers |
 | `POST` | `/api/printers` | Add a printer |
@@ -318,7 +273,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Virtual Printer Files
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|---|---|---|
 | `GET` | `/api/printers/:id/files` | List uploaded G-code files |
 | `POST` | `/api/printers/:id/files` | Upload a G-code file |
 | `DELETE` | `/api/printers/:id/files/:file_id` | Delete a file |
@@ -328,7 +283,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Filament & Spools
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|---|---|---|
 | `GET` | `/api/spools` | All spools from Spoolman |
 | `GET` | `/api/filaments` | All filament types from Spoolman |
 | `GET` | `/api/available_spools` | Spools available for a toolhead |
@@ -339,7 +294,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### History & Sessions
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|---|---|---|
 | `GET` | `/api/history` | Full print history (flat, newest first) |
 | `GET` | `/api/history/:id` | Single history entry with filament usage breakdown |
 | `PATCH` | `/api/history/:id/note` | Add or update a note on a history entry |
@@ -349,7 +304,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### Cost
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|---|---|---|
 | `GET` | `/api/cost-settings` | Get global cost settings |
 | `POST` | `/api/cost-settings` | Save global cost settings |
 | `GET` | `/api/cost-settings/printers` | Get all per-printer overrides |
@@ -360,13 +315,13 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 ### OctoPrint Integration
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|---|---|---|
 | `POST` | `/api/prints` | Receive a print record from the OctoPrint plugin |
 
-### Print Errors, NFC & Locations
+### NFC, Errors & Locations
 
 | Method | Endpoint | Description |
-| --- | --- | --- |
+|---|---|---|
 | `GET` | `/api/print-errors` | Unacknowledged print errors |
 | `POST` | `/api/print-errors/:id/acknowledge` | Acknowledge a print error |
 | `GET` | `/api/nfc/assign` | Handle NFC tag scan |
@@ -378,40 +333,7 @@ Virtual printers let you validate Spoolman integration and cost calculations wit
 | `DELETE` | `/api/locations/:name` | Delete a location |
 | `WS` | `/ws/status` | WebSocket — real-time status updates |
 
-## Project Structure
-
-```text
-the-moment/
-├── main.go                          # Entry point, CLI flags, startup goroutines
-├── bridge.go                        # Core monitoring, DB, business logic
-├── web.go                           # HTTP server, all route handlers
-├── nfc.go                           # NFC NDEF binary generation, session management
-├── nfc_routes.go                    # HTTP handlers for NFC/spool assignment API
-├── spoolman.go                      # Spoolman API client
-├── prusalink.go                     # PrusaLink API client
-├── bambu.go                         # Bambu MQTT client, BambuStatusProvider interface, AMS parsing
-├── cost.go                          # Cost calculation and per-printer overrides
-├── config.go                        # Configuration management
-├── constants.go                     # Application constants
-├── version.go                       # Version string
-├── templates/                       # HTML templates (dashboard, history, settings, NFC pages)
-├── static/                          # CSS, JS, images
-│   └── js/
-│       ├── cost-calculator.js       # Cost settings UI and quick calculator
-│       ├── history.js               # Print history and session grouping UI
-│       └── nfc.js                   # NFC & spool assignment UI
-├── octoprint-plugin/                # OctoPrint plugin source
-│   └── octoprint_the_moment/
-│       └── __init__.py
-├── scripts/                         # Developer and packaging scripts
-│   ├── package-octoprint-plugin.sh  # Packages the OctoPrint plugin as an installable zip
-│   └── test_stack.sh                # Starts the full test stack (Spoolman + The Moment)
-├── contrib/                         # Contributed configs for related tools
-│   └── moonraker_spoolman.cfg       # Moonraker macro for Spoolman filament tracking
-├── *_test.go                        # Unit tests (go test ./...)
-├── *_integration_test.go            # Integration tests (go test -tags=integration ./...)
-└── README.md
-```
+---
 
 ## Troubleshooting
 
@@ -419,24 +341,31 @@ the-moment/
 
 - Verify the IP/hostname in Settings → Printers
 - Ensure PrusaLink is enabled on the printer
-- Check network connectivity and firewall rules
+- Check network connectivity between the Docker host and the printer
 
 ### Spoolman connection failed
 
-- Confirm Spoolman is running and accessible at the configured URL
-- Use Settings → Basic Configuration → Test Connection
+- Confirm Spoolman is running and reachable at the configured URL
+- Settings → Basic Configuration → Test Connection
 
 ### Filament usage not tracked
 
-- Confirm spools are mapped to toolheads before printing
-- Check that prints are completing, not just pausing
+- Confirm spools are assigned to toolheads before printing
+- Check that prints are completing, not pausing indefinitely
 - Verify PrusaLink is returning filament usage data (check logs)
 
 ### OctoPrint plugin not sending
 
 - Confirm the URL in OctoPrint Settings → The Moment includes the correct host and port
-- Check the OctoPrint log (`octoprint.log`) for connection errors
+- Check `octoprint.log` for connection errors
 - Ensure The Moment is reachable from the OctoPrint host
+
+### Bambu printer not connecting
+
+- Confirm LAN mode is enabled on the printer
+- Verify the IP is reachable: `ping <printer-ip>` from the Docker host
+- API Key must be `serial:accesscode` — no spaces, colon separator
+- Enable `BAMBU_DEBUG=1` and check: `docker logs the-moment 2>&1 | grep "BAMBU"`
 
 ### WebSocket connection issues
 
@@ -444,98 +373,92 @@ the-moment/
 - The interface falls back to periodic polling if WebSocket fails
 - Ensure no reverse proxy is stripping the `Upgrade` header
 
-### Bambu printer not connecting
-
-- Confirm LAN mode is enabled on the printer
-- Verify the IP address is correct and reachable from the Docker host (`ping <printer-ip>`)
-- Check credentials: `APIKey` must be `serial:accesscode` — no spaces, colon separator
-- Enable `BAMBU_DEBUG=1` and check `docker logs the-moment 2>&1 | grep "BAMBU"` for TLS or auth errors
-
-### Bambu print not recorded
-
-- Verify `Toolheads` count in the printer config matches the number of AMS slots
-- Confirm spools are assigned to the relevant AMS slot toolheads before printing
-- Enable debug logging and look for `[BAMBU DEBUG] State transition` and `Triggering print finish` lines
-
 ### Stuck spool assignments after deleting a printer
 
-- Settings → Printers → Check for Stuck Assignments
-- Release them with "Release All Stuck Spools"
+- Settings → Printers → Check for Stuck Assignments → Release All Stuck Spools
 
 ### Logs
 
-The service logs to stdout. Key events to look for:
+```bash
+make logs                    # tail all container logs
+docker logs the-moment       # The Moment only
+docker logs -f the-moment    # live tail
+```
 
-- Printer status updates and job completions
-- Filament usage calculations and Spoolman update confirmations
-- Cost calculation results (including high-temp flag)
-- WebSocket connection state
-- Print processing errors
+---
 
 ## Development
 
 ```bash
-# Download dependencies
-go mod download
+# First-time setup
+make setup      # creates .env and data dirs
 
-# Build
+# Dev stack (Docker + air hot-reload)
+make dev-build  # build once; re-run if go.mod changes
+make dev-up     # start with hot-reload (foreground, Ctrl-C to stop)
+
+# Tests
+make test-unit          # unit tests, fast, no external deps
+make test-integration   # requires build tag; spins up in-process DB
+make test-all           # both
+
+# Code quality
+make lint       # go vet + staticcheck
+
+# Build from source
 go build -o the-moment .
-
-# Run all tests
-go test ./...
-
-# Run with race detector
-go run -race .
-
-# Run integration tests (includes Bambu, OctoPrint lifecycle, monitor)
-go test -tags=integration ./... -v
-
-# Run specific test suites
-go test -tags=integration ./... -v -run TestBambu
-go test ./... -v -run TestOctoPrint
-go test ./... -v -run TestCost
-go test ./... -v -run TestSession
 ```
+
+For VS Code dev mode with debugger: see [docs/deployment.md](docs/deployment.md#option-3--vs-code-dev-mode).
+
+### Project Structure
+
+```
+main.go          — entry point, router setup
+bridge.go        — core monitoring, SetToolheadMapping, SyncSpoolmanLocationsToDB
+config.go        — printer config load/save
+cost.go          — CostSettings, CostBreakdown, cost API routes
+database.go      — SQLite init, migrations, all DB helpers
+monitor.go       — MonitorPrinters loop
+prusalink.go     — PrusaLink API client
+octoprint.go     — OctoPrint API client
+bambu.go         — Bambu MQTT client, AMS parsing
+virtual.go       — virtual printer file upload, G-code parsing
+gcode.go         — ParseGcodeMetadata (filament usage, thumbnails)
+history.go       — print history table, notes, delete
+spoolman.go      — Spoolman API client
+nfc.go           — NDEF binary generation (BuildSpoolTagNDEF, BuildLocationTagNDEF)
+nfc_routes.go    — NFC HTTP handlers, mobile spool/location pages
+web.go           — all HTTP handlers, WebSocket hub
+static/          — frontend HTML/CSS/JS
+```
+
+---
+
+## Standing on Shoulders
+
+The Moment is a fork of [FilaBridge](https://github.com/needo37/filabridge) by [needo37](https://github.com/needo37), released under GPL-3.0.
+
+FilaBridge pioneered the Spoolman bridge pattern for real-time filament tracking — connecting live printer data to Spoolman's inventory without manual entry. Its polling architecture, Spoolman API client, and PrusaLink integration are the foundation everything else is built on.
+
+If you find The Moment useful, consider starring [FilaBridge](https://github.com/needo37/filabridge) too.
+
+---
 
 ## Contributing
 
-Contributions are welcome!
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, coding conventions, and the PR workflow.
 
-- 🐛 **Report bugs**: Open an issue with details
-- 💡 **Suggest features**: Share your ideas
-- 🔧 **Submit PRs**: Fix bugs or add features (open an issue first for major changes)
-- 📖 **Improve docs**: Help make documentation clearer
-- ⭐ **Star the repo**: Show your support
+The short version:
+- Fork, branch, and open a PR against `main`
+- `make test-all` must pass
+- Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/)
+- No config files — all settings live in SQLite and are managed through the UI
 
-## Roadmap
-
-- [x] Bambu printer support (MQTT over TLS, AMS multi-toolhead)
-- [ ] Support for additional printer APIs
-- [ ] Mobile-responsive UI improvements
-- [x] OctoPrint plugin
-- [x] Full print history with cost breakdown
-- [x] Per-printer cost overrides
-- [x] High-temp material detection
-- [x] Session grouping for multi-toolhead prints
-- [x] Filament-change tracking (`change_number`)
-- [x] Virtual test printers with import/export
-- [x] Stuck spool assignment cleanup
-- [x] Docker image
-- [x] Real-time WebSocket updates
-- [x] NFC tag support
-
-## Acknowledgments
-
-The Moment is derived from [FilaBridge](https://github.com/needo37/filabridge) by [needo37](https://github.com/needo37), licensed under GPL v3. The core bridging logic, PrusaLink client, Spoolman integration, NFC workflow, and web interface originate from that project. This fork continues development under a new name and maintainer.
+---
 
 ## License
 
-The Moment is free software licensed under the GNU General Public License v3.0 — see the [LICENSE](LICENSE) file for details.
+GPL-3.0. See [LICENSE](LICENSE).
 
-The Moment is derived from FilaBridge, Copyright (C) 2025 needo37. Both works are distributed under the same GPL v3 license.
-
-## Support
-
-- **PrusaLink issues**: Check Prusa's official documentation
-- **Spoolman issues**: [Spoolman GitHub](https://github.com/Donkie/Spoolman)
-- **This project**: Open an issue in this repository
+Derived from FilaBridge — Copyright (C) 2025 needo37. The Moment additions — Copyright (C) 2026 maudy2u (ThetaSigmaLabs).

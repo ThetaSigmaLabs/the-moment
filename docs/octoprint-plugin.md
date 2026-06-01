@@ -2,6 +2,11 @@
 
 The Moment plugin for OctoPrint is a push connector: it fires print events from OctoPrint directly to The Moment's API. Every print — started, paused, resumed, finished, cancelled, or failed — is captured with exact timestamps, filament used per toolhead, spool IDs, and a thumbnail if one is embedded in the G-code.
 
+![Dashboard showing OctoPrint printer](../.github/screenshots/dashboard.png)
+*OctoPrint-managed printers appear in the dashboard alongside PrusaLink and Bambu printers*
+
+<!-- screenshot needed: OctoPrint plugin settings panel in OctoPrint UI -->
+
 ---
 
 ## Installation
