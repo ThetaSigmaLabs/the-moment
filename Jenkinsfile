@@ -5,113 +5,298 @@ pipeline {
         REGISTRY = '10.9.8.8:5050'
         IMAGE    = 'the-moment'
         TAG      = "${BUILD_NUMBER}"
+        // Unix-only PATH — Windows agent uses its system PATH
         PATH     = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
     }
 
     stages {
-        // ── Gate: tests must pass before any builds ────────────────────────
+
+        // ── Gate: tests must pass on both platforms before any builds ─────────
         stage('Tests') {
-            agent { label 'linux-arm64' }
-            steps {
-                sh 'make test-all'
+            parallel {
+                stage('Tests: linux/arm64') {
+                    agent { label 'linux-arm64' }
+                    steps {
+                        sh 'make test-all'
+                    }
+                }
+                stage('Tests: windows/amd64') {
+                    agent { label 'windows' }
+                    steps {
+                        // Verify tools are reachable under the NSSM service account PATH
+                        bat 'go version'
+                        bat 'gcc --version'
+                        // make is not guaranteed on Windows — run the two targets directly
+                        // CGO_ENABLED=1 is explicit: mattn/go-sqlite3 requires gcc
+                        bat 'set CGO_ENABLED=1&& go test ./... -count=1'
+                        bat 'set CGO_ENABLED=1&& go test -tags=integration ./... -count=1 -v'
+                    }
+                }
             }
         }
 
-        // ── Build linux/arm64 binary (native) ─────────────────────────────
+        // ── Build platform binaries ───────────────────────────────────────────
+        // linux/arm64 — native CGO build on ARM64 agent
+        // linux/amd64 — CGO build inside a golang:1.24-alpine container on Windows
+        //               (amd64 container is native on beelink, no QEMU)
+        // windows/amd64 — native CGO build on Windows agent (requires MinGW gcc)
         stage('Build Binaries') {
-            agent { label 'linux-arm64' }
-            steps {
-                sh 'CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o the-moment-linux-arm64 .'
-                stash name: 'bin-linux-arm64', includes: 'the-moment-linux-arm64'
+            parallel {
+                stage('linux/arm64') {
+                    agent { label 'linux-arm64' }
+                    steps {
+                        sh 'CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o the-moment-linux-arm64 .'
+                        sh 'file the-moment-linux-arm64'
+                        stash name: 'bin-linux-arm64', includes: 'the-moment-linux-arm64'
+                    }
+                }
+                stage('linux/amd64 + windows/amd64') {
+                    agent { label 'windows' }
+                    steps {
+                        // linux/amd64 — run inside an alpine container (native amd64, no QEMU needed)
+                        powershell '''
+                            docker run --rm --platform linux/amd64 `
+                              -v "${env:WORKSPACE}:/src" -w /src `
+                              golang:1.24-alpine `
+                              sh -c "apk add --no-cache gcc musl-dev && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o the-moment-linux-amd64 ."
+                        '''
+                        // windows/amd64 — native build, CGO_ENABLED=1 requires MinGW gcc in PATH
+                        // CC=gcc is explicit so Go doesn't silently fall back to a wrong compiler
+                        powershell '''
+                            $env:CGO_ENABLED = "1"
+                            $env:CC          = "gcc"
+                            $env:GOOS        = "windows"
+                            $env:GOARCH      = "amd64"
+                            go build -ldflags="-s -w" -o the-moment-windows-amd64.exe .
+                        '''
+                        // Verify both files exist and show sizes
+                        bat 'dir the-moment-linux-amd64 the-moment-windows-amd64.exe'
+                        stash name: 'bin-linux-amd64',    includes: 'the-moment-linux-amd64'
+                        stash name: 'bin-windows-amd64',  includes: 'the-moment-windows-amd64.exe'
+                    }
+                }
             }
         }
 
-        // ── Build arm64-only Docker image, push to local registry ──────────
-        // Use plain docker build (not buildx) so the daemon's insecure-registry
-        // config is inherited. BuildKit is on by default in Docker 23+.
-        stage('Build Docker Image') {
+        // ── Build per-platform Docker images, push with arch suffix ──────────
+        // ARM64 uses plain docker build (inherits daemon.json insecure-registry).
+        // Windows uses docker build --platform linux/amd64 (native on amd64 host).
+        // Multi-arch manifest is assembled in the next stage.
+        stage('Build Docker Images') {
+            parallel {
+                stage('Docker: linux/arm64') {
+                    agent { label 'linux-arm64' }
+                    steps {
+                        sh '''
+                            docker build --target production \
+                              -t ${REGISTRY}/${IMAGE}:${TAG}-arm64 \
+                              .
+                            docker push ${REGISTRY}/${IMAGE}:${TAG}-arm64
+                            echo "Pushed ${REGISTRY}/${IMAGE}:${TAG}-arm64"
+                        '''
+                    }
+                }
+                stage('Docker: linux/amd64') {
+                    agent { label 'windows' }
+                    steps {
+                        powershell '''
+                            $img = "$env:REGISTRY/$($env:IMAGE):$($env:TAG)-amd64"
+                            docker build --target production --platform linux/amd64 -t $img .
+                            docker push $img
+                            Write-Host "Pushed $img"
+                        '''
+                    }
+                }
+            }
+        }
+
+        // ── Combine into a multi-arch manifest ───────────────────────────────
+        // Uses buildx imagetools (requires a builder that knows about the insecure
+        // registry — created here with buildkitd.toml, removed after use).
+        stage('Create Multi-arch Manifest') {
             agent { label 'linux-arm64' }
             steps {
                 sh '''
-                    docker build \
-                      --target production \
+                    cat > /tmp/buildkitd-${BUILD_NUMBER}.toml <<EOF
+[registry."${REGISTRY}"]
+  http = true
+  insecure = true
+EOF
+                    docker buildx create --name ci-manifest-${BUILD_NUMBER} \
+                      --driver-opt network=host \
+                      --config /tmp/buildkitd-${BUILD_NUMBER}.toml \
+                      --use
+
+                    docker buildx imagetools create \
                       -t ${REGISTRY}/${IMAGE}:${TAG} \
                       -t ${REGISTRY}/${IMAGE}:latest \
-                      .
-                    docker push ${REGISTRY}/${IMAGE}:${TAG}
-                    docker push ${REGISTRY}/${IMAGE}:latest
+                      ${REGISTRY}/${IMAGE}:${TAG}-arm64 \
+                      ${REGISTRY}/${IMAGE}:${TAG}-amd64
+
+                    echo "=== Manifest verification ==="
+                    docker buildx imagetools inspect ${REGISTRY}/${IMAGE}:${TAG}
+
+                    docker buildx rm ci-manifest-${BUILD_NUMBER} || true
+                    rm -f /tmp/buildkitd-${BUILD_NUMBER}.toml
                 '''
             }
         }
 
-        // ── Smoke-test binary ──────────────────────────────────────────────
+        // ── Smoke-test binaries on their native platforms ─────────────────────
         stage('Test Binaries') {
-            agent { label 'linux-arm64' }
-            steps {
-                unstash 'bin-linux-arm64'
-                sh '''
-                    chmod +x the-moment-linux-arm64
-                    mkdir -p /tmp/tm-test-${BUILD_NUMBER}-arm64
-                    THE_MOMENT_DB_PATH=/tmp/tm-test-${BUILD_NUMBER}-arm64 \
-                      ./the-moment-linux-arm64 --port 15101 &
-                    PID=$!
-                    HTTP="000"
-                    for i in $(seq 1 15); do
-                      sleep 1
-                      HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
-                        http://localhost:15101/api/status 2>/dev/null) || true
-                      [ "$HTTP" = "200" ] && break
-                    done
-                    kill $PID 2>/dev/null || true
-                    rm -rf /tmp/tm-test-${BUILD_NUMBER}-arm64
-                    [ "$HTTP" = "200" ] || (echo "linux-arm64 smoke FAILED: HTTP $HTTP" && exit 1)
-                '''
+            parallel {
+                stage('Test: linux/arm64') {
+                    agent { label 'linux-arm64' }
+                    steps {
+                        unstash 'bin-linux-arm64'
+                        sh '''
+                            chmod +x the-moment-linux-arm64
+                            mkdir -p /tmp/tm-test-${BUILD_NUMBER}-arm64
+                            THE_MOMENT_DB_PATH=/tmp/tm-test-${BUILD_NUMBER}-arm64 \
+                              ./the-moment-linux-arm64 --port 15101 &
+                            PID=$!
+                            HTTP="000"
+                            for i in $(seq 1 15); do
+                              sleep 1
+                              HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+                                http://localhost:15101/api/status 2>/dev/null) || true
+                              [ "$HTTP" = "200" ] && break
+                            done
+                            kill $PID 2>/dev/null || true
+                            rm -rf /tmp/tm-test-${BUILD_NUMBER}-arm64
+                            [ "$HTTP" = "200" ] || (echo "linux/arm64 smoke FAILED: HTTP $HTTP" && exit 1)
+                            echo "linux/arm64 smoke: PASSED (HTTP $HTTP)"
+                        '''
+                    }
+                }
+                stage('Test: windows/amd64') {
+                    agent { label 'windows' }
+                    steps {
+                        unstash 'bin-windows-amd64'
+                        powershell '''
+                            $tmpDir = "$env:TEMP\\tm-test-$env:BUILD_NUMBER-win"
+                            New-Item -ItemType Directory -Force $tmpDir | Out-Null
+                            $env:THE_MOMENT_DB_PATH = $tmpDir
+                            $proc = Start-Process -FilePath ".\\the-moment-windows-amd64.exe" `
+                                        -ArgumentList "--port","15102" `
+                                        -PassThru
+                            $http = "000"
+                            for ($i = 1; $i -le 15; $i++) {
+                                Start-Sleep 1
+                                try {
+                                    $r = Invoke-WebRequest -Uri "http://localhost:15102/api/status" `
+                                             -UseBasicParsing -TimeoutSec 2
+                                    $http = [string]$r.StatusCode
+                                } catch {}
+                                if ($http -eq "200") { break }
+                            }
+                            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                            Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                            if ($http -ne "200") {
+                                Write-Error "windows/amd64 smoke FAILED: HTTP $http"
+                                exit 1
+                            }
+                            Write-Host "windows/amd64 smoke: PASSED (HTTP $http)"
+                        '''
+                    }
+                }
             }
         }
 
-        // ── Smoke-test Docker image from registry ──────────────────────────
-        stage('Test Docker Image') {
-            agent { label 'linux-arm64' }
-            steps {
-                sh '''
-                    docker pull ${REGISTRY}/${IMAGE}:${TAG}
-
-                    docker run -d \
-                      --name tm-docker-${BUILD_NUMBER} \
-                      -e THE_MOMENT_DB_PATH=/app/data/db \
-                      -e SPOOLMAN_URL=http://127.0.0.1:9999 \
-                      -p 15200:5000 \
-                      ${REGISTRY}/${IMAGE}:${TAG}
-
-                    HTTP="000"
-                    for i in $(seq 1 20); do
-                      sleep 2
-                      HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
-                        http://localhost:15200/api/status 2>/dev/null) || true
-                      [ "$HTTP" = "200" ] && break
-                    done
-                    echo "=== Container logs ==="
-                    docker logs tm-docker-${BUILD_NUMBER} 2>&1 || true
-                    echo "=== End container logs ==="
-                    docker rm -f tm-docker-${BUILD_NUMBER} || true
-                    [ "$HTTP" = "200" ] || (echo "Docker smoke test FAILED: HTTP $HTTP" && exit 1)
-                '''
+        // ── Smoke-test Docker images from registry ────────────────────────────
+        // ARM64 agent pulls the multi-arch manifest → gets linux/arm64 layer.
+        // Windows agent pulls with --platform linux/amd64 → gets linux/amd64 layer.
+        stage('Test Docker Images') {
+            parallel {
+                stage('Docker Test: linux/arm64') {
+                    agent { label 'linux-arm64' }
+                    steps {
+                        sh '''
+                            docker pull ${REGISTRY}/${IMAGE}:${TAG}
+                            docker run -d \
+                              --name tm-docker-${BUILD_NUMBER} \
+                              -e THE_MOMENT_DB_PATH=/app/data/db \
+                              -e SPOOLMAN_URL=http://127.0.0.1:9999 \
+                              -p 15200:5000 \
+                              ${REGISTRY}/${IMAGE}:${TAG}
+                            HTTP="000"
+                            for i in $(seq 1 20); do
+                              sleep 2
+                              HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+                                http://localhost:15200/api/status 2>/dev/null) || true
+                              [ "$HTTP" = "200" ] && break
+                            done
+                            echo "=== Container logs ==="
+                            docker logs tm-docker-${BUILD_NUMBER} 2>&1 || true
+                            docker rm -f tm-docker-${BUILD_NUMBER} || true
+                            [ "$HTTP" = "200" ] || (echo "Docker linux/arm64 smoke FAILED: HTTP $HTTP" && exit 1)
+                            echo "Docker linux/arm64 smoke: PASSED (HTTP $HTTP)"
+                        '''
+                    }
+                }
+                stage('Docker Test: linux/amd64') {
+                    agent { label 'windows' }
+                    steps {
+                        powershell '''
+                            $img  = "$env:REGISTRY/$($env:IMAGE):$env:TAG"
+                            $name = "tm-docker-amd64-$env:BUILD_NUMBER"
+                            docker pull --platform linux/amd64 $img
+                            docker run -d `
+                              --platform linux/amd64 `
+                              --name $name `
+                              -e THE_MOMENT_DB_PATH=/app/data/db `
+                              -e SPOOLMAN_URL=http://127.0.0.1:9999 `
+                              -p 15201:5000 `
+                              $img
+                            $http = "000"
+                            for ($i = 1; $i -le 20; $i++) {
+                                Start-Sleep 2
+                                try {
+                                    $r = Invoke-WebRequest -Uri "http://localhost:15201/api/status" `
+                                             -UseBasicParsing -TimeoutSec 2
+                                    $http = [string]$r.StatusCode
+                                } catch {}
+                                if ($http -eq "200") { break }
+                            }
+                            Write-Host "=== Container logs ==="
+                            docker logs $name 2>&1
+                            docker rm -f $name | Out-Null
+                            if ($http -ne "200") {
+                                Write-Error "Docker linux/amd64 smoke FAILED: HTTP $http"
+                                exit 1
+                            }
+                            Write-Host "Docker linux/amd64 smoke: PASSED (HTTP $http)"
+                        '''
+                    }
+                }
             }
         }
 
-        // ── Archive binaries ───────────────────────────────────────────────
+        // ── Archive all binaries ──────────────────────────────────────────────
         stage('Archive') {
             agent { label 'linux-arm64' }
             steps {
                 unstash 'bin-linux-arm64'
-                sh 'sha256sum the-moment-linux-arm64 > checksums.txt && cat checksums.txt'
-                archiveArtifacts artifacts: 'the-moment-linux-arm64, checksums.txt', fingerprint: true
+                unstash 'bin-linux-amd64'
+                unstash 'bin-windows-amd64'
+                sh '''
+                    sha256sum \
+                      the-moment-linux-arm64 \
+                      the-moment-linux-amd64 \
+                      the-moment-windows-amd64.exe \
+                      > checksums.txt
+                    cat checksums.txt
+                '''
+                archiveArtifacts artifacts: 'the-moment-linux-arm64, the-moment-linux-amd64, the-moment-windows-amd64.exe, checksums.txt',
+                                  fingerprint: true
             }
         }
     }
 
     post {
         failure { echo 'Pipeline FAILED — check stage logs above.' }
-        success { echo "Phase 1 complete. Image at ${REGISTRY}/${IMAGE}:${TAG} (linux/arm64)" }
+        success {
+            echo "Phase 2 complete. Multi-arch image at ${REGISTRY}/${IMAGE}:${TAG} (linux/arm64 + linux/amd64). Binaries: linux/arm64, linux/amd64, windows/amd64."
+        }
     }
 }
