@@ -3019,7 +3019,17 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.previousState[printerID] = currentState
 			b.mutex.Unlock()
 
-			handleErr := b.handlePrusaLinkPrintCancelled(printerID, config, effectiveJobIDStop, filenameToUse, printProgress)
+			// PrusaLink clears job.progress to 0 when transitioning to STOPPED.
+			// Recover the last-known progress from active_print_sessions so filament
+			// can be scaled correctly for mid-print cancellations.
+			effectiveProgress := printProgress
+			if effectiveProgress <= 0 && effectiveJobIDStop != 0 {
+				if session, sErr := b.GetActivePrintSession(printerID, effectiveJobIDStop); sErr == nil && session != nil && session.LastSeenProgress > 0 {
+					effectiveProgress = session.LastSeenProgress
+					log.Printf("[PRUSALINK] printer=%s job=%d: recovered last-known progress %.1f%% (PrusaLink reported 0%%)", printerID, effectiveJobIDStop, effectiveProgress)
+				}
+			}
+			handleErr := b.handlePrusaLinkPrintCancelled(printerID, config, effectiveJobIDStop, filenameToUse, effectiveProgress)
 
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
@@ -3375,7 +3385,19 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 	}
 
 	if progressPct <= 0 {
-		log.Printf("⚠️  Cancelled print at 0%% progress on %s — skipping filament deduction", printerName)
+		log.Printf("ℹ️  Cancelled print at 0%% progress on %s — recording cancellation with no filament deduction", printerName)
+		b.mutex.RLock()
+		startTime := b.printStartTime[printerID]
+		b.mutex.RUnlock()
+		sessionID := newSessionID()
+		spoolID, _ := b.GetToolheadMapping(printerName, 0)
+		printID, _ := b.LogPrintUsageFull(printerName, 0, spoolID, 0, jobName+" [CANCELLED]",
+			0, "cancelled", "", sessionID, "prusalink")
+		if printID > 0 {
+			if err := b.SnapshotAssignmentsForPrint(printID, printerID, startTime); err != nil {
+				log.Printf("Warning: failed to snapshot NFC assignments for 0%% cancelled print %d: %v", printID, err)
+			}
+		}
 		return nil
 	}
 
