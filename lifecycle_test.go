@@ -63,6 +63,9 @@ func setupBridgeWithMocks(t *testing.T, spoolMap map[int]float64) (*FilamentBrid
 func poll(t *testing.T, bridge *FilamentBridge, printer *MockPrusaLink, printerName string, toolheads int) {
 	t.Helper()
 	cfg := printer.PrinterConfig(printerName, toolheads)
+	if err := bridge.SavePrinterConfig("test-printer-id", cfg); err != nil {
+		t.Fatalf("SavePrinterConfig: %v", err)
+	}
 	if err := bridge.monitorPrusaLink("test-printer-id", cfg); err != nil {
 		t.Fatalf("monitorPrusaLink: %v", err)
 	}

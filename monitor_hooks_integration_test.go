@@ -57,6 +57,9 @@ func TestPrintStartTime_RecordedOnFirstDetection(t *testing.T) {
 	// Poll 1: IDLE — start time stays zero
 	printer.SetState(StateIdle)
 	cfg := printer.PrinterConfig("Test Printer", 1)
+	if err := bridge.SavePrinterConfig(printerID, cfg); err != nil {
+		t.Fatalf("SavePrinterConfig: %v", err)
+	}
 	if err := bridge.monitorPrusaLink(printerID, cfg); err != nil {
 		t.Fatalf("monitorPrusaLink idle: %v", err)
 	}

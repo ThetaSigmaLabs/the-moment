@@ -350,6 +350,15 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		bridge.spoolman = NewSpoolmanClient(config.SpoolmanURL, config.SpoolmanTimeout)
 	}
 
+	// These run after all schema migrations (including migrateOctoPrintSupport which adds
+	// printer_type) so GetAllPrinterConfigs() finds the column on fresh databases.
+	if err := bridge.migrateLocationsToSpoolman(); err != nil {
+		log.Printf("Warning: Failed to migrate locations to Spoolman: %v", err)
+	}
+	if err := bridge.migrateToolheadMappingsToSpoolman(); err != nil {
+		log.Printf("Warning: Failed to migrate toolhead mappings to Spoolman: %v", err)
+	}
+
 	return bridge, nil
 }
 
@@ -498,18 +507,6 @@ func (b *FilamentBridge) initDatabase() error {
 	// Initialize default configuration
 	if err := b.initializeDefaultConfig(); err != nil {
 		return fmt.Errorf("failed to initialize default configuration: %w", err)
-	}
-
-	// Migrate existing The Moment locations to Spoolman
-	if err := b.migrateLocationsToSpoolman(); err != nil {
-		log.Printf("Warning: Failed to migrate locations to Spoolman: %v", err)
-		// Don't fail initialization if migration fails
-	}
-
-	// Create Spoolman locations for existing toolhead mappings
-	if err := b.migrateToolheadMappingsToSpoolman(); err != nil {
-		log.Printf("Warning: Failed to migrate toolhead mappings to Spoolman: %v", err)
-		// Don't fail initialization if migration fails
 	}
 
 	return nil
