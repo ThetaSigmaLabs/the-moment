@@ -5,7 +5,7 @@ pipeline {
         REGISTRY = '10.9.8.8:5050'
         IMAGE    = 'the-moment'
         TAG      = "${BUILD_NUMBER}"
-        PATH+GO  = "/usr/local/go/bin"
+        PATH     = "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     }
 
     stages {
