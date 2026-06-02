@@ -306,7 +306,7 @@ function _pcField(safeName, field, label, value, step, hint) {
     return '<div>' +
         '<label style="font-size:0.8em;color:#aaa;display:block;margin-bottom:3px;">' + label + '</label>' +
         '<input type="number" id="' + id + '" min="0" step="' + step + '" value="' + (value || 0) + '" ' +
-        'style="width:100%;padding:5px 8px;border-radius:4px;border:1px solid #444;background:rgba(255,255,255,0.05);color:#fff;font-size:0.9em;">' +
+        'style="width:100%;box-sizing:border-box;padding:5px 8px;border-radius:4px;border:1px solid #444;background:rgba(255,255,255,0.05);color:#fff;font-size:0.9em;">' +
         (hint ? '<small style="color:#555;font-size:0.75em;">' + hint + '</small>' : '') +
         '</div>';
 }
