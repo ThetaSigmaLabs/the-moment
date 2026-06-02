@@ -379,6 +379,10 @@ func (b *FilamentBridge) initDatabase() error {
 		dbFile = b.config.DBFile
 	}
 
+	if err := os.MkdirAll(filepath.Dir(dbFile), 0755); err != nil {
+		return fmt.Errorf("failed to create database directory: %w", err)
+	}
+
 	db, err := sql.Open("sqlite3", dbFile)
 	if err != nil {
 		return fmt.Errorf("failed to open database: %w", err)

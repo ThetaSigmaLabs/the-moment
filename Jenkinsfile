@@ -13,8 +13,7 @@ pipeline {
         stage('Tests') {
             agent { label 'linux-arm64' }
             steps {
-                sh 'go test ./... -count=1'
-                sh 'go test -tags=integration ./... -count=1 -v'
+                sh 'make test-all'
             }
         }
 
@@ -91,6 +90,9 @@ pipeline {
                         http://localhost:15200/api/status 2>/dev/null) || true
                       [ "$HTTP" = "200" ] && break
                     done
+                    echo "=== Container logs ==="
+                    docker logs tm-docker-${BUILD_NUMBER} 2>&1 || true
+                    echo "=== End container logs ==="
                     docker rm -f tm-docker-${BUILD_NUMBER} || true
                     [ "$HTTP" = "200" ] || (echo "Docker smoke test FAILED: HTTP $HTTP" && exit 1)
                 '''
