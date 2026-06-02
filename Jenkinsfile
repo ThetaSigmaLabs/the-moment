@@ -5,7 +5,7 @@ pipeline {
         REGISTRY = '10.9.8.8:5050'
         IMAGE    = 'the-moment'
         TAG      = "${BUILD_NUMBER}"
-        PATH     = "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        PATH     = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
     }
 
     stages {
@@ -28,19 +28,19 @@ pipeline {
         }
 
         // ── Build arm64-only Docker image, push to local registry ──────────
+        // Use plain docker build (not buildx) so the daemon's insecure-registry
+        // config is inherited. BuildKit is on by default in Docker 23+.
         stage('Build Docker Image') {
             agent { label 'linux-arm64' }
             steps {
                 sh '''
-                    docker buildx create --name ci-builder --use 2>/dev/null || \
-                      docker buildx use ci-builder
-
-                    docker buildx build \
-                      --platform linux/arm64 \
+                    docker build \
+                      --target production \
                       -t ${REGISTRY}/${IMAGE}:${TAG} \
                       -t ${REGISTRY}/${IMAGE}:latest \
-                      --push \
                       .
+                    docker push ${REGISTRY}/${IMAGE}:${TAG}
+                    docker push ${REGISTRY}/${IMAGE}:latest
                 '''
             }
         }

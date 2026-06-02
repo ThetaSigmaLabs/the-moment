@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o main .
 
 # Final stage
-FROM alpine:latest
+FROM alpine:latest AS production
 
 # Install runtime dependencies
 # Using --no-scripts to work around Alpine 3.23 trigger script issues with QEMU emulation on arm64
