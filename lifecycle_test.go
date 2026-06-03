@@ -707,3 +707,221 @@ func TestLifecycle_GcodeDownloadFails_RetrySucceeds(t *testing.T) {
 
 	t.Logf("✅ G-code retry succeeded: %.1fg deducted, %.1fg remaining", printWeight, remaining)
 }
+
+// minimalJPEG is the smallest valid JPEG (1×1 black pixel) for use in snapshot tests.
+var minimalJPEG = []byte{
+	0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+	0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
+	0x00, 0x08, 0x06, 0x06, 0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09,
+	0x09, 0x08, 0x0A, 0x0C, 0x14, 0x0D, 0x0C, 0x0B, 0x0B, 0x0C, 0x19, 0x12,
+	0x13, 0x0F, 0x14, 0x1D, 0x1A, 0x1F, 0x1E, 0x1D, 0x1A, 0x1C, 0x1C, 0x20,
+	0x24, 0x2E, 0x27, 0x20, 0x22, 0x2C, 0x23, 0x1C, 0x1C, 0x28, 0x37, 0x29,
+	0x2C, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1F, 0x27, 0x39, 0x3D, 0x38, 0x32,
+	0x3C, 0x2E, 0x33, 0x34, 0x32, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x01,
+	0x00, 0x01, 0x01, 0x01, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00,
+	0x01, 0x05, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+	0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x10, 0x00, 0x02, 0x01, 0x03,
+	0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D,
+	0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00, 0xFB, 0xFF,
+	0xD9,
+}
+
+// TestLifecycle_SnapshotCaptured_OnFinish verifies that a camera snapshot is saved
+// as a "camera" attachment when a PrusaLink print completes normally.
+func TestLifecycle_SnapshotCaptured_OnFinish(t *testing.T) {
+	const spoolID = 40
+	const initialWeight = 500.0
+	const printWeight = 20.0
+
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: initialWeight})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: printWeight})
+	printer.SetCameraSnapshot(minimalJPEG)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(50)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// Snapshot endpoint must have been called once (for the "finished" snapshot)
+	if n := printer.SnapshotCallCount(); n != 1 {
+		t.Errorf("expected 1 snapshot call, got %d", n)
+	}
+
+	// Print history must exist and have a camera attachment
+	history, err := bridge.GetPrintHistory(5)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("GetPrintHistory: %v (len=%d)", err, len(history))
+	}
+	printID := history[0].ID
+	attachments, err := bridge.GetPrintAttachments(printID)
+	if err != nil {
+		t.Fatalf("GetPrintAttachments: %v", err)
+	}
+	var cameraCount int
+	for _, a := range attachments {
+		if a.FileType == "camera" {
+			cameraCount++
+		}
+	}
+	if cameraCount != 1 {
+		t.Errorf("expected 1 camera attachment, got %d (all: %v)", cameraCount, attachments)
+	}
+
+	t.Logf("✅ Snapshot captured on finish: %d camera attachment(s)", cameraCount)
+}
+
+// TestLifecycle_SnapshotCaptured_OnCancel verifies that a snapshot is saved when a print
+// is cancelled mid-way through.
+func TestLifecycle_SnapshotCaptured_OnCancel(t *testing.T) {
+	const spoolID = 41
+	const initialWeight = 500.0
+
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: initialWeight})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 50.0})
+	printer.SetCameraSnapshot(minimalJPEG)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(60)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateStopped)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	if n := printer.SnapshotCallCount(); n != 1 {
+		t.Errorf("expected 1 snapshot call on cancel, got %d", n)
+	}
+
+	history, err := bridge.GetPrintHistory(5)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("GetPrintHistory: %v (len=%d)", err, len(history))
+	}
+	attachments, err := bridge.GetPrintAttachments(history[0].ID)
+	if err != nil {
+		t.Fatalf("GetPrintAttachments: %v", err)
+	}
+	var cameraCount int
+	for _, a := range attachments {
+		if a.FileType == "camera" {
+			cameraCount++
+		}
+	}
+	if cameraCount != 1 {
+		t.Errorf("expected 1 camera attachment on cancel, got %d", cameraCount)
+	}
+
+	t.Logf("✅ Snapshot captured on cancel: %d camera attachment(s)", cameraCount)
+}
+
+// TestLifecycle_SnapshotNoCamera verifies graceful no-op when the printer has no camera.
+func TestLifecycle_SnapshotNoCamera(t *testing.T) {
+	const spoolID = 42
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 15.0})
+	// No SetCameraSnapshot call — camera is nil (404)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(100)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// No snapshot calls, no crash
+	if n := printer.SnapshotCallCount(); n != 0 {
+		t.Errorf("expected 0 snapshot calls with no camera, got %d", n)
+	}
+
+	history, err := bridge.GetPrintHistory(5)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("GetPrintHistory: %v (len=%d)", err, len(history))
+	}
+	attachments, err := bridge.GetPrintAttachments(history[0].ID)
+	if err != nil {
+		t.Fatalf("GetPrintAttachments: %v", err)
+	}
+	for _, a := range attachments {
+		if a.FileType == "camera" {
+			t.Errorf("unexpected camera attachment when printer has no camera: %+v", a)
+		}
+	}
+
+	t.Logf("✅ No camera — no snapshot, no error")
+}
+
+// TestLifecycle_AttentionSnapshot verifies that a snapshot captured at filament runout
+// (ATTENTION) and the final snapshot at print completion are both attached to the record.
+func TestLifecycle_AttentionSnapshot(t *testing.T) {
+	const spoolID = 43
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 30.0})
+	printer.SetCameraSnapshot(minimalJPEG)
+
+	// Start printing
+	printer.SetState(StatePrinting)
+	printer.SetProgress(40)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// Filament runout — should capture attention snapshot
+	printer.SetState(StateAttention)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// Resume and finish — should capture finished snapshot
+	printer.SetState(StatePrinting)
+	printer.SetProgress(80)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// Should have 2 snapshot calls: one at attention, one at finish
+	if n := printer.SnapshotCallCount(); n != 2 {
+		t.Errorf("expected 2 snapshot calls (attention + finish), got %d", n)
+	}
+
+	history, err := bridge.GetPrintHistory(5)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("GetPrintHistory: %v (len=%d)", err, len(history))
+	}
+	// Snapshots go to firstPrintID (oldest record in the session).
+	// GetPrintHistory returns newest-first so scan all entries.
+	var cameraCount int
+	for _, hr := range history {
+		attachments, aErr := bridge.GetPrintAttachments(hr.ID)
+		if aErr != nil {
+			t.Fatalf("GetPrintAttachments(id=%d): %v", hr.ID, aErr)
+		}
+		for _, a := range attachments {
+			if a.FileType == "camera" {
+				cameraCount++
+			}
+		}
+	}
+	if cameraCount != 2 {
+		t.Errorf("expected 2 camera attachments (attention + finish), got %d", cameraCount)
+	}
+
+	t.Logf("✅ Attention + finish snapshots: %d camera attachment(s)", cameraCount)
+}

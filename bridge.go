@@ -327,6 +327,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		return nil, fmt.Errorf("failed to migrate print attachments: %w", err)
 	}
 
+	if err := bridge.migratePendingPrintSnapshots(); err != nil {
+		return nil, fmt.Errorf("failed to migrate pending print snapshots: %w", err)
+	}
+
 	if err := bridge.migratePrusaLinkStateCache(); err != nil {
 		return nil, fmt.Errorf("failed to migrate PrusaLink state cache: %w", err)
 	}
@@ -675,6 +679,22 @@ func (b *FilamentBridge) migratePrintAttachments() error {
 		return err
 	}
 	_, err = b.db.Exec(`CREATE INDEX IF NOT EXISTS idx_print_attachments_print_id ON print_attachments(print_history_id)`)
+	return err
+}
+
+// migratePendingPrintSnapshots creates the staging table for camera snapshots captured
+// during a print (e.g. at an ATTENTION/runout event) before the print_history ID exists.
+// Rows are moved to print_attachments when the print finishes or is cancelled.
+func (b *FilamentBridge) migratePendingPrintSnapshots() error {
+	_, err := b.db.Exec(`
+		CREATE TABLE IF NOT EXISTS pending_print_snapshots (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			printer_id       TEXT    NOT NULL,
+			print_start_time DATETIME NOT NULL,
+			event_type       TEXT    NOT NULL,
+			file_path        TEXT    NOT NULL,
+			captured_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`)
 	return err
 }
 
@@ -1333,6 +1353,103 @@ func (b *FilamentBridge) savePrintFile(printID int, fileType, filename string, c
 	}
 	_, err := b.SavePrintAttachment(printID, fileType, safeName, relPath, int64(len(content)))
 	return err
+}
+
+// capturePrusaLinkSnapshot fetches a JPEG from the printer's first available camera and
+// saves it as a "camera" attachment on the given print record. Best-effort: logs on failure.
+func (b *FilamentBridge) capturePrusaLinkSnapshot(config PrinterConfig, printID int, eventType string) {
+	prusaClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
+	cameras, err := prusaClient.GetCameras()
+	if err != nil {
+		log.Printf("[SNAPSHOT] failed to list cameras for %s: %v", config.IPAddress, err)
+		return
+	}
+	if len(cameras) == 0 {
+		return
+	}
+	jpegData, err := prusaClient.GetSnapshot(cameras[0].ID)
+	if err != nil {
+		log.Printf("[SNAPSHOT] failed to capture snapshot for %s: %v", config.IPAddress, err)
+		return
+	}
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	filename := fmt.Sprintf("%s_%s.jpg", eventType, ts)
+	if err := b.savePrintFile(printID, "camera", filename, jpegData); err != nil {
+		log.Printf("[SNAPSHOT] failed to save snapshot for print %d: %v", printID, err)
+	}
+}
+
+// savePendingSnapshot saves a JPEG to disk and records it in pending_print_snapshots
+// for association with a print_history record once the print ID is known.
+func (b *FilamentBridge) savePendingSnapshot(printerID string, startTime time.Time, eventType string, jpegData []byte) {
+	dir := b.gcodePath()
+	now := time.Now()
+	subDir := filepath.Join(dir, "print-files", fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", int(now.Month())))
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		log.Printf("[SNAPSHOT] failed to create directory for pending snapshot: %v", err)
+		return
+	}
+	ts := now.UTC().Format("20060102T150405Z")
+	safeID := strings.ReplaceAll(printerID, "/", "_")
+	filename := fmt.Sprintf("pending_%s_%s_%s.jpg", safeID, eventType, ts)
+	relPath := filepath.Join("print-files", fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", int(now.Month())), filename)
+	absPath := filepath.Join(dir, relPath)
+	if err := os.WriteFile(absPath, jpegData, 0644); err != nil {
+		log.Printf("[SNAPSHOT] failed to write pending snapshot: %v", err)
+		return
+	}
+	_, err := b.db.Exec(`
+		INSERT INTO pending_print_snapshots (printer_id, print_start_time, event_type, file_path)
+		VALUES (?, ?, ?, ?)`,
+		printerID, startTime.UTC().Format(time.RFC3339Nano), eventType, relPath,
+	)
+	if err != nil {
+		log.Printf("[SNAPSHOT] failed to record pending snapshot: %v", err)
+	}
+}
+
+// flushPendingSnapshots promotes any pending snapshots for (printerID, startTime) into
+// print_attachments rows linked to printID, then deletes the staging records.
+func (b *FilamentBridge) flushPendingSnapshots(printerID string, startTime time.Time, printID int) {
+	rows, err := b.db.Query(`
+		SELECT id, event_type, file_path FROM pending_print_snapshots
+		WHERE printer_id = ? AND julianday(print_start_time) = julianday(?)`,
+		printerID, startTime.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		log.Printf("[SNAPSHOT] failed to query pending snapshots: %v", err)
+		return
+	}
+
+	type pendingRow struct {
+		id        int
+		eventType string
+		filePath  string
+	}
+	var pending []pendingRow
+	for rows.Next() {
+		var p pendingRow
+		if err := rows.Scan(&p.id, &p.eventType, &p.filePath); err != nil {
+			continue
+		}
+		pending = append(pending, p)
+	}
+	rows.Close()
+
+	for _, p := range pending {
+		absPath := filepath.Join(b.gcodePath(), p.filePath)
+		info, statErr := os.Stat(absPath)
+		if statErr != nil {
+			log.Printf("[SNAPSHOT] pending snapshot file missing %s: %v", absPath, statErr)
+			_, _ = b.db.Exec(`DELETE FROM pending_print_snapshots WHERE id = ?`, p.id)
+			continue
+		}
+		if _, err := b.SavePrintAttachment(printID, "camera", filepath.Base(p.filePath), p.filePath, info.Size()); err != nil {
+			log.Printf("[SNAPSHOT] failed to attach pending snapshot to print %d: %v", printID, err)
+			continue
+		}
+		_, _ = b.db.Exec(`DELETE FROM pending_print_snapshots WHERE id = ?`, p.id)
+	}
 }
 
 // ToolheadSpoolAssignment represents a spool-to-toolhead assignment record.
@@ -2898,6 +3015,15 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 				if rErr := b.AddPendingRunout(printerID, startTime, 0, printProgress); rErr != nil {
 					log.Printf("[PRUSALINK] printer=%s failed to record attention event: %v", printerID, rErr)
 				}
+				// Capture a snapshot at this attention event; store pending until print_history ID is known.
+				prusaSnapClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
+				if cameras, camErr := prusaSnapClient.GetCameras(); camErr == nil && len(cameras) > 0 {
+					if jpegData, snapErr := prusaSnapClient.GetSnapshot(cameras[0].ID); snapErr == nil {
+						b.savePendingSnapshot(printerID, startTime, "attention", jpegData)
+					} else {
+						log.Printf("[SNAPSHOT] attention snapshot failed for %s: %v", config.IPAddress, snapErr)
+					}
+				}
 			}
 		}
 		b.mutex.Lock()
@@ -3398,6 +3524,8 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 			if err := b.SnapshotAssignmentsForPrint(printID, printerID, startTime); err != nil {
 				log.Printf("Warning: failed to snapshot NFC assignments for 0%% cancelled print %d: %v", printID, err)
 			}
+			b.flushPendingSnapshots(printerID, startTime, printID)
+			b.capturePrusaLinkSnapshot(config, printID, "cancelled")
 		}
 		return nil
 	}
@@ -3475,6 +3603,8 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
 			log.Printf("Warning: could not save gcode file for cancelled print %d: %v", firstPrintID, err)
 		}
+		b.flushPendingSnapshots(printerID, startTime, firstPrintID)
+		b.capturePrusaLinkSnapshot(config, firstPrintID, "cancelled")
 		if config.DebugLog && jobID != 0 {
 			if lErr := b.LinkDebugLogsToPrint(printerID, jobID, firstPrintID); lErr != nil {
 				log.Printf("[PRUSALINK] printer=%s job=%d failed to link debug logs: %v", printerID, jobID, lErr)
@@ -3696,6 +3826,9 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
 			log.Printf("Warning: could not save gcode file for print %d: %v", firstPrintID, err)
 		}
+		// Promote any attention snapshots captured mid-print, then grab a completion snapshot.
+		b.flushPendingSnapshots(printerID, startTime, firstPrintID)
+		b.capturePrusaLinkSnapshot(config, firstPrintID, "finished")
 		if config.DebugLog && jobID != 0 {
 			if lErr := b.LinkDebugLogsToPrint(printerID, jobID, firstPrintID); lErr != nil {
 				log.Printf("[PRUSALINK] printer=%s job=%d failed to link debug logs: %v", printerID, jobID, lErr)

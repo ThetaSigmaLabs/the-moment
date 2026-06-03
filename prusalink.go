@@ -434,6 +434,66 @@ func (c *PrusaLinkClient) ParseGcodeFilamentUsage(gcodeContent []byte) (map[int]
 	return filamentUsage, nil
 }
 
+// PrusaLinkCamera represents a camera registered with PrusaLink.
+type PrusaLinkCamera struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Connected  bool   `json:"connected"`
+	Resolution string `json:"resolution,omitempty"`
+}
+
+// GetCameras returns all cameras registered with this printer.
+// Returns nil (not an error) when the printer has no camera support.
+func (c *PrusaLinkClient) GetCameras() ([]PrusaLinkCamera, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/cameras", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cameras request: %w", err)
+	}
+	c.addAPIKey(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cameras: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 404 / 204 = no camera support on this firmware version
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("PrusaLink cameras API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	var cameras []PrusaLinkCamera
+	if err := json.NewDecoder(resp.Body).Decode(&cameras); err != nil {
+		return nil, fmt.Errorf("failed to decode cameras response: %w", err)
+	}
+	return cameras, nil
+}
+
+// GetSnapshot fetches a JPEG snapshot from the named camera.
+func (c *PrusaLinkClient) GetSnapshot(cameraID string) ([]byte, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/cameras/"+cameraID+"/snap", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create snapshot request: %w", err)
+	}
+	c.addAPIKey(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get snapshot: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("PrusaLink snapshot error: %d - %s", resp.StatusCode, string(body))
+	}
+	return io.ReadAll(resp.Body)
+}
+
 // TestConnection tests the connection to PrusaLink
 func (c *PrusaLinkClient) TestConnection() error {
 	_, err := c.GetStatus()

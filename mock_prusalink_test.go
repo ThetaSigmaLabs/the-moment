@@ -38,10 +38,15 @@ type MockPrinterState struct {
 	// When true, G-code download requests return 503 (simulates USB busy / file gone)
 	GcodeUnavailable bool
 
+	// Camera snapshot returned by GET /api/v1/cameras/{id}/snap
+	// nil means no camera (GET /api/v1/cameras returns 404)
+	CameraSnapshot []byte
+
 	// Track how many times each endpoint was called
-	StatusCalls int
-	JobCalls    int
-	FileCalls   int
+	StatusCalls   int
+	JobCalls      int
+	FileCalls     int
+	SnapshotCalls int
 }
 
 // MockPrusaLink is a fake PrusaLink-compatible printer server.
@@ -136,6 +141,33 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 		}`)
 	})
 
+	// GET /api/v1/cameras — list cameras (404 when CameraSnapshot is nil)
+	mux.HandleFunc("/api/v1/cameras", func(w http.ResponseWriter, r *http.Request) {
+		state.mu.RLock()
+		snap := state.CameraSnapshot
+		state.mu.RUnlock()
+		if snap == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":"buddy","name":"Buddy Camera","connected":true}]`)
+	})
+
+	// GET /api/v1/cameras/buddy/snap — return JPEG snapshot
+	mux.HandleFunc("/api/v1/cameras/buddy/snap", func(w http.ResponseWriter, r *http.Request) {
+		state.mu.Lock()
+		snap := state.CameraSnapshot
+		state.SnapshotCalls++
+		state.mu.Unlock()
+		if snap == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(snap) //nolint:errcheck
+	})
+
 	// GET /{filename} — G-code file download
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -192,6 +224,21 @@ func (m *MockPrusaLink) SetGcodeUnavailable(unavailable bool) {
 	m.State.mu.Lock()
 	defer m.State.mu.Unlock()
 	m.State.GcodeUnavailable = unavailable
+}
+
+// SetCameraSnapshot configures a JPEG payload to return from the camera endpoint.
+// Pass nil to simulate a printer with no camera (GET /api/v1/cameras returns 404).
+func (m *MockPrusaLink) SetCameraSnapshot(jpeg []byte) {
+	m.State.mu.Lock()
+	defer m.State.mu.Unlock()
+	m.State.CameraSnapshot = jpeg
+}
+
+// SnapshotCallCount returns how many times the snapshot endpoint was called.
+func (m *MockPrusaLink) SnapshotCallCount() int {
+	m.State.mu.RLock()
+	defer m.State.mu.RUnlock()
+	return m.State.SnapshotCalls
 }
 
 // SetGcodeUsage sets the filament usage metadata in the fake G-code.

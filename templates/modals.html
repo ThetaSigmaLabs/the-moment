@@ -319,7 +319,9 @@
             <button class="hm-tab"        data-tab="costs"    onclick="switchModalTab('costs')">Costs</button>
             <button class="hm-tab"        data-tab="quality"  onclick="switchModalTab('quality')">Quality</button>
             <button class="hm-tab"        data-tab="filament" onclick="switchModalTab('filament')">Filament</button>
-            <button class="hm-tab"        data-tab="files"    onclick="switchModalTab('files')">Files</button>
+            <button class="hm-tab"        data-tab="files"      onclick="switchModalTab('files')">Files</button>
+            <button class="hm-tab" id="hmTab-snapshots-btn" data-tab="snapshots"
+                    onclick="switchModalTab('snapshots')" style="display:none;">Snapshots</button>
             <button class="hm-tab" id="hmTab-debuglog-btn" data-tab="debuglog"
                     onclick="switchModalTab('debuglog')" style="display:none;">Debug Log</button>
         </div>
@@ -468,6 +470,12 @@
                           placeholder="Loading…"></textarea>
             </div>
 
+            <!-- Tab: Snapshots -->
+            <div id="hmTab-snapshots" style="display:none;padding:18px 20px;">
+                <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:14px;">Camera Snapshots</div>
+                <div id="historySnapshotList" style="font-size:0.85em;color:#777;">Loading…</div>
+            </div>
+
             <!-- Tab: Files -->
             <div id="hmTab-files" style="display:none;padding:18px 20px;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
@@ -491,6 +499,17 @@
         </div>
 
     </div>
+</div>
+
+<!-- Snapshot lightbox — clicking anywhere closes it -->
+<div id="snapshotLightbox"
+     onclick="closeSnapshotLightbox()"
+     style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+            background:rgba(0,0,0,0.92);z-index:9999;cursor:zoom-out;
+            align-items:center;justify-content:center;">
+    <img id="snapshotLightboxImg" src="" alt="Snapshot"
+         style="max-width:92vw;max-height:92vh;object-fit:contain;border-radius:4px;
+                box-shadow:0 4px 32px rgba(0,0,0,0.7);">
 </div>
 
 <!-- NFC QR Code Modal -->

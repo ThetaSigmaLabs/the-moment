@@ -292,12 +292,15 @@ function switchModalTab(tab) {
     document.querySelectorAll('.hm-tab').forEach(function(btn) {
         btn.classList.toggle('active', btn.dataset.tab === tab);
     });
-    ['details','costs','quality','filament','files','debuglog'].forEach(function(t) {
+    ['details','costs','quality','filament','files','snapshots','debuglog'].forEach(function(t) {
         var el = document.getElementById('hmTab-' + t);
         if (el) el.style.display = (t === tab) ? 'block' : 'none';
     });
     if (tab === 'debuglog' && _activeEntry) {
         _loadDebugLog(_activeEntry.id);
+    }
+    if (tab === 'snapshots' && _activeEntry) {
+        _loadSnapshots(_activeEntry.id);
     }
 }
 
@@ -314,6 +317,68 @@ function _loadDebugLog(id) {
         .catch(function(err) {
             ta.value = 'Error loading log: ' + err.message;
         });
+}
+
+function _loadSnapshots(printID) {
+    var listEl = document.getElementById('historySnapshotList');
+    if (!listEl || listEl.dataset.loadedFor === String(printID)) return;
+    listEl.dataset.loadedFor = String(printID);
+
+    fetch('/api/history/' + printID + '/attachments')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var snaps = (data.attachments || []).filter(function(a) { return a.file_type === 'camera'; });
+            var snapBtn = document.getElementById('hmTab-snapshots-btn');
+            if (snapBtn) snapBtn.style.display = snaps.length > 0 ? '' : 'none';
+            if (snaps.length === 0) {
+                listEl.innerHTML = '<span style="color:#555;font-size:0.875em;">No snapshots for this print</span>';
+                return;
+            }
+            listEl.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
+                snaps.map(function(a) {
+                    var snapUrl = '/api/history/attachments/' + a.id + '/download';
+                    var ts = a.stored_at ? a.stored_at.replace('T', ' ').replace('Z', '').substring(0, 19) : '';
+                    var size = a.file_size > 1048576
+                        ? (a.file_size / 1048576).toFixed(1) + ' MB'
+                        : a.file_size > 1024
+                            ? (a.file_size / 1024).toFixed(0) + ' KB'
+                            : a.file_size + ' B';
+                    return '<tr style="border-bottom:1px solid #2a2a2a;">' +
+                        '<td style="padding:8px 8px 8px 0;width:72px;vertical-align:middle;">' +
+                            '<img src="' + snapUrl + '" alt="snapshot" ' +
+                                'style="width:64px;height:64px;object-fit:cover;border-radius:4px;cursor:zoom-in;display:block;" ' +
+                                'onclick="openSnapshotLightbox(\'' + snapUrl + '\')">' +
+                        '</td>' +
+                        '<td style="padding:8px;vertical-align:middle;">' +
+                            '<div style="color:#d0d0d0;font-size:0.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(a.filename) + '">' + _esc(a.filename) + '</div>' +
+                            '<div style="color:#555;font-size:0.78em;margin-top:2px;">' + ts + (ts ? ' &nbsp;·&nbsp; ' : '') + size + '</div>' +
+                        '</td>' +
+                        '<td style="padding:8px;vertical-align:middle;white-space:nowrap;text-align:right;">' +
+                            '<a href="' + snapUrl + '" download="' + _esc(a.filename) + '" ' +
+                                'class="btn btn-small btn-secondary" style="padding:2px 8px;font-size:0.78em;text-decoration:none;margin-right:4px;">↓</a>' +
+                            '<button class="btn btn-small btn-danger" style="padding:2px 8px;font-size:0.78em;" ' +
+                                'onclick="deleteHistoryAttachment(' + a.id + ',' + printID + ')">✕</button>' +
+                        '</td>' +
+                        '</tr>';
+                }).join('') +
+                '</table>';
+        })
+        .catch(function() {
+            listEl.innerHTML = '<span style="color:#ef9a9a;font-size:0.9em;">Failed to load snapshots</span>';
+        });
+}
+
+function openSnapshotLightbox(url) {
+    var lb = document.getElementById('snapshotLightbox');
+    var img = document.getElementById('snapshotLightboxImg');
+    if (!lb || !img) return;
+    img.src = url;
+    lb.style.display = 'flex';
+}
+
+function closeSnapshotLightbox() {
+    var lb = document.getElementById('snapshotLightbox');
+    if (lb) lb.style.display = 'none';
 }
 
 function copyDebugLog() {
@@ -362,6 +427,12 @@ function populateModal(r) {
     if (dlBtn) dlBtn.style.display = r.has_debug_log ? '' : 'none';
     var dlTa = document.getElementById('hmDebugLogText');
     if (dlTa) { dlTa.value = 'Loading…'; dlTa.dataset.loadedFor = ''; }
+
+    // Reset snapshots tab — shown after load if any camera attachments exist
+    var snapBtn = document.getElementById('hmTab-snapshots-btn');
+    if (snapBtn) snapBtn.style.display = 'none';
+    var snapList = document.getElementById('historySnapshotList');
+    if (snapList) { snapList.innerHTML = 'Loading…'; snapList.dataset.loadedFor = ''; }
 
     switchModalTab('details');
     document.getElementById('historyDetailTitle').textContent = r.job_name || 'Print Detail';
@@ -507,8 +578,9 @@ function populateModal(r) {
     // Populate tag editor
     _populateTagEditor(r.tags || []);
 
-    // Load file attachments
+    // Load file attachments and check for snapshots (to show/hide Snapshots tab)
     _loadAttachments(r.id);
+    _loadSnapshots(r.id);
 }
 
 function _loadAttachments(printID) {
@@ -517,7 +589,7 @@ function _loadAttachments(printID) {
     fetch('/api/history/' + printID + '/attachments')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            var items = data.attachments || [];
+            var items = (data.attachments || []).filter(function(a) { return a.file_type !== 'camera'; });
             if (items.length === 0) {
                 listEl.innerHTML = '<span style="color:#555;font-size:0.875em;">No files attached</span>';
                 return;
