@@ -347,6 +347,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		return nil, fmt.Errorf("failed to migrate toolhead locations: %w", err)
 	}
 
+	if err := bridge.deduplicateRecoveryStubs(); err != nil {
+		log.Printf("[RECONCILE] dedup migration warning: %v", err)
+	}
+
 	bridge.ReconcileActiveSessions()
 
 	// Update Spoolman URL and timeout if config is provided
@@ -852,6 +856,23 @@ func (b *FilamentBridge) MarkJobProcessed(printerID string, jobID int, outcome s
 	return err
 }
 
+// deduplicateRecoveryStubs removes duplicate [RECOVERED] stubs left by the
+// pre-fix bug where each restart created a new stub for an ongoing print.
+// Keeps the oldest stub per (printer_name, base job name) — it has the most
+// accurate print start time. Safe to run repeatedly; no-op if no duplicates exist.
+func (b *FilamentBridge) deduplicateRecoveryStubs() error {
+	_, err := b.db.Exec(`
+		DELETE FROM print_history
+		WHERE recovered = 1
+		  AND id NOT IN (
+		    SELECT MIN(id)
+		    FROM print_history
+		    WHERE recovered = 1
+		    GROUP BY printer_name, REPLACE(job_name, ' [RECOVERED]', '')
+		  )`)
+	return err
+}
+
 // migratePrintSessions creates the active_print_sessions table and adds
 // recovery-tracking columns to print_history.
 func (b *FilamentBridge) migratePrintSessions() error {
@@ -1139,91 +1160,107 @@ func (b *FilamentBridge) ReconcileActiveSessions() {
 			startTime = time.Now().Add(-time.Hour)
 		}
 
-		jobName := filepath.Base(o.filePath)
-		if jobName == "." || jobName == "" {
-			jobName = "recovered-job"
-		}
-		jobName += " [RECOVERED]"
-		printTimeMin := float64(o.lastTimePrinting) / 60.0
-		sessionID := newSessionID()
+		// Check whether this job was already recovered in a prior restart cycle.
+		// If so, skip creating another stub — only restore in-memory state.
+		// The session is kept alive (not deleted) so that:
+		//   - UpdateSessionProgress continues to record progress across restarts
+		//   - started_at from the original session is preserved (not reset to time.Now())
+		//   - ReconcileActiveSessions can always restore in-memory state on any restart
+		// The session is cleaned up by handlePrusaLinkPrintFinished when the print ends.
+		var existingRecovery int
+		_ = b.db.QueryRow(
+			`SELECT COUNT(*) FROM processed_jobs WHERE printer_id=? AND job_id=? AND outcome='recovered'`,
+			o.printerID, o.jobID).Scan(&existingRecovery)
+		alreadyRecovered := existingRecovery > 0
 
-		res, insertErr := b.db.Exec(`
-			INSERT INTO print_history
-				(printer_name, toolhead_id, spool_id, filament_used,
-				 print_started, print_finished, job_name,
-				 print_time_minutes, status, session_id, source,
-				 time_precision, filament_precision,
-				 outcome, progress_at_stop, recovered, gcode_unavailable)
-			VALUES (?, 0, 0, 0, ?, ?, ?, ?, 'completed', ?, 'prusalink',
-			        'approximate', 'estimated',
-			        'recovered', ?, 1, 1)`,
-			o.printerName,
-			startTime.UTC().Format(time.RFC3339),
-			time.Now().UTC().Format(time.RFC3339),
-			jobName, printTimeMin, sessionID,
-			o.lastProgress)
-		if insertErr != nil {
-			log.Printf("[RECONCILE] failed to write history row for printer=%s job=%d: %v",
-				o.printerID, o.jobID, insertErr)
-		} else {
-			printID64, _ := res.LastInsertId()
-			log.Printf("[RECONCILE] wrote recovery row id=%d for printer=%s job=%d",
-				printID64, o.printerID, o.jobID)
-			if printID64 > 0 {
-				if sErr := b.SnapshotAssignmentsForPrint(int(printID64), o.printerID, startTime); sErr != nil {
-					log.Printf("[RECONCILE] snapshot failed for print %d: %v", printID64, sErr)
-				}
-				if o.filePath != "" {
-					capturedID := printID64
-					capturedPath := o.filePath
-					capturedPrinterID := o.printerID
-					go func() {
-						configs, err := b.GetAllPrinterConfigs()
-						if err != nil {
-							log.Printf("[RECONCILE] could not load printer configs for thumbnail backfill (print %d): %v", capturedID, err)
-							return
-						}
-						cfg, ok := configs[capturedPrinterID]
-						if !ok || cfg.IPAddress == "" || cfg.IsVirtual {
-							return
-						}
-						b.mutex.RLock()
-						bConfig := b.config
-						b.mutex.RUnlock()
-						if bConfig == nil {
-							return
-						}
-						client := NewPrusaLinkClient(cfg.IPAddress, cfg.APIKey, bConfig.PrusaLinkTimeout, bConfig.PrusaLinkFileDownloadTimeout)
-						gcodeContent, err := client.GetGcodeFileWithRetry(capturedPath, bConfig.PrusaLinkFileDownloadTimeout)
-						if err != nil {
-							log.Printf("[RECONCILE] gcode download failed for recovered print %d: %v", capturedID, err)
-							return
-						}
-						_, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
-						if thumbnailB64 == "" {
-							return
-						}
-						if _, err := b.db.Exec(`UPDATE print_history SET thumbnail_path=? WHERE id=?`, thumbnailB64, capturedID); err != nil {
-							log.Printf("[RECONCILE] failed to update thumbnail for recovered print %d: %v", capturedID, err)
-							return
-						}
-						log.Printf("[RECONCILE] thumbnail backfilled for recovered print %d", capturedID)
-						_ = b.savePrintFile(int(capturedID), "gcode", filepath.Base(capturedPath), gcodeContent)
-					}()
+		if !alreadyRecovered {
+			jobName := filepath.Base(o.filePath)
+			if jobName == "." || jobName == "" {
+				jobName = "recovered-job"
+			}
+			jobName += " [RECOVERED]"
+			printTimeMin := float64(o.lastTimePrinting) / 60.0
+			sessionID := newSessionID()
+
+			res, insertErr := b.db.Exec(`
+				INSERT INTO print_history
+					(printer_name, toolhead_id, spool_id, filament_used,
+					 print_started, print_finished, job_name,
+					 print_time_minutes, status, session_id, source,
+					 time_precision, filament_precision,
+					 outcome, progress_at_stop, recovered, gcode_unavailable)
+				VALUES (?, 0, 0, 0, ?, ?, ?, ?, 'completed', ?, 'prusalink',
+				        'approximate', 'estimated',
+				        'recovered', ?, 1, 1)`,
+				o.printerName,
+				startTime.UTC().Format(time.RFC3339),
+				time.Now().UTC().Format(time.RFC3339),
+				jobName, printTimeMin, sessionID,
+				o.lastProgress)
+			if insertErr != nil {
+				log.Printf("[RECONCILE] failed to write history row for printer=%s job=%d: %v",
+					o.printerID, o.jobID, insertErr)
+			} else {
+				printID64, _ := res.LastInsertId()
+				log.Printf("[RECONCILE] wrote recovery row id=%d for printer=%s job=%d",
+					printID64, o.printerID, o.jobID)
+				if printID64 > 0 {
+					if sErr := b.SnapshotAssignmentsForPrint(int(printID64), o.printerID, startTime); sErr != nil {
+						log.Printf("[RECONCILE] snapshot failed for print %d: %v", printID64, sErr)
+					}
+					if o.filePath != "" {
+						capturedID := printID64
+						capturedPath := o.filePath
+						capturedPrinterID := o.printerID
+						go func() {
+							configs, err := b.GetAllPrinterConfigs()
+							if err != nil {
+								log.Printf("[RECONCILE] could not load printer configs for thumbnail backfill (print %d): %v", capturedID, err)
+								return
+							}
+							cfg, ok := configs[capturedPrinterID]
+							if !ok || cfg.IPAddress == "" || cfg.IsVirtual {
+								return
+							}
+							b.mutex.RLock()
+							bConfig := b.config
+							b.mutex.RUnlock()
+							if bConfig == nil {
+								return
+							}
+							client := NewPrusaLinkClient(cfg.IPAddress, cfg.APIKey, bConfig.PrusaLinkTimeout, bConfig.PrusaLinkFileDownloadTimeout)
+							gcodeContent, err := client.GetGcodeFileWithRetry(capturedPath, bConfig.PrusaLinkFileDownloadTimeout)
+							if err != nil {
+								log.Printf("[RECONCILE] gcode download failed for recovered print %d: %v", capturedID, err)
+								return
+							}
+							_, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
+							if thumbnailB64 == "" {
+								return
+							}
+							if _, err := b.db.Exec(`UPDATE print_history SET thumbnail_path=? WHERE id=?`, thumbnailB64, capturedID); err != nil {
+								log.Printf("[RECONCILE] failed to update thumbnail for recovered print %d: %v", capturedID, err)
+								return
+							}
+							log.Printf("[RECONCILE] thumbnail backfilled for recovered print %d", capturedID)
+							_ = b.savePrintFile(int(capturedID), "gcode", filepath.Base(capturedPath), gcodeContent)
+						}()
+					}
 				}
 			}
+
+			if mErr := b.MarkJobProcessed(o.printerID, o.jobID, "recovered"); mErr != nil {
+				log.Printf("[RECONCILE] mark processed failed: printer=%s job=%d: %v", o.printerID, o.jobID, mErr)
+			}
+		} else {
+			log.Printf("[RECONCILE] printer=%s job=%d already recovered — restoring state only", o.printerID, o.jobID)
 		}
 
-		if mErr := b.MarkJobProcessed(o.printerID, o.jobID, "recovered"); mErr != nil {
-			log.Printf("[RECONCILE] mark processed failed: printer=%s job=%d: %v", o.printerID, o.jobID, mErr)
-		}
-		if dErr := b.DeleteActivePrintSession(o.printerID, o.jobID); dErr != nil {
-			log.Printf("[RECONCILE] delete session failed: printer=%s job=%d: %v", o.printerID, o.jobID, dErr)
-		}
-
-		// Restore in-memory tracking state so the first MonitorPrinters() tick can
+		// Always restore in-memory tracking state so the first MonitorPrinters() tick can
 		// detect FINISHED/IDLE and write a proper print_history row even if the print
 		// completed during startup (between this reconcile and the first poll).
+		// The active session is intentionally kept alive (not deleted here) so that
+		// started_at and progress remain accurate across multiple restarts.
 		b.mutex.Lock()
 		b.wasPrinting[o.printerID] = true
 		if b.currentJobFile[o.printerID] == "" {
