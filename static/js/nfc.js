@@ -139,6 +139,7 @@ async function loadSpoolTags() {
     }
 }
 
+// TODO: assess whether Filament Tags serve a purpose in the spool-centric NFC workflow; tab hidden in nfc.html until decided
 async function loadFilamentTags() {
     try {
         console.log('Loading filament tags...');
@@ -217,14 +218,9 @@ async function loadLocationTags() {
         messageBanner.style.cssText = 'background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 15px; margin-bottom: 15px; border-radius: 8px;';
 
         let bannerHTML = '<strong>ℹ️ Location Management:</strong><br>';
-        bannerHTML += 'It is not possible via the Spoolman API to add locations automatically. ';
-        bannerHTML += 'To create locations, please do so via Spoolman. Then they will show up here.';
-
-        if (spoolmanURL) {
-            // Append /locations to the Spoolman URL
-            const spoolmanLocationsURL = spoolmanURL.replace(/\/$/, '') + '/locations';
-            bannerHTML += '<br><br><a href="' + spoolmanLocationsURL + '" target="_blank" style="color: #856404; text-decoration: underline; font-weight: bold;">Open Spoolman →</a>';
-        }
+        bannerHTML += 'Locations represent printer toolheads (e.g. <em>Core One L - T0</em>). ';
+        bannerHTML += 'They are written to Spoolman automatically when a spool is assigned to a toolhead. ';
+        bannerHTML += 'To add a printer or toolhead, configure it in The Moment settings.';
 
         messageBanner.innerHTML = bannerHTML;
         container.appendChild(messageBanner);

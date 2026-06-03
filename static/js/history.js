@@ -490,11 +490,14 @@ function populateModal(r) {
     var fuSection = document.getElementById('historyFilamentUsages');
     if (fuSection) {
         if (r.filament_usages && r.filament_usages.length > 0) {
+            // Only show the "Swap #" column when a mid-print filament change actually happened.
+            // change_number=0 is the initial load (always present); >0 means a swap occurred.
+            var hasSwaps = r.filament_usages.some(function(fu) { return fu.change_number > 0; });
             var fuHTML = '<div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Filament by Tool</div>';
             fuHTML += '<table style="width:100%;font-size:0.875em;border-collapse:collapse;">';
             fuHTML += '<tr style="color:#888;font-size:0.78em;border-bottom:1px solid #333;">' +
                 '<th style="text-align:left;padding:5px 8px;font-weight:500;">Tool</th>' +
-                '<th style="text-align:left;padding:5px 8px;font-weight:500;">Load</th>' +
+                (hasSwaps ? '<th style="text-align:left;padding:5px 8px;font-weight:500;" title="0 = initial load; 1, 2… = mid-print filament swaps">Swap #</th>' : '') +
                 '<th style="text-align:left;padding:5px 8px;font-weight:500;">Spool</th>' +
                 '<th style="text-align:right;padding:5px 8px;font-weight:500;">mm</th>' +
                 '<th style="text-align:right;padding:5px 8px;font-weight:500;">grams</th>' +
@@ -515,7 +518,7 @@ function populateModal(r) {
                 }
                 fuHTML += '<tr style="border-top:1px solid #2a2a2a;" id="fu-row-' + fu.id + '">' +
                     '<td style="padding:6px 8px;color:#ccc;">T' + fu.tool_index + '</td>' +
-                    '<td style="padding:6px 8px;color:#777;">#' + fu.change_number + '</td>' +
+                    (hasSwaps ? '<td style="padding:6px 8px;color:#777;">' + (fu.change_number === 0 ? '—' : '#' + fu.change_number) + '</td>' : '') +
                     '<td style="padding:6px 8px;color:#aaa;" id="fu-spool-' + fu.id + '">' + _esc(spoolLabel) + '</td>' +
                     '<td style="padding:6px 8px;text-align:right;color:#aaa;">' + fu.filament_used_mm.toFixed(0) + '</td>' +
                     '<td style="padding:6px 8px;text-align:right;color:#c8b8ff;" id="fu-grams-' + fu.id + '">' + fu.filament_used_grams.toFixed(2) + ' g</td>' +

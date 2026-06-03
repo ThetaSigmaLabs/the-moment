@@ -5,9 +5,11 @@
 Be brief. No filler. No pleasantries. Just the answer.
 Drop articles (a, an, the) when possible.
 Code blocks normal. Technical terms exact.
-There are unit and integration tests. Make sure you run the test cases to ensure nothing is broken.
+There are unit and integration tests.
+Make sure you run the test cases to ensure nothing is broken.
 Before doing any work, mention how you could verify that work.
-Before start building interview me about it: what is the core problem to solve; what is success; what should this not do.
+Before doing any work, interview me about it: what is the core problem to solve; what is success; what should this not do.
+Assess the changes and add unit test, integration tests where appropriate, and ensure the coverage works for the Jenkinsfile pipeline testing.
 
 ## Project Overview
 
@@ -46,6 +48,7 @@ Before start building interview me about it: what is the core problem to solve; 
 6. **Host address is never statically configured.** NFC tag URLs use `c.Request.Host` (Gin's HTTP Host header) — the app auto-detects whatever address the client used to reach it. Do not add a `THE_MOMENT_IP` or `THE_MOMENT_HOST` env var; `c.Request.Host` already includes the port and adapts correctly across LAN, hostname, and VPN access.
 7. **Printer record creation rules differ by interface type.** OctoPrint is push-based: The Moment accepts any `printer_id` from an authenticated POST, even with no matching config. The API key is the security gate; rejecting unknown printer IDs would cause permanent data loss (no retry queue). PrusaLink and Virtual are pull-based: a printer config must exist before The Moment polls or processes them. `print_history.printer_name` is a plain `TEXT` column with no foreign key; creating, renaming, or deleting a printer config has no effect on existing history records.
 8. **OctoPrint `print_history.spool_id` is backfilled from the filament payload.** The legacy `spool_id` column is populated from the primary filament entry (tool_index=0, change_number=0, spool_id>0) after per-tool rows are written to `print_filament_usage`. Per-tool breakdown always comes from `print_filament_usage`; the `spool_id` on `print_history` is T0 only.
+9. **Spools are never filtered by remaining weight.** `GetAllSpools()` must return every spool from Spoolman regardless of `remaining_weight` — including zero and negative values. Negative remaining weight is valid: print weight estimates overshoot, the user may have unknown filament left on a spool, or manual corrections may not reconcile perfectly. Filtering by weight would hide valid spools from toolhead assignment, Print Ops dropdowns, history reassignment, and cost lookups. Only an explicit archive (🗑️ trash workflow) removes a spool from active lists. Do not re-add a `remaining_weight > 0` guard anywhere in `GetAllSpools()`, `availableSpoolsHandler`, or the dashboard template.
 
 ---
 

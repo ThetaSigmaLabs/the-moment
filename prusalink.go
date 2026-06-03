@@ -382,56 +382,75 @@ func (c *PrusaLinkClient) GetGcodeFileWithRetry(filename string, fileDownloadTim
 	return nil, fmt.Errorf("failed to download G-code file after %d attempts: %w", maxRetries, lastErr)
 }
 
-// ParseGcodeFilamentUsage extracts per-toolhead filament usage (in grams) from .gcode or .bgcode content.
-// It handles both PrusaSlicer plain-gcode comment format and the binary .bgcode metadata format.
-// Returns a map of toolhead index → grams used.
-func (c *PrusaLinkClient) ParseGcodeFilamentUsage(gcodeContent []byte) (map[int]float64, error) {
-	content := string(gcodeContent)
-	filamentUsage := make(map[int]float64)
+// FilamentGcodeUsage holds the per-toolhead filament data extracted from G-code metadata.
+// Both fields are populated when PrusaSlicer writes both [g] and [mm] comments (the common case).
+// MM is zero when only [g] is present; Grams is estimated from MM when only [mm] is present.
+type FilamentGcodeUsage struct {
+	Grams float64
+	MM    float64
+}
 
-	// --- Pattern 1: "; filament used [g] = 1.23, 4.56, ..."  (PrusaSlicer .gcode comment)
-	// --- Pattern 2: "filament used [g]=1.23,4.56,..."         (.bgcode embedded metadata)
+// ParseGcodeFilamentUsage extracts per-toolhead filament usage from .gcode or .bgcode content.
+// It handles both PrusaSlicer plain-gcode comment format and the binary .bgcode metadata format.
+// Returns a map of toolhead index → FilamentGcodeUsage with both grams and mm where available.
+func (c *PrusaLinkClient) ParseGcodeFilamentUsage(gcodeContent []byte) (map[int]FilamentGcodeUsage, error) {
+	content := string(gcodeContent)
+
+	// --- Pattern 1/2: "; filament used [g] = 1.23, 4.56, ..."  (PrusaSlicer .gcode and .bgcode)
+	gramsPerTool := make(map[int]float64)
 	gcodeRegex := regexp.MustCompile(`;?\s*filament used \[g\]\s*=\s*([0-9.,\s]+)`)
 	if match := gcodeRegex.FindStringSubmatch(content); len(match) >= 2 {
-		weights := strings.Split(match[1], ",")
-		for i, weightStr := range weights {
-			weightStr = strings.TrimSpace(weightStr)
-			if weight, err := strconv.ParseFloat(weightStr, 64); err == nil && weight > 0 {
-				filamentUsage[i] = weight
+		for i, s := range strings.Split(match[1], ",") {
+			if weight, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && weight > 0 {
+				gramsPerTool[i] = weight
 			}
-		}
-		if len(filamentUsage) > 0 {
-			log.Printf("🔍 Parsed filament usage via [g] pattern: %v", filamentUsage)
-			return filamentUsage, nil
 		}
 	}
 
-	// --- Pattern 3: Cura-style "; filament_cost = ..." / PrusaSlicer "; filament used [mm] = ..."
-	// Convert mm → g using a default density of 1.24 g/cm³ for PLA at 1.75mm diameter.
-	// This is a fallback — weight comment above is preferred.
+	// --- Pattern 3: "; filament used [mm] = 2345.67, ..."  (PrusaSlicer always writes both [g] and [mm])
+	// Also used as a grams fallback (with PLA density estimate) when [g] is absent.
+	mmPerTool := make(map[int]float64)
 	mmRegex := regexp.MustCompile(`;?\s*filament used \[mm\]\s*=\s*([0-9.,\s]+)`)
 	if match := mmRegex.FindStringSubmatch(content); len(match) >= 2 {
-		lengths := strings.Split(match[1], ",")
-		for i, lenStr := range lengths {
-			lenStr = strings.TrimSpace(lenStr)
-			if length, err := strconv.ParseFloat(lenStr, 64); err == nil && length > 0 {
-				// Volume = π * (d/2)^2 * length  where d=1.75mm
-				volumeMM3 := 3.14159265 * (1.75 / 2) * (1.75 / 2) * length
-				volumeCM3 := volumeMM3 / 1000.0
-				weightG := volumeCM3 * 1.24 // default PLA density
-				if weightG > 0 {
-					filamentUsage[i] = weightG
-				}
+		for i, s := range strings.Split(match[1], ",") {
+			if length, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && length > 0 {
+				mmPerTool[i] = length
 			}
 		}
-		if len(filamentUsage) > 0 {
-			log.Printf("🔍 Parsed filament usage via [mm] pattern (estimated from length): %v", filamentUsage)
-			return filamentUsage, nil
+	}
+
+	result := make(map[int]FilamentGcodeUsage)
+	seen := make(map[int]bool)
+	for i := range gramsPerTool {
+		seen[i] = true
+	}
+	for i := range mmPerTool {
+		seen[i] = true
+	}
+
+	for i := range seen {
+		g := gramsPerTool[i]
+		mm := mmPerTool[i]
+		if g == 0 && mm > 0 {
+			// Convert mm → g using default PLA density as fallback (no [g] comment present)
+			volumeMM3 := 3.14159265 * (1.75 / 2) * (1.75 / 2) * mm
+			g = (volumeMM3 / 1000.0) * 1.24
+		}
+		if g > 0 || mm > 0 {
+			result[i] = FilamentGcodeUsage{Grams: g, MM: mm}
+		}
+	}
+
+	if len(result) > 0 {
+		if len(gramsPerTool) > 0 {
+			log.Printf("🔍 Parsed filament usage via [g] pattern: %v (mm: %v)", gramsPerTool, mmPerTool)
+		} else {
+			log.Printf("🔍 Parsed filament usage via [mm] pattern (estimated from length): %v", mmPerTool)
 		}
 	}
 
 	// No data found — callers must decide whether to treat this as an error
-	return filamentUsage, nil
+	return result, nil
 }
 
 // PrusaLinkCamera represents a camera registered with PrusaLink.

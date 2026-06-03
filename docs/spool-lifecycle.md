@@ -105,6 +105,8 @@ When the spool runs out:
 - The Moment automatically updates `used_weight` in Spoolman after the final print
 - Unassign the spool from the toolhead by assigning a new spool to that slot, or use the **NFC Management** tab to clear the assignment
 
+> **Remaining weight can reach zero or go negative.** Print weight estimates are not always exact, and some spools arrive with unknown initial weight. The Moment treats a spool with zero or negative remaining weight as fully valid — it still appears in toolhead assignment dropdowns, Print Ops, and history reassignment. A negative value is informational, not an error state. To stop a depleted spool from appearing, explicitly archive it with the 🗑️ action (step 7 below).
+
 ---
 
 ## 7. Archive the Spool
@@ -118,7 +120,10 @@ When the physical spool is empty and ready to discard:
 5. Confirm — The Moment will:
    - Set remaining weight to 0 in Spoolman (credits the difference as used)
    - Move the spool to the configured **Trash** location in Spoolman (Settings → NFC → Trash Location, default: `"Trash"`)
-6. The row disappears from the active spool list
+   - Set `archived: true` on the spool record in Spoolman
+6. The row disappears from all The Moment lists and dropdowns
+
+The spool disappears because Spoolman's standard spool API excludes archived records — The Moment never requests `allow_archived=true` in normal operation. A spool with zero or negative remaining weight that has **not** been archived will still appear in all lists; only the explicit 🗑️ archive action triggers disappearance.
 
 The Spoolman record is **not deleted** — it is archived. All print history, cost data, filament totals, and the `nfc_spool_uuid` remain intact for reporting and reference.
 

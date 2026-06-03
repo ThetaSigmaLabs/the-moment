@@ -3553,23 +3553,25 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 		return nil // queued
 	}
 
-	fullUsage, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
-	if err != nil || len(fullUsage) == 0 {
+	gcodeUsageCancelled, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
+	if err != nil || len(gcodeUsageCancelled) == 0 {
 		log.Printf("⚠️  Could not parse G-code for cancelled print on %s — skipping filament deduction", printerName)
 		return nil
 	}
 
 	// Scale down by progress percentage
 	partialUsage := make(map[int]float64)
-	for toolheadID, weight := range fullUsage {
-		partial := weight * scale
+	partialMM := make(map[int]float64)
+	for toolheadID, u := range gcodeUsageCancelled {
+		partial := u.Grams * scale
 		if partial > 0 {
 			partialUsage[toolheadID] = partial
+			partialMM[toolheadID] = u.MM * scale
 			log.Printf("📉 Cancelled print partial usage: toolhead %d → %.2fg (%.1f%% of %.2fg)",
-				toolheadID, partial, progressPct, weight)
+				toolheadID, partial, progressPct, u.Grams)
 			if config.DebugLog && jobID != 0 {
 				_ = b.AppendPrintDebugLog(printerID, jobID, fmt.Sprintf(
-					"[PARTIAL_FILAMENT] T%d: %.2fg (%.1f%% of %.2fg full)", toolheadID, partial, progressPct, weight))
+					"[PARTIAL_FILAMENT] T%d: %.2fg (%.1f%% of %.2fg full)", toolheadID, partial, progressPct, u.Grams))
 			}
 		}
 	}
@@ -3590,7 +3592,7 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, jobName+" [CANCELLED]",
 			0, "cancelled", thumbnailB64, sessionID, "prusalink")
 		if printID > 0 {
-			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, partialMM[toolheadID], usedG)
 			if firstPrintID == 0 {
 				firstPrintID = printID
 			}
@@ -3738,7 +3740,7 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 	}
 
 	// Parse the downloaded file
-	filamentUsage, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
+	gcodeUsage, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
 	if err != nil {
 		errorMsg := fmt.Sprintf("failed to parse G-code for filament usage: %v", err)
 		b.addPrintError(printerName, filename, errorMsg)
@@ -3746,10 +3748,18 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 	}
 
 	// Check if we got any filament usage data
-	if len(filamentUsage) == 0 {
+	if len(gcodeUsage) == 0 {
 		errorMsg := "no filament usage data found in G-code file"
 		b.addPrintError(printerName, filename, errorMsg)
 		return fmt.Errorf("%s", errorMsg)
+	}
+
+	// Extract grams and mm into separate maps; grams map drives existing logic unchanged.
+	filamentUsage := make(map[int]float64, len(gcodeUsage))
+	filamentMM := make(map[int]float64, len(gcodeUsage))
+	for t, u := range gcodeUsage {
+		filamentUsage[t] = u.Grams
+		filamentMM[t] = u.MM
 	}
 
 	log.Printf("Successfully parsed G-code file for filament usage: %+v", filamentUsage)
@@ -3795,7 +3805,12 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 		printID, _ := b.LogPrintUsageFull(printerName, seg.virtualToolhead, spoolID, seg.weightG, jobName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "prusalink")
 		if printID > 0 {
-			_ = b.AppendFilamentUsage(printID, seg.virtualToolhead, 0, spoolID, 0, seg.weightG)
+			// Distribute mm proportionally from the original toolhead's full mm value.
+			segMM := 0.0
+			if totalG := filamentUsage[seg.originalToolhead]; totalG > 0 {
+				segMM = filamentMM[seg.originalToolhead] * (seg.weightG / totalG)
+			}
+			_ = b.AppendFilamentUsage(printID, seg.virtualToolhead, 0, spoolID, segMM, seg.weightG)
 			if firstPrintID == 0 {
 				firstPrintID = printID
 			}
@@ -4284,8 +4299,8 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 			continue
 		}
 
-		filamentUsage, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
-		if err != nil || len(filamentUsage) == 0 {
+		retryGcodeUsage, err := prusaClient.ParseGcodeFilamentUsage(gcodeContent)
+		if err != nil || len(retryGcodeUsage) == 0 {
 			// Parse failure is permanent — remove and alert.
 			msg := fmt.Sprintf("G-code retry downloaded %s but found no filament usage data; manual Spoolman update required", d.filename)
 			log.Printf("⚠️  %s", msg)
@@ -4294,23 +4309,33 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 			continue
 		}
 
+		retryGrams := make(map[int]float64, len(retryGcodeUsage))
+		retryMM := make(map[int]float64, len(retryGcodeUsage))
+		for t, u := range retryGcodeUsage {
+			retryGrams[t] = u.Grams
+			retryMM[t] = u.MM
+		}
+
 		jobName := filepath.Base(d.filename)
 		if d.jobType == "cancelled" {
 			scale := (d.progressPct / 100.0) * 0.95
 			if scale > 1.0 {
 				scale = 1.0
 			}
-			partialUsage := make(map[int]float64)
-			for toolheadID, weight := range filamentUsage {
-				if partial := weight * scale; partial > 0 {
-					partialUsage[toolheadID] = partial
+			partialGrams := make(map[int]float64)
+			partialMM := make(map[int]float64)
+			for toolheadID, g := range retryGrams {
+				if partial := g * scale; partial > 0 {
+					partialGrams[toolheadID] = partial
+					partialMM[toolheadID] = retryMM[toolheadID] * scale
 				}
 			}
-			filamentUsage = partialUsage
+			retryGrams = partialGrams
+			retryMM = partialMM
 			jobName = d.filename + " [CANCELLED]"
 		}
 
-		if err := b.processFilamentUsage(d.printerName, filamentUsage, jobName); err != nil {
+		if err := b.processFilamentUsage(d.printerName, retryGrams, jobName); err != nil {
 			_, _ = b.db.Exec(`
 				UPDATE pending_gcode_downloads
 				SET last_attempt = CURRENT_TIMESTAMP,
@@ -4329,12 +4354,15 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 		}
 		sessionID := newSessionID()
 		var firstPrintID int
-		for toolheadID, usedG := range filamentUsage {
+		for toolheadID, usedG := range retryGrams {
 			spoolID, _ := b.GetToolheadMapping(d.printerName, toolheadID)
 			printID, _ := b.LogPrintUsageFull(d.printerName, toolheadID, spoolID, usedG, jobName,
 				printTimeMin, status, thumbnailB64, sessionID, "prusalink")
-			if firstPrintID == 0 && printID > 0 {
-				firstPrintID = printID
+			if printID > 0 {
+				_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, retryMM[toolheadID], usedG)
+				if firstPrintID == 0 {
+					firstPrintID = printID
+				}
 			}
 		}
 		// Back-calculate print_started from the known print duration.
@@ -4551,15 +4579,22 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 	}
 
 	client := &PrusaLinkClient{}
-	usage, err = client.ParseGcodeFilamentUsage(content)
+	virtualGcodeUsage, err := client.ParseGcodeFilamentUsage(content)
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("failed to parse G-code: %w", err)
 	}
-	if len(usage) == 0 {
+	if len(virtualGcodeUsage) == 0 {
 		return nil, nil, 0, fmt.Errorf(
 			"no filament usage metadata found in '%s' — ensure your slicer writes filament weight comments",
 			displayName,
 		)
+	}
+
+	usage = make(map[int]float64, len(virtualGcodeUsage))
+	virtualMM := make(map[int]float64, len(virtualGcodeUsage))
+	for t, u := range virtualGcodeUsage {
+		usage[t] = u.Grams
+		virtualMM[t] = u.MM
 	}
 
 	configs, err := b.GetAllPrinterConfigs()
@@ -4599,7 +4634,7 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "virtual")
 		if printID > 0 {
-			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, 0, usedG)
+			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, virtualMM[toolheadID], usedG)
 		}
 	}
 

@@ -1004,11 +1004,19 @@ function cancelToolheadNames(printerId) {
 function checkOrphanedMappings() {
     var status = document.getElementById('orphanStatus');
     var clearBtn = document.getElementById('clearOrphansBtn');
+    var checkBtn = document.getElementById('checkStuckBtn');
+
+    if (checkBtn) { checkBtn.disabled = true; checkBtn.textContent = '🔍 Checking…'; }
     if (status) status.innerHTML = '<span style="color:#aaa;">Checking…</span>';
+
+    function restoreCheckBtn() {
+        if (checkBtn) { checkBtn.disabled = false; checkBtn.textContent = '🔍 Check for Stuck Assignments'; }
+    }
 
     fetch('/api/orphaned-mappings')
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            restoreCheckBtn();
             var orphans = data.orphans || [];
             if (orphans.length === 0) {
                 if (status) status.innerHTML =
@@ -1032,6 +1040,7 @@ function checkOrphanedMappings() {
             if (clearBtn) clearBtn.style.display = '';
         })
         .catch(function(err) {
+            restoreCheckBtn();
             if (status) status.innerHTML =
                 '<span style="color:#ef9a9a;">Error: ' + escapeHtml(err.message) + '</span>';
         });
