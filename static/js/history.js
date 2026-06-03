@@ -216,7 +216,12 @@ function buildSessionRow(s, i, key, multi, expanded) {
             ' <button onclick="event.stopPropagation();retryDownload(' + dlId + ', this)" ' +
             'style="background:#3d2a00;color:#ffa040;border:1px solid #664400;border-radius:4px;padding:0 6px;font-size:0.72em;cursor:pointer;white-space:nowrap;" title="Retry download now">↻ Retry</button>';
     }
-    var fileCell = expandIcon + _esc(file) + toolBadge + pendingBadge;
+    var firstRecID = (s.records && s.records[0]) ? s.records[0].id : 0;
+    var renameBtn = firstRecID
+        ? ' <button onclick="event.stopPropagation();_renameFromTable(' + firstRecID + ',this)" ' +
+          'title="Rename" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.78em;padding:0 3px;vertical-align:middle;">✏</button>'
+        : '';
+    var fileCell = expandIcon + _esc(file) + toolBadge + renameBtn + pendingBadge;
 
     // Note: aggregate — show first record's note if any
     var note = '';
@@ -435,7 +440,9 @@ function populateModal(r) {
     if (snapList) { snapList.innerHTML = 'Loading…'; snapList.dataset.loadedFor = ''; }
 
     switchModalTab('details');
-    document.getElementById('historyDetailTitle').textContent = r.job_name || 'Print Detail';
+    var titleEl = document.getElementById('historyDetailTitle');
+    titleEl.dataset.jobName = r.job_name || '';
+    _renderModalTitle(titleEl, r.id, r.job_name);
 
     var thumbEl = document.getElementById('historyThumb');
     if (r.thumbnail_base64 && r.thumbnail_base64.startsWith('data:')) {
@@ -605,9 +612,16 @@ function _loadAttachments(printID) {
                     : a.file_size > 1024
                         ? (a.file_size / 1024).toFixed(0) + ' KB'
                         : a.file_size + ' B';
+                var renameBtn = a.file_type === 'gcode'
+                    ? '<button id="att-rename-' + a.id + '" title="Rename" ' +
+                      'style="background:none;border:none;color:#555;cursor:pointer;font-size:0.85em;padding:0 3px;vertical-align:middle;" ' +
+                      'onclick="_renameAttachmentFromList(' + a.id + ',' + printID + ')">✏</button>'
+                    : '';
                 return '<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-top:1px solid #2a2a2a;">' +
                     '<div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">' +
-                        typeBadge + '<span title="' + _esc(a.filename) + '">' + _esc(a.filename) + '</span>' +
+                        typeBadge +
+                        '<span id="att-name-' + a.id + '" title="' + _esc(a.filename) + '">' + _esc(a.filename) + '</span>' +
+                        renameBtn +
                         '<span style="color:#555;margin-left:8px;font-size:0.82em;">' + size + '</span>' +
                     '</div>' +
                     '<div style="display:flex;gap:6px;flex-shrink:0;margin-left:8px;">' +
@@ -1194,6 +1208,184 @@ function saveHistoryTags() {
         renderTable();
     })
     .catch(function(err) { showToast('Error saving tags: ' + err.message); });
+}
+
+// ─── Inline Rename ────────────────────────────────────────────────────────────
+
+// _startInlineEdit shows a text input for editing alongside el (el is hidden, not cleared).
+// onSave(newValue, el, oldValue) is called when the user confirms a change.
+// onClose() is called regardless of outcome (save, cancel, or no-change) — useful for cleanup.
+function _startInlineEdit(el, currentValue, onSave, onClose) {
+    if (el._editingActive) return;
+    el._editingActive = true;
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentValue;
+    input.style.cssText = 'background:#1a1a1a;border:1px solid #555;border-radius:4px;color:#e0e0e0;' +
+        'font-size:inherit;font-family:inherit;padding:2px 6px;width:200px;box-sizing:border-box;vertical-align:middle;';
+
+    // Insert input as a sibling after el; hide el so the span width doesn't constrain input.
+    var savedDisplay = el.style.display;
+    el.style.display = 'none';
+    el.parentNode.insertBefore(input, el.nextSibling);
+    input.focus();
+    input.select();
+
+    var done = false;
+    function restore() {
+        el.style.display = savedDisplay;
+        el._editingActive = false;
+        if (input.parentNode) input.parentNode.removeChild(input);
+        if (onClose) onClose();
+    }
+    function commit() {
+        if (done) return;
+        done = true;
+        var v = input.value.trim();
+        restore();
+        if (v && v !== currentValue) {
+            onSave(v, el, currentValue);
+        }
+    }
+    function cancel() {
+        if (done) return;
+        done = true;
+        restore();
+    }
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    });
+}
+
+// _applyRenameToSessions propagates a job_name change into _allSessions so the table
+// stays in sync without a full reload.
+function _applyRenameToSessions(printID, newName) {
+    _allSessions.forEach(function(s) {
+        if (s.records && s.records[0] && s.records[0].id === printID) {
+            s.job_name = newName;
+        }
+        (s.records || []).forEach(function(r) {
+            if (r.id === printID) r.job_name = newName;
+        });
+    });
+}
+
+// renamePrint is the public entry point called from table rows and the modal title.
+// onClose is forwarded to _startInlineEdit for post-edit cleanup (e.g. renderTable).
+function renamePrint(printID, el, currentValue, onClose) {
+    _startInlineEdit(el, currentValue, function(newName, el2, oldVal) {
+        el2.textContent = '…';
+        fetch('/api/history/' + printID + '/name', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                showToast(data.error);
+                el2.textContent = oldVal;
+                return;
+            }
+            el2.textContent = newName;
+            _applyRenameToSessions(printID, newName);
+            if (_activeEntry && _activeEntry.id === printID) {
+                _activeEntry.job_name = newName;
+            }
+            // Refresh Files tab so gcode filename reflects the new name.
+            _loadAttachments(printID);
+            renderTable();
+        })
+        .catch(function(err) {
+            showToast('Rename failed: ' + err.message);
+            el2.textContent = oldVal;
+        });
+    }, onClose);
+}
+
+// renameAttachmentInline is called from the attachment filename span in the Files tab.
+function renameAttachmentInline(attachmentID, printID, el, currentFilename) {
+    _startInlineEdit(el, currentFilename, function(newFilename, el2, oldVal) {
+        el2.textContent = '…';
+        fetch('/api/history/attachments/' + attachmentID + '/rename', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: newFilename })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.error) {
+                showToast(data.error);
+                el2.textContent = oldVal;
+                return;
+            }
+            el2.textContent = newFilename;
+            // Derive the new job_name (strip extension) and sync everywhere
+            var newJobName = newFilename.replace(/\.[^.]+$/, '');
+            _applyRenameToSessions(printID, newJobName);
+            var titleEl = document.getElementById('historyDetailTitle');
+            if (titleEl && _activeEntry && _activeEntry.id === printID) {
+                _activeEntry.job_name = newJobName;
+                titleEl.dataset.jobName = newJobName;
+                _renderModalTitle(titleEl, printID, newJobName);
+            }
+            renderTable();
+        })
+        .catch(function(err) {
+            showToast('Rename failed: ' + err.message);
+            el2.textContent = oldVal;
+        });
+    });
+}
+
+// _renderModalTitle sets the modal header title with an inline pencil icon.
+function _renderModalTitle(el, printID, jobName) {
+    el.innerHTML = '';
+    var span = document.createElement('span');
+    span.className = 'rename-job-name';
+    span.textContent = jobName || 'Print Detail';
+    el.appendChild(span);
+    var btn = document.createElement('button');
+    btn.title = 'Rename';
+    btn.innerHTML = '✏';
+    btn.style.cssText = 'background:none;border:none;color:#666;cursor:pointer;font-size:0.85em;' +
+        'padding:0 0 0 7px;vertical-align:middle;line-height:1;';
+    btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        renamePrint(printID, span, span.textContent);
+    });
+    el.appendChild(btn);
+}
+
+// _renameAttachmentFromList is called by the ✏ button in the Files tab attachment list.
+function _renameAttachmentFromList(attachmentID, printID) {
+    var nameEl = document.getElementById('att-name-' + attachmentID);
+    if (!nameEl) return;
+    var currentFilename = nameEl.textContent.trim();
+    renameAttachmentInline(attachmentID, printID, nameEl, currentFilename);
+}
+
+// _renameFromTable is called by the ✏ button in a history table row.
+function _renameFromTable(printID, btn) {
+    var currentText = '';
+    _allSessions.forEach(function(s) {
+        (s.records || []).forEach(function(r) {
+            if (r.id === printID) currentText = _shortName(r.job_name);
+        });
+        if (!currentText && s.records && s.records[0] && s.records[0].id === printID) {
+            currentText = _shortName(s.job_name);
+        }
+    });
+    if (!currentText) return;
+    // Insert a temporary span before btn as the inline-edit anchor.
+    // Pass renderTable as onClose so the row is always rebuilt on finish (cancel or save).
+    var span = document.createElement('span');
+    span.textContent = currentText;
+    btn.parentNode.insertBefore(span, btn);
+    renamePrint(printID, span, currentText, function() { renderTable(); });
 }
 
 // ─── Init ─────────────────────────────────────────────────────────────────────

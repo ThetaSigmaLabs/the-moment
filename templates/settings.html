@@ -182,23 +182,100 @@
 
     <!-- About Tab -->
     <div id="about-tab" class="settings-tab-content">
+
+        <!-- Hero -->
+        <div class="config-section" style="text-align:center;padding:32px 25px 28px;">
+            <div style="font-size:2em;font-weight:700;color:#fff;letter-spacing:-0.5px;">The Moment</div>
+            <div style="font-size:0.95em;color:#aaa;margin:10px 0 18px;">
+                Automatic filament tracking, print history, and cost accounting for every 3D printer you own
+            </div>
+            <span style="display:inline-block;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-family:monospace;font-size:0.85em;padding:4px 16px;border-radius:20px;font-weight:600;letter-spacing:0.02em;">
+                v{{.AppVersion}}
+            </span>
+        </div>
+
+        <!-- Features -->
         <div class="config-section">
-            <h3>ℹ️ About</h3>
-            <table style="border-collapse:collapse;font-size:0.95em;">
+            <h3 style="margin-bottom:20px;">Features</h3>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;">
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🖨️</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Multi-Printer Support</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">OctoPrint, PrusaLink, and Bambu MQTT. Monitors all printers concurrently and detects print start and finish automatically.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🧵</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Spoolman Integration</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Reads every spool and filament spec from Spoolman. Writes consumed weight back after each print — no manual entry.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🏷️</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">NFC Spool Tags</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Scan an NTAG213 sticker on your iPhone to assign a physical spool to a toolhead slot instantly, from anywhere on the LAN.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">💰</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Print Cost Estimation</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Per-material filament pricing plus electricity cost. Cost breakdown available for every print in history.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">📋</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Print History</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Full record of every print: duration, filament consumed, spool used, cost breakdown, and attached G-code file.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">📍</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Location Sync</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Bidirectional sync between toolhead assignments and Spoolman spool locations. Spool moves in Spoolman reflect in The Moment within 5 minutes.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Supported interfaces -->
+        <div class="config-section">
+            <h3 style="margin-bottom:16px;">Supported Printer Interfaces</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;">
+                <span style="background:rgba(40,167,69,0.15);border:1px solid rgba(40,167,69,0.35);color:#6ee7a0;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">OctoPrint</span>
+                <span style="background:rgba(40,167,69,0.15);border:1px solid rgba(40,167,69,0.35);color:#6ee7a0;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">PrusaLink</span>
+                <span style="background:rgba(102,126,234,0.15);border:1px solid rgba(102,126,234,0.35);color:#a0b4f8;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">Bambu (MQTT)</span>
+                <span style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#888;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">Virtual / Test</span>
+            </div>
+        </div>
+
+        <!-- Version info -->
+        <div class="config-section">
+            <h3 style="margin-bottom:16px;">Version Info</h3>
+            <table style="border-collapse:collapse;font-size:0.93em;width:100%;">
                 <tr>
-                    <td style="padding:6px 24px 6px 0;color:#aaa;white-space:nowrap;">The Moment</td>
-                    <td style="padding:6px 0;font-family:monospace;">v{{.AppVersion}}</td>
+                    <td style="padding:9px 24px 9px 0;color:#aaa;white-space:nowrap;width:170px;">The Moment</td>
+                    <td style="padding:9px 0;font-family:monospace;color:#fff;">v{{.AppVersion}}</td>
                 </tr>
-                <tr>
-                    <td style="padding:6px 24px 6px 0;color:#aaa;white-space:nowrap;">OctoPrint Plugin</td>
-                    <td style="padding:6px 0;font-family:monospace;" id="about-octoprint-plugin-version">—</td>
+                <tr style="border-top:1px solid rgba(255,255,255,0.06);">
+                    <td style="padding:9px 24px 9px 0;color:#aaa;white-space:nowrap;">OctoPrint Plugin</td>
+                    <td style="padding:9px 0;font-family:monospace;color:#fff;" id="about-octoprint-plugin-version">—</td>
                 </tr>
             </table>
-            <p style="margin-top:16px;font-size:0.85em;color:#666;">
-                The OctoPrint plugin version is shown after a successful connection test
-                (Settings → OctoPrint in OctoPrint's own settings panel).
+            <p style="margin-top:10px;font-size:0.82em;color:#555;line-height:1.5;">
+                OctoPrint plugin version appears after a successful connection test in OctoPrint's own settings panel (Settings → OctoPrint).
             </p>
         </div>
+
+        <!-- Attribution -->
+        <div class="config-section" style="font-size:0.85em;line-height:1.6;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+                <span style="color:#aaa;font-weight:600;">License</span>
+                <span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:2px 10px;font-family:monospace;color:#ccc;font-size:0.9em;">GPL-3.0</span>
+                <a href="https://github.com/ThetaSigmaLabs/the-moment" target="_blank" rel="noopener"
+                   style="background:rgba(102,126,234,0.12);border:1px solid rgba(102,126,234,0.3);border-radius:4px;padding:2px 10px;color:#a0b4f8;text-decoration:none;font-size:0.9em;">
+                    GitHub ↗
+                </a>
+            </div>
+            <div style="color:#666;">
+                Forked from <a href="https://github.com/needo37/filabridge" target="_blank" rel="noopener" style="color:#888;text-decoration:none;">FilaBridge</a> by needo37.
+                FilaBridge pioneered the Spoolman bridge pattern — its polling architecture, Spoolman API client, and PrusaLink integration are the foundation everything else is built on.
+            </div>
+        </div>
+
     </div>
 
     <!-- Advanced Settings Tab -->

@@ -4965,6 +4965,99 @@ func (b *FilamentBridge) UpdatePrintNote(id int, note string) error {
 	return nil
 }
 
+// RenamePrint updates the job_name of a print record and renames the associated gcode
+// file on disk. Returns an error if no gcode attachment exists for the record.
+func (b *FilamentBridge) RenamePrint(id int, newName string) error {
+	// Strip any extension the caller may have included.
+	if ext := filepath.Ext(newName); ext != "" {
+		newName = newName[:len(newName)-len(ext)]
+	}
+	if newName == "" {
+		return fmt.Errorf("name cannot be empty")
+	}
+
+	// Find the gcode attachment.
+	rows, err := b.db.Query(
+		`SELECT id, file_path, filename FROM print_attachments WHERE print_history_id = ? AND file_type = 'gcode' LIMIT 1`, id)
+	if err != nil {
+		return fmt.Errorf("failed to query gcode attachment: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return fmt.Errorf("no gcode file attached — attach a gcode file before renaming")
+	}
+	var attachID int
+	var oldRelPath, oldFilename string
+	if err := rows.Scan(&attachID, &oldRelPath, &oldFilename); err != nil {
+		return fmt.Errorf("failed to read attachment row: %w", err)
+	}
+	rows.Close()
+
+	ext := filepath.Ext(oldFilename)
+	newFilename := newName + ext
+	newRelPath := filepath.Join(filepath.Dir(oldRelPath), fmt.Sprintf("%d_%s", id, newFilename))
+
+	oldAbs := filepath.Join(b.gcodePath(), oldRelPath)
+	newAbs := filepath.Join(b.gcodePath(), newRelPath)
+	if err := os.Rename(oldAbs, newAbs); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to rename file: %w", err)
+	}
+
+	if _, err := b.db.Exec(
+		`UPDATE print_attachments SET filename = ?, file_path = ? WHERE id = ?`,
+		newFilename, newRelPath, attachID,
+	); err != nil {
+		return fmt.Errorf("failed to update attachment record: %w", err)
+	}
+	if _, err := b.db.Exec(
+		`UPDATE print_history SET job_name = ? WHERE id = ?`, newName, id,
+	); err != nil {
+		return fmt.Errorf("failed to update job_name: %w", err)
+	}
+	return nil
+}
+
+// RenameAttachment renames a file attachment on disk and updates the DB record.
+// For gcode attachments it also updates the parent print_history.job_name.
+func (b *FilamentBridge) RenameAttachment(attachmentID int, newFilename string) error {
+	if newFilename == "" {
+		return fmt.Errorf("filename cannot be empty")
+	}
+	newFilename = filepath.Base(newFilename)
+
+	a, err := b.GetPrintAttachment(attachmentID)
+	if err != nil {
+		return err
+	}
+
+	newRelPath := filepath.Join(filepath.Dir(a.FilePath), fmt.Sprintf("%d_%s", a.PrintHistoryID, newFilename))
+	oldAbs := filepath.Join(b.gcodePath(), a.FilePath)
+	newAbs := filepath.Join(b.gcodePath(), newRelPath)
+	if err := os.Rename(oldAbs, newAbs); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to rename file: %w", err)
+	}
+
+	if _, err := b.db.Exec(
+		`UPDATE print_attachments SET filename = ?, file_path = ? WHERE id = ?`,
+		newFilename, newRelPath, attachmentID,
+	); err != nil {
+		return fmt.Errorf("failed to update attachment record: %w", err)
+	}
+
+	if a.FileType == "gcode" {
+		newJobName := newFilename
+		if ext := filepath.Ext(newJobName); ext != "" {
+			newJobName = newJobName[:len(newJobName)-len(ext)]
+		}
+		if _, err := b.db.Exec(
+			`UPDATE print_history SET job_name = ? WHERE id = ?`, newJobName, a.PrintHistoryID,
+		); err != nil {
+			return fmt.Errorf("failed to update job_name: %w", err)
+		}
+	}
+	return nil
+}
+
 // DeletePrintHistoryEntry removes a print history record. Files on disk are cleaned
 // up first; the DB cascade handles all child rows (costs, attachments, tags, etc.).
 func (b *FilamentBridge) DeletePrintHistoryEntry(id int) error {

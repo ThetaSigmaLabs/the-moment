@@ -267,8 +267,10 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/history/:id/gcode", ws.uploadPrintGcodeHandler)
 		api.POST("/history/:id/attachments", ws.uploadPrintAttachmentHandler)
 		api.GET("/history/:id/attachments", ws.getPrintAttachmentsHandler)
+		api.PATCH("/history/:id/name", ws.renamePrintHandler)
 		api.GET("/history/attachments/:attachment_id/download", ws.downloadPrintAttachmentHandler)
 		api.DELETE("/history/attachments/:attachment_id", ws.deletePrintAttachmentHandler)
+		api.PATCH("/history/attachments/:attachment_id/rename", ws.renameAttachmentHandler)
 
 		api.GET("/locations", ws.getLocationsHandler)
 		api.GET("/locations/:name/status", ws.getLocationStatusHandler)
@@ -3585,4 +3587,53 @@ func (ws *WebServer) deletePrintAttachmentHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "attachment deleted"})
+}
+
+// renamePrintHandler updates job_name and renames the associated gcode file.
+// PATCH /api/history/:id/name   body: {"name":"..."}
+func (ws *WebServer) renamePrintHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.RenamePrint(id, body.Name); err != nil {
+		status := http.StatusInternalServerError
+		msg := err.Error()
+		if msg == "name cannot be empty" || strings.HasPrefix(msg, "no gcode file") {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": msg})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "renamed"})
+}
+
+// renameAttachmentHandler renames an attachment file and updates DB (and job_name for gcode).
+// PATCH /api/history/attachments/:attachment_id/rename   body: {"filename":"..."}
+func (ws *WebServer) renameAttachmentHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("attachment_id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attachment id"})
+		return
+	}
+	var body struct {
+		Filename string `json:"filename"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.RenameAttachment(id, body.Filename); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "renamed"})
 }
