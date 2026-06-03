@@ -195,7 +195,7 @@ function buildSessionRow(s, i, key, multi, expanded) {
         }
     }
     var thumbCell = thumbSrc
-        ? '<img src="' + _esc(thumbSrc) + '" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid #333;display:block;margin:auto;">'
+        ? '<img src="' + _esc(thumbSrc) + '" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid rgba(102,126,234,0.45);box-shadow:0 0 6px rgba(102,126,234,0.25);background:#e0e0e0;display:block;margin:auto;">'
         : '<span style="color:#444;font-size:1.2em;">·</span>';
 
     // File cell: expand arrow for multi-toolhead, source badge, file name
@@ -278,7 +278,7 @@ function buildSubRow(r) {
         '<td style="padding:6px 12px;text-align:center;">' + _statusBadge(r.status) + '</td>' +
         '<td style="padding:6px 12px;text-align:center;">' + _renderTagBadges(r.tags || []) + '</td>' +
         '<td style="padding:6px 12px;text-align:center;">' +
-        (r.thumbnail_base64 ? '<img src="' + _esc(r.thumbnail_base64) + '" style="width:30px;height:30px;object-fit:cover;border-radius:3px;display:block;margin:auto;">' : '') +
+        (r.thumbnail_base64 ? '<img src="' + _esc(r.thumbnail_base64) + '" style="width:30px;height:30px;object-fit:cover;border-radius:3px;border:1px solid rgba(102,126,234,0.35);box-shadow:0 0 4px rgba(102,126,234,0.18);background:#e0e0e0;display:block;margin:auto;">' : '') +
         '</td>' +
         '</tr>';
 }

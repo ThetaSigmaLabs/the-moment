@@ -131,3 +131,11 @@ body {
     margin: 0;
     color: #fff;
 }
+
+.tab-tagline {
+    margin: 3px 0 0;
+    font-size: 0.75em;
+    color: #555;
+    font-style: italic;
+    letter-spacing: 0.03em;
+}
