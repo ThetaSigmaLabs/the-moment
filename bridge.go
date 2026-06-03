@@ -5,13 +5,17 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -345,6 +349,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migrateToolheadLocations(); err != nil {
 		return nil, fmt.Errorf("failed to migrate toolhead locations: %w", err)
+	}
+
+	if err := bridge.migrateCameraSnapshotURL(); err != nil {
+		return nil, fmt.Errorf("failed to migrate camera snapshot URL: %w", err)
 	}
 
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
@@ -905,6 +913,12 @@ func (b *FilamentBridge) migratePrintSessions() error {
 	return nil
 }
 
+// migrateCameraSnapshotURL adds camera_snapshot_url column to printer_configs.
+func (b *FilamentBridge) migrateCameraSnapshotURL() error {
+	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN camera_snapshot_url TEXT DEFAULT ''`)
+	return nil
+}
+
 // migratePrinterDebugLog adds debug_log toggle to printer_configs and creates
 // the print_debug_logs table for per-print poll transcripts.
 func (b *FilamentBridge) migratePrinterDebugLog() error {
@@ -1392,23 +1406,85 @@ func (b *FilamentBridge) savePrintFile(printID int, fileType, filename string, c
 	return err
 }
 
-// capturePrusaLinkSnapshot fetches a JPEG from the printer's first available camera and
-// saves it as a "camera" attachment on the given print record. Best-effort: logs on failure.
+// fetchSnapshotFromURL captures a JPEG from an HTTP/HTTPS or RTSP URL.
+// RTSP capture uses ffmpeg; HTTP/HTTPS is a plain GET.
+func fetchSnapshotFromURL(snapshotURL string) ([]byte, error) {
+	if strings.HasPrefix(snapshotURL, "rtsp://") || strings.HasPrefix(snapshotURL, "rtsps://") {
+		return fetchRTSPSnapshot(snapshotURL)
+	}
+	return fetchHTTPSnapshot(snapshotURL)
+}
+
+func fetchHTTPSnapshot(snapshotURL string) ([]byte, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(snapshotURL)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("camera URL returned HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func fetchRTSPSnapshot(rtspURL string) ([]byte, error) {
+	tmp, err := os.CreateTemp("", "snapshot-*.jpg")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	var stderr bytes.Buffer
+	cmd := exec.Command("ffmpeg",
+		"-rtsp_transport", "tcp",
+		"-i", rtspURL,
+		"-vframes", "1",
+		"-f", "image2",
+		"-vcodec", "mjpeg",
+		"-y",
+		tmpPath,
+	)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg failed: %w — %s", err, stderr.String())
+	}
+	return os.ReadFile(tmpPath)
+}
+
+// capturePrusaLinkSnapshot saves a JPEG snapshot for the given print event.
+// If a CameraSnapshotURL is configured it takes priority; otherwise the PrusaLink
+// /api/v1/cameras endpoint is tried as a fallback (requires firmware support).
+// Best-effort: logs on failure, never aborts the print record.
 func (b *FilamentBridge) capturePrusaLinkSnapshot(config PrinterConfig, printID int, eventType string) {
-	prusaClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
-	cameras, err := prusaClient.GetCameras()
-	if err != nil {
-		log.Printf("[SNAPSHOT] failed to list cameras for %s: %v", config.IPAddress, err)
-		return
+	var jpegData []byte
+	var err error
+
+	if config.CameraSnapshotURL != "" {
+		jpegData, err = fetchSnapshotFromURL(config.CameraSnapshotURL)
+		if err != nil {
+			log.Printf("[SNAPSHOT] configured URL failed for %s (%s): %v", config.Name, config.CameraSnapshotURL, err)
+			return
+		}
+	} else {
+		prusaClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
+		cameras, err := prusaClient.GetCameras()
+		if err != nil {
+			log.Printf("[SNAPSHOT] failed to list cameras for %s: %v", config.IPAddress, err)
+			return
+		}
+		if len(cameras) == 0 {
+			return
+		}
+		jpegData, err = prusaClient.GetSnapshot(cameras[0].ID)
+		if err != nil {
+			log.Printf("[SNAPSHOT] failed to capture snapshot for %s: %v", config.IPAddress, err)
+			return
+		}
 	}
-	if len(cameras) == 0 {
-		return
-	}
-	jpegData, err := prusaClient.GetSnapshot(cameras[0].ID)
-	if err != nil {
-		log.Printf("[SNAPSHOT] failed to capture snapshot for %s: %v", config.IPAddress, err)
-		return
-	}
+
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	filename := fmt.Sprintf("%s_%s.jpg", eventType, ts)
 	if err := b.savePrintFile(printID, "camera", filename, jpegData); err != nil {
@@ -2060,7 +2136,7 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolLocation(location string) err
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
-	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0) FROM printer_configs")
+	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, '') FROM printer_configs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer configs: %w", err)
 	}
@@ -2068,21 +2144,22 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 
 	configs := make(map[string]PrinterConfig)
 	for rows.Next() {
-		var printerID, name, model, ipAddress, apiKey, printerType string
+		var printerID, name, model, ipAddress, apiKey, printerType, cameraSnapshotURL string
 		var toolheads int
 		var isVirtual, debugLog bool
-		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog); err != nil {
+		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL); err != nil {
 			return nil, fmt.Errorf("failed to scan printer config row: %w", err)
 		}
 		configs[printerID] = PrinterConfig{
-			Name:        name,
-			Model:       model,
-			IPAddress:   ipAddress,
-			APIKey:      apiKey,
-			Toolheads:   toolheads,
-			IsVirtual:   isVirtual,
-			PrinterType: printerType,
-			DebugLog:    debugLog,
+			Name:              name,
+			Model:             model,
+			IPAddress:         ipAddress,
+			APIKey:            apiKey,
+			Toolheads:         toolheads,
+			IsVirtual:         isVirtual,
+			PrinterType:       printerType,
+			DebugLog:          debugLog,
+			CameraSnapshotURL: cameraSnapshotURL,
 		}
 	}
 
@@ -2129,9 +2206,9 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	}
 
 	_, err := b.db.Exec(`
-		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt)
+		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL)
 
 	b.mutex.Unlock()
 

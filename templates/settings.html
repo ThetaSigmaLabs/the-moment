@@ -1,12 +1,5 @@
 <!-- Settings Tab -->
 <div id="settings-tab" class="tab-content">
-    <div class="section-header">
-        <div>
-            <h2>⚙️ Settings</h2>
-            <p class="tab-tagline">Configure the Moment</p>
-        </div>
-    </div>
-    
     <!-- Settings Sub-tabs -->
     <div class="settings-tabs">
         <button class="settings-tab active" onclick="switchSettingsTab('getting-started', this)">📚 Getting Started</button>
@@ -20,7 +13,6 @@
     <!-- Getting Started Tab -->
     <div id="getting-started-tab" class="settings-tab-content active">
         <div class="help-section">
-            <h4>📚 Getting Started</h4>
             <ol>
                 <li><strong>Spoolman:</strong> Spoolman is included in The Moment's <code>docker-compose.yml</code> and starts automatically alongside it. If you have an existing Spoolman instance, point The Moment at it via Settings → Basic Configuration → Spoolman URL. Add your filament spools in Spoolman before proceeding.</li>
                 <li><strong>Add Printers:</strong> Go to Settings → Printers and click "Add Printer". Supported interfaces: OctoPrint (Ender 3 and similar), PrusaLink (Prusa printers), and Bambu (X1C, P1S, A1, etc. via MQTT on LAN). A virtual test printer is also available for testing without hardware.</li>
@@ -34,7 +26,6 @@
     <!-- Basic Configuration Tab -->
     <div id="basic-config-tab" class="settings-tab-content">
         <div class="config-section">
-            <h3>🔧 Basic Configuration</h3>
             <div id="config-form">
                 <p>Loading configuration...</p>
             </div>
@@ -44,7 +35,6 @@
     <!-- Printers Tab -->
     <div id="printers-tab" class="settings-tab-content">
         <div class="config-section">
-            <h3>🖨️ Printer Management</h3>
             <div style="margin-bottom: 20px;">
                 <button class="btn" onclick="showAddPrinterForm()">➕ Add Printer</button>
                 <button class="btn btn-secondary" onclick="showVirtualPrinterForm()" style="margin-left:8px;" title="Create a virtual test printer to upload G-code files and validate Spoolman integration without hardware">🧪 Add Virtual Test Printer</button>
@@ -56,9 +46,9 @@
         </div>
 
         <!-- Orphaned Spool Assignments -->
-        <div class="config-section" style="margin-top:20px;border-top:1px solid #333;padding-top:20px;">
+        <div class="config-section" style="margin-top:20px;border-top:1px solid var(--surface-border);padding-top:20px;">
             <h4 style="margin-top:0;">🔓 Stuck Spool Assignments</h4>
-            <p style="color:#aaa;font-size:0.9em;margin-bottom:12px;">
+            <p style="color:var(--text-secondary);font-size:0.9em;margin-bottom:12px;">
                 If you deleted a printer and its spools are still showing as assigned elsewhere,
                 use this to find and release them. This only removes assignments for printers
                 that no longer exist — active printers are not affected.
@@ -79,7 +69,6 @@
     <!-- Cost Settings Tab -->
     <div id="cost-tab" class="settings-tab-content">
         <div class="config-section">
-            <h3>💰 Cost Settings</h3>
             <div class="help-text">
                 These settings are used when calculating the cost of a print job.
                 Filament cost per kg comes automatically from Spoolman.
@@ -126,28 +115,28 @@
             </div>
 
             <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,0.04);
-                        border-radius:8px;border:1px solid #333;">
+                        border-radius:8px;border:1px solid var(--surface-border);">
                 <strong>Quick cost calculator</strong>
-                <p style="color:#aaa;font-size:0.85em;margin:8px 0 16px;">
+                <p style="color:var(--text-secondary);font-size:0.85em;margin:8px 0 16px;">
                     Test your settings without printing. Enter filament and time to see the breakdown.
                 </p>
                 <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
                     <div>
-                        <label style="font-size:0.85em;color:#aaa;">Filament (g)</label>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Filament (g)</label>
                         <input type="number" id="calc-grams" min="0" step="0.1" placeholder="72.6"
                                style="display:block;width:100px;margin-top:4px;padding:6px;
                                       border-radius:4px;border:1px solid #555;
                                       background:rgba(255,255,255,0.05);color:#fff;">
                     </div>
                     <div>
-                        <label style="font-size:0.85em;color:#aaa;">Print time (min)</label>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Print time (min)</label>
                         <input type="number" id="calc-minutes" min="0" step="1" placeholder="337"
                                style="display:block;width:100px;margin-top:4px;padding:6px;
                                       border-radius:4px;border:1px solid #555;
                                       background:rgba(255,255,255,0.05);color:#fff;">
                     </div>
                     <div>
-                        <label style="font-size:0.85em;color:#aaa;">Filament cost/kg</label>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Filament cost/kg</label>
                         <input type="number" id="calc-price-kg" min="0" step="0.01" placeholder="24.99"
                                style="display:block;width:100px;margin-top:4px;padding:6px;
                                       border-radius:4px;border:1px solid #555;
@@ -167,7 +156,7 @@
         </div>
 
         <!-- Per-printer cost overrides -->
-        <div class="config-section" style="margin-top:0;border-top:1px solid #333;">
+        <div class="config-section" style="margin-top:0;border-top:1px solid var(--surface-border);">
             <h4 style="margin:0 0 8px;">🖨️ Per-Printer Overrides</h4>
             <div class="help-text" style="margin-bottom:16px;">
                 Override global defaults for each printer. Zero means "use global".
@@ -188,7 +177,7 @@
         <!-- Hero -->
         <div class="config-section" style="text-align:center;padding:32px 25px 28px;">
             <div style="font-size:2em;font-weight:700;color:#fff;letter-spacing:-0.5px;">The Moment</div>
-            <div style="font-size:0.95em;color:#aaa;margin:10px 0 18px;">
+            <div style="font-size:0.95em;color:var(--text-secondary);margin:10px 0 18px;">
                 Automatic filament tracking, print history, and cost accounting for every 3D printer you own
             </div>
             <span style="display:inline-block;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-family:monospace;font-size:0.85em;padding:4px 16px;border-radius:20px;font-weight:600;letter-spacing:0.02em;">
@@ -249,11 +238,11 @@
             <h3 style="margin-bottom:16px;">Version Info</h3>
             <table style="border-collapse:collapse;font-size:0.93em;width:100%;">
                 <tr>
-                    <td style="padding:9px 24px 9px 0;color:#aaa;white-space:nowrap;width:170px;">The Moment</td>
+                    <td style="padding:9px 24px 9px 0;color:var(--text-secondary);white-space:nowrap;width:170px;">The Moment</td>
                     <td style="padding:9px 0;font-family:monospace;color:#fff;">v{{.AppVersion}}</td>
                 </tr>
                 <tr style="border-top:1px solid rgba(255,255,255,0.06);">
-                    <td style="padding:9px 24px 9px 0;color:#aaa;white-space:nowrap;">OctoPrint Plugin</td>
+                    <td style="padding:9px 24px 9px 0;color:var(--text-secondary);white-space:nowrap;">OctoPrint Plugin</td>
                     <td style="padding:9px 0;font-family:monospace;color:#fff;" id="about-octoprint-plugin-version">—</td>
                 </tr>
             </table>
@@ -265,7 +254,7 @@
         <!-- Attribution -->
         <div class="config-section" style="font-size:0.85em;line-height:1.6;">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
-                <span style="color:#aaa;font-weight:600;">License</span>
+                <span style="color:var(--text-secondary);font-weight:600;">License</span>
                 <span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:2px 10px;font-family:monospace;color:#ccc;font-size:0.9em;">GPL-3.0</span>
                 <a href="https://github.com/ThetaSigmaLabs/the-moment" target="_blank" rel="noopener"
                    style="background:rgba(102,126,234,0.12);border:1px solid rgba(102,126,234,0.3);border-radius:4px;padding:2px 10px;color:#a0b4f8;text-decoration:none;font-size:0.9em;">
@@ -283,7 +272,7 @@
     <!-- Advanced Settings Tab -->
     <div id="advanced-tab" class="settings-tab-content">
         <div class="config-section">
-            <h3>⚙️ Advanced Settings</h3>
+            <h3>⏱️ Connection Timeouts</h3>
             <div class="help-text">
                 These settings control API timeouts and connection behavior. Only modify if you're experiencing connection issues.
             </div>
@@ -360,7 +349,7 @@
                 </div>
             </div>
             <div id="spoolmanLocationSyncRow" style="display:none;margin-top:8px;">
-                <small style="color:#aaa;">
+                <small style="color:var(--text-secondary);">
                     Location format written to Spoolman: <strong>{Printer Name} - T{toolhead index}</strong>
                     &nbsp;&mdash;&nbsp;e.g. "Roci - T0", "Ender3 - T0"
                 </small>

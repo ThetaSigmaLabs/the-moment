@@ -175,6 +175,7 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/printers", ws.addPrinterHandler)
 		api.PUT("/printers/:id", ws.updatePrinterHandler)
 		api.PATCH("/printers/:id/debug-log", ws.togglePrinterDebugLogHandler)
+		api.POST("/printers/:id/test-camera", ws.testCameraURLHandler)
 		api.GET("/printers/:id/comm-log", ws.commLogHandler)
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
 		api.GET("/printers/:id/toolheads", ws.getToolheadNamesHandler)
@@ -813,14 +814,15 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 			printerType = PrinterTypePrusaLink
 		}
 		printerData := map[string]interface{}{
-			"name":         printerConfig.Name,
-			"model":        printerConfig.Model,
-			"ip_address":   printerConfig.IPAddress,
-			"api_key":      maskedKey,
-			"toolheads":    printerConfig.Toolheads,
-			"is_virtual":   printerConfig.IsVirtual,
-			"printer_type": printerType,
-			"debug_log":    printerConfig.DebugLog,
+			"name":                printerConfig.Name,
+			"model":               printerConfig.Model,
+			"ip_address":          printerConfig.IPAddress,
+			"api_key":             maskedKey,
+			"toolheads":           printerConfig.Toolheads,
+			"is_virtual":          printerConfig.IsVirtual,
+			"printer_type":        printerType,
+			"debug_log":           printerConfig.DebugLog,
+			"camera_snapshot_url": printerConfig.CameraSnapshotURL,
 		}
 
 		// Include uploaded file list for virtual printers so the card renders immediately
@@ -927,6 +929,28 @@ func (ws *WebServer) togglePrinterDebugLogHandler(c *gin.Context) {
 		log.Printf("Warning: failed to reload config after debug-log toggle: %v", err)
 	}
 	c.JSON(http.StatusOK, gin.H{"debug_log": cfg.DebugLog})
+}
+
+// testCameraURLHandler captures one JPEG from the supplied URL and returns it
+// as a base64 data URI so the UI can display a live preview.
+// POST /api/printers/:id/test-camera   body: {"url": "rtsp://..." or "http://..."}
+func (ws *WebServer) testCameraURLHandler(c *gin.Context) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.URL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url required"})
+		return
+	}
+	jpeg, err := fetchSnapshotFromURL(body.URL)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":        true,
+		"thumbnail": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg),
+	})
 }
 
 // commLogHandler returns recent in-memory communication log entries for a printer.

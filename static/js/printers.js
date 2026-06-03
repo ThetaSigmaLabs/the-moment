@@ -844,7 +844,8 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
         : { name: fd.get('name'), model: fd.get('model'),
             ip_address: fd.get('ip_address'), api_key: fd.get('api_key'),
             toolheads: parseInt(fd.get('toolheads')),
-            printer_type: fd.get('printer_type') || 'prusalink' };
+            printer_type: fd.get('printer_type') || 'prusalink',
+            camera_snapshot_url: fd.get('camera_snapshot_url') || '' };
     fetch('/api/printers/' + pid, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -889,6 +890,10 @@ function editPrinter(printerId) {
         document.getElementById('editPrinterIP').value = p.ip_address || '';
         document.getElementById('editPrinterAPIKey').value = p.api_key || '';
         document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
+        document.getElementById('editPrinterCameraURL').value = p.camera_snapshot_url || '';
+        // Reset camera test result from previous session
+        var testResult = document.getElementById('cameraTestResult');
+        if (testResult) { testResult.style.display = 'none'; }
         var typeEl = document.getElementById('editPrinterType');
         var printerType = p.printer_type || 'prusalink';
         if (typeEl) { typeEl.value = printerType; }
@@ -950,6 +955,43 @@ function togglePrinterDebugLog(printerId) {
             btn.style.color = data.debug_log ? '#ffd070' : '';
         }
     }).catch(function(err) { showToast('Error: ' + err.message); });
+}
+
+// ─── Camera URL Test ─────────────────────────────────────────────────────────
+
+function testCameraURL() {
+    var url = (document.getElementById('editPrinterCameraURL').value || '').trim();
+    if (!url) { showToast('Enter a camera URL first.'); return; }
+    var btn = document.getElementById('testCameraBtn');
+    var resultDiv = document.getElementById('cameraTestResult');
+    var img = document.getElementById('cameraTestImg');
+    var msg = document.getElementById('cameraTestMsg');
+    if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+    if (resultDiv) resultDiv.style.display = 'none';
+
+    var printerId = document.getElementById('editPrinterId').value || '_';
+    fetch('/api/printers/' + printerId + '/test-camera', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url })
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Test'; }
+        if (!resultDiv || !img || !msg) return;
+        resultDiv.style.display = '';
+        if (data.ok) {
+            img.src = data.thumbnail;
+            img.style.display = '';
+            msg.textContent = 'Snapshot captured successfully.';
+            msg.style.color = '#81c784';
+        } else {
+            img.style.display = 'none';
+            msg.textContent = 'Failed: ' + (data.error || 'unknown error');
+            msg.style.color = '#ef9a9a';
+        }
+    }).catch(function(err) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Test'; }
+        showToast('Test error: ' + err.message);
+    });
 }
 
 // ─── Toolhead Names ───────────────────────────────────────────────────────────

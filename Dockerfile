@@ -33,7 +33,7 @@ FROM alpine:latest AS production
 
 # Install runtime dependencies
 # Using --no-scripts to work around Alpine 3.23 trigger script issues with QEMU emulation on arm64
-RUN apk update && apk --no-cache --no-scripts add ca-certificates sqlite
+RUN apk update && apk --no-cache --no-scripts add ca-certificates sqlite ffmpeg
 
 # Create app directory
 WORKDIR /app

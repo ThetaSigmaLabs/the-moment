@@ -4,33 +4,29 @@
 
         <!-- Toolbar -->
         <div style="display:flex;align-items:center;justify-content:space-between;
-                    padding:16px 20px;border-bottom:1px solid #333;flex-wrap:wrap;gap:10px;">
+                    padding:16px 20px;border-bottom:1px solid var(--surface-border);flex-wrap:wrap;gap:10px;">
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                <div>
-                    <h3 style="margin:0;">🗂️ Print History</h3>
-                    <p class="tab-tagline" style="margin:2px 0 0;">Relive the Moment</p>
-                </div>
-                <span id="historyCount" style="background:#333;color:#aaa;padding:2px 10px;
+                <span id="historyCount" style="background:var(--surface-3);color:var(--text-secondary);padding:2px 10px;
                       border-radius:12px;font-size:0.8em;">0 records</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <!-- Search -->
                 <input type="text" id="historySearch" placeholder="Search file, printer…"
                        oninput="filterHistory()"
-                       style="padding:7px 12px;border-radius:6px;border:1px solid #555;
-                              background:rgba(255,255,255,0.07);color:#fff;font-size:0.85em;width:200px;">
+                       style="padding:7px 12px;border-radius:6px;border:1px solid var(--surface-border);
+                              background:var(--surface-2);color:#fff;font-size:0.85em;width:200px;">
                 <!-- Filter by status -->
                 <select id="historyStatusFilter" onchange="filterHistory()"
-                        style="padding:7px 10px;border-radius:6px;border:1px solid #555;
-                               background:#2a2a2a;color:#fff;font-size:0.85em;">
+                        style="padding:7px 10px;border-radius:6px;border:1px solid var(--surface-border);
+                               background:var(--surface-2);color:#fff;font-size:0.85em;">
                     <option value="">All statuses</option>
                     <option value="completed">Completed</option>
                     <option value="cancelled">Cancelled</option>
                     <option value="failed">Failed</option>
                 </select>
                 <select id="historyPerPage" onchange="setPerPage(this.value)"
-                        style="padding:7px 10px;border-radius:6px;border:1px solid #555;
-                               background:#2a2a2a;color:#fff;font-size:0.85em;">
+                        style="padding:7px 10px;border-radius:6px;border:1px solid var(--surface-border);
+                               background:var(--surface-2);color:#fff;font-size:0.85em;">
                     <option value="10">10 / page</option>
                     <option value="25">25 / page</option>
                     <option value="50">50 / page</option>
@@ -91,7 +87,7 @@
         <div id="historyPagBottom"></div>
 
         <!-- Empty state (shown by JS) -->
-        <div id="historyEmpty" style="display:none;text-align:center;padding:60px 20px;color:#555;">
+        <div id="historyEmpty" style="display:none;text-align:center;padding:60px 20px;color:var(--text-muted);">
             <div style="font-size:3em;margin-bottom:12px;">🗂️</div>
             <div style="font-size:1.1em;margin-bottom:8px;">No print history yet</div>
             <div style="font-size:0.85em;">

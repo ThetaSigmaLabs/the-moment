@@ -430,8 +430,8 @@ function updateEditButton(toolheadRow, selectedValue, selectedColor = '') {
             editButton.style.borderColor = '#' + selectedColor;
         } else {
             // Fallback to default blue if no color
-            editButton.style.backgroundColor = '#007bff';
-            editButton.style.borderColor = '#007bff';
+            editButton.style.backgroundColor = '#7c5cfc';
+            editButton.style.borderColor = '#7c5cfc';
         }
     } else {
         // Hide button

@@ -23,10 +23,10 @@
     }
 
     var COLORS = {
-        info:    { bg: '#334155', border: '#475569' },
-        success: { bg: '#14532d', border: '#166534' },
+        info:    { bg: '#1e1a2e', border: 'rgba(124,92,252,0.35)' },
+        success: { bg: '#064e3b', border: '#166534' },
         error:   { bg: '#7f1d1d', border: '#991b1b' },
-        warning: { bg: '#713f12', border: '#92400e' }
+        warning: { bg: '#3d1f00', border: '#92400e' }
     };
 
     window.showToast = function (message, type) {

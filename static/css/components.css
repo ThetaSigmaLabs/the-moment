@@ -1,283 +1,306 @@
-/* FilaBridge Dashboard - Component Styles */
+/* The Moment Dashboard - Component Styles */
 
-/* Buttons */
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
 .btn {
-    background: #28a745;
-    color: white;
-    padding: 15px 30px;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    font-weight: bold;
-    font-size: 16px;
-    text-decoration: none;
-    display: inline-block;
-    margin: 10px 5px;
-    transition: all 0.3s ease;
+  background: var(--brand-bright);
+  color: white;
+  padding: 15px 30px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 16px;
+  text-decoration: none;
+  display: inline-block;
+  margin: 10px 5px;
+  transition: all 0.2s ease;
 }
 
 .btn:hover {
-    background: #218838;
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+  background: var(--brand);
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(124, 92, 252, 0.35);
 }
 
 .btn-secondary {
-    background: #6c757d;
+  background: var(--neutral);
 }
 
 .btn-secondary:hover {
-    background: #5a6268;
+  background: var(--neutral-dark);
 }
 
 .btn-danger {
-    background: #dc3545;
+  background: #dc3545;
 }
 
 .btn-danger:hover {
-    background: #c82333;
+  background: #c82333;
 }
 
 .btn-small {
-    padding: 5px 12px;
-    font-size: 12px;
-    min-width: 60px;
+  padding: 5px 12px;
+  font-size: 12px;
+  min-width: 60px;
 }
 
-/* Form Elements */
+/* ── Form Elements ────────────────────────────────────────────────────────── */
 .form-group {
-    margin-bottom: 20px;
-    overflow: visible;
+  margin-bottom: 20px;
+  overflow: visible;
 }
 
 .form-group label {
-    display: block;
-    font-weight: bold;
-    margin-bottom: 8px;
-    color: #fff;
+  display: block;
+  font-weight: bold;
+  margin-bottom: 8px;
+  color: var(--text-primary);
 }
 
 .form-group input, .form-group select {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 12px;
-    border: 2px solid rgba(255,255,255,0.2);
-    border-radius: 8px;
-    font-size: 16px;
-    background: rgba(255,255,255,0.1);
-    color: #fff;
-    transition: border-color 0.3s ease;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 2px solid var(--surface-border);
+  border-radius: 8px;
+  font-size: 16px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  transition: border-color 0.2s ease;
 }
 
 .form-group input:focus, .form-group select:focus {
-    outline: none;
-    border-color: #667eea;
+  outline: none;
+  border-color: var(--brand-bright);
+  background: var(--surface-3);
 }
 
 .form-group select option {
-    background: #1a1a1a;
-    color: #fff;
+  background: var(--surface-1);
+  color: var(--text-primary);
 }
 
 .form-group input[type="password"] {
-    border-color: #6f42c1;
+  border-color: var(--brand);
 }
 
 .form-group small {
-    color: #ccc;
-    font-size: 0.9em;
-    margin-top: 5px;
-    display: block;
+  color: var(--text-secondary);
+  font-size: 0.9em;
+  margin-top: 5px;
+  display: block;
 }
 
 .form-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
 }
 
-/* Configuration Sections */
+/* ── Configuration Sections ───────────────────────────────────────────────── */
 .config-section {
-    background: rgba(255,255,255,0.05);
-    padding: 25px;
-    margin: 20px 0;
-    border-radius: 10px;
-    border: 1px solid rgba(255,255,255,0.1);
-    overflow: visible;
+  background: var(--surface-2);
+  padding: 25px;
+  margin: 20px 0;
+  border-radius: 10px;
+  border: 1px solid var(--surface-border);
+  overflow: visible;
 }
 
 .config-section h3 {
-    margin: 0 0 20px 0;
-    color: #fff;
+  margin: 0 0 20px 0;
+  color: var(--text-primary);
 }
 
 .advanced-settings {
-    background: rgba(255,255,255,0.05);
-    padding: 20px;
-    border-radius: 8px;
-    margin-top: 15px;
+  background: var(--surface-2);
+  padding: 20px;
+  border-radius: 8px;
+  margin-top: 15px;
 }
 
 .help-text {
-    color: #ccc;
-    font-style: italic;
-    margin-bottom: 20px;
-    padding: 10px;
-    background: rgba(255,193,7,0.1);
-    border-left: 3px solid #ffc107;
-    border-radius: 4px;
+  color: var(--text-secondary);
+  font-style: italic;
+  margin-bottom: 20px;
+  padding: 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
 }
 
 .timeout-settings {
-    display: grid;
-    gap: 15px;
+  display: grid;
+  gap: 15px;
 }
 
-/* Status Indicators */
+/* ── Status Indicators ────────────────────────────────────────────────────── */
+/* Dark-mode badge versions — Bootstrap light colours don't work on dark cards */
 .status {
-    padding: 8px 16px;
-    border-radius: 20px;
-    font-weight: bold;
-    text-transform: uppercase;
-    font-size: 0.8em;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75em;
+  letter-spacing: 0.04em;
 }
 
-.status.idle { 
-    background: #d4edda; 
-    color: #155724; 
+.status.idle {
+  background: var(--success-dark);
+  color: var(--success-text);
 }
 
-.status.printing { 
-    background: #fff3cd; 
-    color: #856404; 
+.status.printing {
+  background: #3d2a00;
+  color: #ffb347;
 }
 
-.status.offline { 
-    background: #f8d7da; 
-    color: #721c24; 
+.status.offline {
+  background: var(--error-dark);
+  color: var(--error-text);
 }
 
-.status.not_configured { 
-    background: #e2e3e5; 
-    color: #383d41; 
+.status.not_configured {
+  background: var(--surface-3);
+  color: var(--text-muted);
 }
 
 .status.virtual {
-    background: #ede7f6;
-    color: #4a148c;
+  background: #2a1a3d;
+  color: var(--brand-light);
 }
 
-/* PrusaLink returns uppercase states — mirror lowercase classes for initial render */
-.status.IDLE      { background: #d4edda; color: #155724; }
-.status.PRINTING  { background: #fff3cd; color: #856404; }
-.status.PAUSED    { background: #cce5ff; color: #004085; }
-.status.STOPPED   { background: #f8d7da; color: #721c24; }
-.status.ATTENTION { background: #ffeeba; color: #856404; }
-.status.attention { background: #ffeeba; color: #856404; }
-.status.FINISHED  { background: #d4edda; color: #155724; }
+.status.paused {
+  background: #1a2a3d;
+  color: #7ab8f5;
+}
 
-/* Color Swatches */
+.status.attention {
+  background: var(--warning-dark);
+  color: var(--warning-text);
+}
+
+.status.finished {
+  background: var(--success-dark);
+  color: var(--success-text);
+}
+
+.status.cancelled {
+  background: #2a2a2a;
+  color: var(--text-secondary);
+}
+
+/* PrusaLink returns uppercase states */
+.status.IDLE      { background: var(--success-dark); color: var(--success-text); }
+.status.PRINTING  { background: #3d2a00; color: #ffb347; }
+.status.PAUSED    { background: #1a2a3d; color: #7ab8f5; }
+.status.STOPPED   { background: var(--error-dark); color: var(--error-text); }
+.status.ATTENTION { background: var(--warning-dark); color: var(--warning-text); }
+.status.attention { background: var(--warning-dark); color: var(--warning-text); }
+.status.FINISHED  { background: var(--success-dark); color: var(--success-text); }
+
+/* ── Color Swatches ───────────────────────────────────────────────────────── */
 .color-swatch {
-    width: 20px;
-    height: 20px;
-    border-radius: 3px;
-    border: 1px solid #666;
-    flex-shrink: 0;
-    background-color: #ccc;
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  flex-shrink: 0;
+  background-color: #ccc;
 }
 
-/* Toolhead Specific Styles */
+/* ── Toolhead Specific ────────────────────────────────────────────────────── */
 .toolhead-select {
-    background: rgba(255,255,255,0.1) !important;
-    color: #fff !important;
-    border: 1px solid rgba(255,255,255,0.2) !important;
-    padding: 8px !important;
-    border-radius: 4px !important;
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--surface-border) !important;
+  padding: 8px !important;
+  border-radius: 4px !important;
 }
 
 .toolhead-select option {
-    background: #1a1a1a !important;
-    color: #fff !important;
+  background: var(--surface-1) !important;
+  color: var(--text-primary) !important;
 }
 
 .toolhead-label {
-    color: #fff !important;
+  color: var(--text-primary) !important;
 }
 
 .edit-spool-btn {
-    background: #007bff; /* Fallback color */
-    color: white;
-    padding: 8px 12px;
-    border: 1px solid transparent;
-    border-radius: 20px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: bold;
-    transition: all 0.3s ease;
-    white-space: nowrap;
-    margin-left: 25px;
+  background: var(--brand-bright);
+  color: white;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: bold;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  margin-left: 25px;
 }
 
 .edit-spool-btn:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    filter: brightness(0.8);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(124, 92, 252, 0.4);
+  filter: brightness(0.85);
 }
 
 .edit-spool-btn.hidden {
-    display: none;
+  display: none;
 }
 
-/* ─── Quality Tag Badges ──────────────────────────────────────────────────── */
-
+/* ── Quality Tag Badges ───────────────────────────────────────────────────── */
 .tag-outcome-badge {
-    display: inline-block;
-    padding: 2px 9px;
-    border-radius: 12px;
-    font-size: 0.78em;
-    white-space: nowrap;
-    font-weight: 500;
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 12px;
+  font-size: 0.78em;
+  white-space: nowrap;
+  font-weight: 500;
 }
-.tag-outcome-badge.success    { background: #1b4332; color: #6ee7a0; }
+
+.tag-outcome-badge.success    { background: var(--success-dark); color: var(--success-text); }
 .tag-outcome-badge.acceptable { background: #2a2a00; color: #e6c84a; }
-.tag-outcome-badge.failed     { background: #3d0000; color: #ff7070; }
+.tag-outcome-badge.failed     { background: var(--error-dark); color: var(--error-text); }
 
 .tag-issue-badge {
-    display: inline-block;
-    padding: 1px 7px;
-    border-radius: 10px;
-    font-size: 0.72em;
-    white-space: nowrap;
-    background: #2a2a3d;
-    color: #9ab;
-    margin: 1px 2px;
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.72em;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  margin: 1px 2px;
+  border: 1px solid var(--surface-border);
 }
 
-/* Tag editor in modal */
 .tag-issue-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px 16px;
-    font-size: 0.85em;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+  font-size: 0.85em;
 }
 
 .tag-issue-check {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 0;
-    color: #ccc;
-    cursor: pointer;
-    user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
 }
 
 .tag-issue-check input[type="checkbox"] {
-    accent-color: #7ab8f5;
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
+  accent-color: var(--brand-bright);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
 }
 
-.tag-outcome-btn.active-success    { background: #1b4332 !important; color: #6ee7a0 !important; border-color: #2d6a4f !important; }
+.tag-outcome-btn.active-success    { background: var(--success-dark) !important; color: var(--success-text) !important; border-color: #2d6a4f !important; }
 .tag-outcome-btn.active-acceptable { background: #2a2a00 !important; color: #e6c84a !important; border-color: #5a5a00 !important; }
-.tag-outcome-btn.active-failed     { background: #3d0000 !important; color: #ff7070 !important; border-color: #7a0000 !important; }
+.tag-outcome-btn.active-failed     { background: var(--error-dark) !important; color: var(--error-text) !important; border-color: #7a0000 !important; }

@@ -14,14 +14,15 @@ import (
 
 // PrinterConfig represents configuration for a single printer
 type PrinterConfig struct {
-	Name        string `json:"name"`
-	Model       string `json:"model"`
-	IPAddress   string `json:"ip_address"`
-	APIKey      string `json:"api_key,omitempty"`
-	Toolheads   int    `json:"toolheads"`
-	IsVirtual   bool   `json:"is_virtual,omitempty"`   // Virtual test printer — no real hardware
-	PrinterType string `json:"printer_type,omitempty"` // "prusalink" | "octoprint"
-	DebugLog    bool   `json:"debug_log,omitempty"`    // Capture per-poll debug log for print history
+	Name               string `json:"name"`
+	Model              string `json:"model"`
+	IPAddress          string `json:"ip_address"`
+	APIKey             string `json:"api_key,omitempty"`
+	Toolheads          int    `json:"toolheads"`
+	IsVirtual          bool   `json:"is_virtual,omitempty"`            // Virtual test printer — no real hardware
+	PrinterType        string `json:"printer_type,omitempty"`          // "prusalink" | "octoprint"
+	DebugLog           bool   `json:"debug_log,omitempty"`             // Capture per-poll debug log for print history
+	CameraSnapshotURL  string `json:"camera_snapshot_url,omitempty"`   // HTTP or RTSP URL for print-event snapshots
 }
 
 // FilamentSpool represents a filament spool from Spoolman

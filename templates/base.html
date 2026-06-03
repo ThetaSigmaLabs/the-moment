@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="The Moment - The missing link between printers and filament inventory">
-    <meta name="theme-color" content="#667eea">
+    <meta name="theme-color" content="#7c5cfc">
     <title>The Moment Dashboard</title>
     <!-- External CSS Files -->
     <link rel="stylesheet" href="/static/css/main.css">
@@ -34,18 +34,26 @@
                     </p>
                 </div>
             </div>
-            <a href="{{.SpoolmanBaseURL}}" target="_blank" rel="noopener" class="spoolman-header-btn">
-                🧵 Spoolman
-            </a>
+            <div class="header-brand">
+                <img src="/static/images/thetasigma-labs-logo.svg"
+                     alt="ThetaSigma Labs"
+                     class="header-brand-logo"
+                     onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                <div style="display:none;width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#7c5cfc,#2d1b69);align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;letter-spacing:-0.5px;flex-shrink:0;">ΘΣ</div>
+                <span class="header-brand-name">ThetaSigma Labs</span>
+                <a href="{{.SpoolmanBaseURL}}" target="_blank" rel="noopener" class="spoolman-header-btn">
+                    🧵 Spoolman
+                </a>
+            </div>
         </div>
         
         <div class="content">
             <!-- Tab Navigation -->
             <ul class="tabs">
-                <li><button class="tab {{if not .IsFirstRun}}active{{end}}" onclick="switchTab('history')">🗂️ Print History</button></li>
-                <li><button class="tab {{if .IsFirstRun}}active{{end}}" onclick="switchTab('status')">🖨️ Print Ops</button></li>
-                <li><button class="tab" onclick="switchTab('nfc')">📱 NFC Management</button></li>
-                <li><button class="tab" onclick="switchTab('settings')">⚙️ Settings</button></li>
+                <li><button class="tab {{if not .IsFirstRun}}active{{end}}" onclick="switchTab('history')">🗂️ Print History<span class="tab-sub">Relive the Moment</span></button></li>
+                <li><button class="tab {{if .IsFirstRun}}active{{end}}" onclick="switchTab('status')">🖨️ Print Ops<span class="tab-sub">Shape the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('nfc')">📱 NFC<span class="tab-sub">Define the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('settings')">⚙️ Settings<span class="tab-sub">Configure the Moment</span></button></li>
             </ul>
             
             {{template "content" .}}
