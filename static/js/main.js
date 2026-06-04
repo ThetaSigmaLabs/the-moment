@@ -60,6 +60,16 @@ function toggleConfig() {
     switchTab('settings');
 }
 
+function showAbout() {
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.getElementById('settings-tab').classList.add('active');
+    const settingsBtn = [...document.querySelectorAll('.tab')]
+        .find(t => t.getAttribute('onclick') && t.getAttribute('onclick').includes("'settings'"));
+    if (settingsBtn) settingsBtn.classList.add('active');
+    switchSettingsTab('about', null);
+}
+
 // Settings sub-tab switching functionality
 function switchSettingsTab(tabName, clickedElement) {
     // Hide all settings tab contents
