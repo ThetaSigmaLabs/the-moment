@@ -5,13 +5,17 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -45,6 +49,19 @@ func logStateTransition(printerID, from, to string, jobID int, progress float64)
 		printerID, from, to, jobID, progress)
 }
 
+// prettyJSON returns a human-readable indented JSON string, or the raw bytes
+// unchanged if indenting fails (e.g. body was empty or not valid JSON).
+func prettyJSON(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		return string(raw)
+	}
+	return buf.String()
+}
+
 // FilamentBridge manages the connection between PrusaLink and Spoolman
 type FilamentBridge struct {
 	config           *Config
@@ -71,6 +88,20 @@ type FilamentBridge struct {
 	// commLogs holds in-memory communication event ring buffers, one per printer.
 	commLogs   map[string]*PrinterCommLog
 	commLogsMu sync.RWMutex
+
+	// rawResponses holds the most recent raw JSON response bodies from PrusaLink, one per printer.
+	rawResponses   map[string]*PrusaLinkRawCapture
+	rawResponsesMu sync.RWMutex
+
+	// apiMonitor detects PrusaLink API shape changes across firmware updates.
+	apiMonitor *APIShapeMonitor
+}
+
+// PrusaLinkRawCapture holds the last raw response bodies received from a PrusaLink printer.
+type PrusaLinkRawCapture struct {
+	CapturedAt time.Time `json:"captured_at"`
+	Status     []byte    `json:"status,omitempty"`
+	Job        []byte    `json:"job,omitempty"`
 }
 
 // ToolheadMapping represents a mapping between a printer toolhead and a spool
@@ -264,9 +295,23 @@ type PrinterStatus struct {
 }
 
 // PrinterData represents data for a single printer
+// PrinterData carries the current state of one printer in the WebSocket broadcast.
+// Live fields are populated for PrusaLink printers only; other types leave them zero.
 type PrinterData struct {
 	Name  string `json:"name"`
 	State string `json:"state"`
+	// Live status — PrusaLink only
+	TempNozzle    float64 `json:"temp_nozzle,omitempty"`
+	TempBed       float64 `json:"temp_bed,omitempty"`
+	Progress      float64 `json:"progress,omitempty"`
+	TimeRemaining int     `json:"time_remaining,omitempty"`
+	TimePrinting  int     `json:"time_printing,omitempty"`
+	JobName       string  `json:"job_name,omitempty"`
+	AxisZ         float64 `json:"axis_z,omitempty"`
+	Flow          int     `json:"flow,omitempty"`
+	Speed         int     `json:"speed,omitempty"`
+	FanHotend     int     `json:"fan_hotend,omitempty"`
+	FanPrint      int     `json:"fan_print,omitempty"`
 }
 
 // NewFilamentBridge creates a new FilamentBridge instance
@@ -285,6 +330,8 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		printStartTime:   make(map[string]time.Time),
 		bambuClients:     make(map[string]BambuStatusProvider),
 		commLogs:         make(map[string]*PrinterCommLog),
+		rawResponses:     make(map[string]*PrusaLinkRawCapture),
+		apiMonitor:       NewAPIShapeMonitor(),
 	}
 	bridge.bambuClientFactory = func(ip, serial, accessCode string) BambuStatusProvider {
 		return NewBambuMQTTClient(ip, serial, accessCode, newBambuDebugLogger(bridge))
@@ -347,6 +394,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		return nil, fmt.Errorf("failed to migrate toolhead locations: %w", err)
 	}
 
+	if err := bridge.migrateCameraSnapshotURL(); err != nil {
+		return nil, fmt.Errorf("failed to migrate camera snapshot URL: %w", err)
+	}
+
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
 		log.Printf("[RECONCILE] dedup migration warning: %v", err)
 	}
@@ -378,6 +429,13 @@ func (b *FilamentBridge) getCommLog(printerID string) *PrinterCommLog {
 		b.commLogs[printerID] = &PrinterCommLog{}
 	}
 	return b.commLogs[printerID]
+}
+
+// GetRawResponses returns the most recent PrusaLink raw response capture for a printer, or nil.
+func (b *FilamentBridge) GetRawResponses(printerID string) *PrusaLinkRawCapture {
+	b.rawResponsesMu.RLock()
+	defer b.rawResponsesMu.RUnlock()
+	return b.rawResponses[printerID]
 }
 
 // initDatabase initializes the SQLite database
@@ -905,6 +963,12 @@ func (b *FilamentBridge) migratePrintSessions() error {
 	return nil
 }
 
+// migrateCameraSnapshotURL adds camera_snapshot_url column to printer_configs.
+func (b *FilamentBridge) migrateCameraSnapshotURL() error {
+	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN camera_snapshot_url TEXT DEFAULT ''`)
+	return nil
+}
+
 // migratePrinterDebugLog adds debug_log toggle to printer_configs and creates
 // the print_debug_logs table for per-print poll transcripts.
 func (b *FilamentBridge) migratePrinterDebugLog() error {
@@ -1392,23 +1456,85 @@ func (b *FilamentBridge) savePrintFile(printID int, fileType, filename string, c
 	return err
 }
 
-// capturePrusaLinkSnapshot fetches a JPEG from the printer's first available camera and
-// saves it as a "camera" attachment on the given print record. Best-effort: logs on failure.
+// fetchSnapshotFromURL captures a JPEG from an HTTP/HTTPS or RTSP URL.
+// RTSP capture uses ffmpeg; HTTP/HTTPS is a plain GET.
+func fetchSnapshotFromURL(snapshotURL string) ([]byte, error) {
+	if strings.HasPrefix(snapshotURL, "rtsp://") || strings.HasPrefix(snapshotURL, "rtsps://") {
+		return fetchRTSPSnapshot(snapshotURL)
+	}
+	return fetchHTTPSnapshot(snapshotURL)
+}
+
+func fetchHTTPSnapshot(snapshotURL string) ([]byte, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(snapshotURL)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP GET failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("camera URL returned HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
+}
+
+func fetchRTSPSnapshot(rtspURL string) ([]byte, error) {
+	tmp, err := os.CreateTemp("", "snapshot-*.jpg")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	tmp.Close()
+	defer os.Remove(tmpPath)
+
+	var stderr bytes.Buffer
+	cmd := exec.Command("ffmpeg",
+		"-rtsp_transport", "tcp",
+		"-i", rtspURL,
+		"-vframes", "1",
+		"-f", "image2",
+		"-vcodec", "mjpeg",
+		"-y",
+		tmpPath,
+	)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg failed: %w — %s", err, stderr.String())
+	}
+	return os.ReadFile(tmpPath)
+}
+
+// capturePrusaLinkSnapshot saves a JPEG snapshot for the given print event.
+// If a CameraSnapshotURL is configured it takes priority; otherwise the PrusaLink
+// /api/v1/cameras endpoint is tried as a fallback (requires firmware support).
+// Best-effort: logs on failure, never aborts the print record.
 func (b *FilamentBridge) capturePrusaLinkSnapshot(config PrinterConfig, printID int, eventType string) {
-	prusaClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
-	cameras, err := prusaClient.GetCameras()
-	if err != nil {
-		log.Printf("[SNAPSHOT] failed to list cameras for %s: %v", config.IPAddress, err)
-		return
+	var jpegData []byte
+	var err error
+
+	if config.CameraSnapshotURL != "" {
+		jpegData, err = fetchSnapshotFromURL(config.CameraSnapshotURL)
+		if err != nil {
+			log.Printf("[SNAPSHOT] configured URL failed for %s (%s): %v", config.Name, config.CameraSnapshotURL, err)
+			return
+		}
+	} else {
+		prusaClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
+		cameras, err := prusaClient.GetCameras()
+		if err != nil {
+			log.Printf("[SNAPSHOT] failed to list cameras for %s: %v", config.IPAddress, err)
+			return
+		}
+		if len(cameras) == 0 {
+			return
+		}
+		jpegData, err = prusaClient.GetSnapshot(cameras[0].ID)
+		if err != nil {
+			log.Printf("[SNAPSHOT] failed to capture snapshot for %s: %v", config.IPAddress, err)
+			return
+		}
 	}
-	if len(cameras) == 0 {
-		return
-	}
-	jpegData, err := prusaClient.GetSnapshot(cameras[0].ID)
-	if err != nil {
-		log.Printf("[SNAPSHOT] failed to capture snapshot for %s: %v", config.IPAddress, err)
-		return
-	}
+
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	filename := fmt.Sprintf("%s_%s.jpg", eventType, ts)
 	if err := b.savePrintFile(printID, "camera", filename, jpegData); err != nil {
@@ -1931,8 +2057,7 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 		ConfigKeyPrusaLinkTimeout:                fmt.Sprintf("%d", PrusaLinkTimeout),
 		ConfigKeyPrusaLinkFileDownloadTimeout:    fmt.Sprintf("%d", PrusaLinkFileDownloadTimeout),
 		ConfigKeySpoolmanTimeout:                 fmt.Sprintf("%d", SpoolmanTimeout),
-		ConfigKeyAutoAssignPreviousSpoolEnabled:  "false",     // Enable auto-assignment of previous spool to default location
-		ConfigKeyAutoAssignPreviousSpoolLocation: "",          // Default location name for auto-assigned previous spools
+		ConfigKeyAutoAssignPreviousSpoolEnabled: "false", // Enable auto-assignment of previous spool to default location
 		ConfigKeyNFCTrashLocation:                "Trash",     // Location for empty/done spools (tag ready to re-program)
 		ConfigKeyNFCInventoryLocation:            "Inventory", // Default storage when spool displaced from toolhead
 		ConfigKeySpoolmanLocationSyncEnabled:     "false",     // Bidirectional Spoolman location sync
@@ -1964,8 +2089,7 @@ func getConfigDescription(key string) string {
 		ConfigKeyPrusaLinkTimeout:                "PrusaLink API timeout in seconds",
 		ConfigKeyPrusaLinkFileDownloadTimeout:    "PrusaLink file download header timeout in seconds (body reading is unbounded to support large bgcode files)",
 		ConfigKeySpoolmanTimeout:                 "Spoolman API timeout in seconds",
-		ConfigKeyAutoAssignPreviousSpoolEnabled:  "Enable automatic assignment of previous spool to default location when assigning new spool to toolhead",
-		ConfigKeyAutoAssignPreviousSpoolLocation: "Default location name where previous spools will be automatically assigned (must exist as a location)",
+		ConfigKeyAutoAssignPreviousSpoolEnabled: "Enable automatic assignment of previous spool to Inventory location when assigning new spool to toolhead",
 		ConfigKeyNFCTrashLocation:                "Spoolman location name for empty/finished spools (NFC tag ready to re-program)",
 		ConfigKeyNFCInventoryLocation:            "Spoolman location name used as default storage when a spool is displaced from a toolhead via NFC",
 		ConfigKeySpoolmanLocationSyncEnabled:     "When true, The Moment writes spool locations to Spoolman on assign/unassign and polls for Spoolman-initiated moves",
@@ -2040,27 +2164,10 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolEnabled(enabled bool) error {
 	return b.SetConfigValue(ConfigKeyAutoAssignPreviousSpoolEnabled, value)
 }
 
-// GetAutoAssignPreviousSpoolLocation gets the default location name for auto-assigned previous spools
-func (b *FilamentBridge) GetAutoAssignPreviousSpoolLocation() (string, error) {
-	value, err := b.GetConfigValue(ConfigKeyAutoAssignPreviousSpoolLocation)
-	if err != nil {
-		// If key doesn't exist, return empty string (default)
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil
-		}
-		return "", err
-	}
-	return value, nil
-}
-
-// SetAutoAssignPreviousSpoolLocation sets the default location name for auto-assigned previous spools
-func (b *FilamentBridge) SetAutoAssignPreviousSpoolLocation(location string) error {
-	return b.SetConfigValue(ConfigKeyAutoAssignPreviousSpoolLocation, location)
-}
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
-	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0) FROM printer_configs")
+	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, '') FROM printer_configs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer configs: %w", err)
 	}
@@ -2068,21 +2175,22 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 
 	configs := make(map[string]PrinterConfig)
 	for rows.Next() {
-		var printerID, name, model, ipAddress, apiKey, printerType string
+		var printerID, name, model, ipAddress, apiKey, printerType, cameraSnapshotURL string
 		var toolheads int
 		var isVirtual, debugLog bool
-		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog); err != nil {
+		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL); err != nil {
 			return nil, fmt.Errorf("failed to scan printer config row: %w", err)
 		}
 		configs[printerID] = PrinterConfig{
-			Name:        name,
-			Model:       model,
-			IPAddress:   ipAddress,
-			APIKey:      apiKey,
-			Toolheads:   toolheads,
-			IsVirtual:   isVirtual,
-			PrinterType: printerType,
-			DebugLog:    debugLog,
+			Name:              name,
+			Model:             model,
+			IPAddress:         ipAddress,
+			APIKey:            apiKey,
+			Toolheads:         toolheads,
+			IsVirtual:         isVirtual,
+			PrinterType:       printerType,
+			DebugLog:          debugLog,
+			CameraSnapshotURL: cameraSnapshotURL,
 		}
 	}
 
@@ -2129,9 +2237,9 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	}
 
 	_, err := b.db.Exec(`
-		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt)
+		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL)
 
 	b.mutex.Unlock()
 
@@ -2400,19 +2508,14 @@ func (b *FilamentBridge) syncSpoolLocationForUnassignment(spoolID int) error {
 	if err != nil || !enabled {
 		return nil
 	}
-	locationName, err := b.GetAutoAssignPreviousSpoolLocation()
+	locationName, err := b.GetConfigValue(ConfigKeyNFCInventoryLocation)
 	if err != nil || locationName == "" {
-		return nil
-	}
-	loc, err := b.spoolman.FindLocationByName(locationName)
-	if err != nil || loc == nil {
-		log.Printf("syncSpoolLocationForUnassignment: location %q not found in Spoolman, skipping spool %d", locationName, spoolID)
 		return nil
 	}
 	if err := b.spoolman.UpdateSpoolLocation(spoolID, locationName); err != nil {
 		return fmt.Errorf("syncSpoolLocationForUnassignment spool %d to %q: %w", spoolID, locationName, err)
 	}
-	log.Printf("Synced unassigned spool %d to default location %q", spoolID, locationName)
+	log.Printf("Synced unassigned spool %d to inventory location %q", spoolID, locationName)
 	return nil
 }
 
@@ -2645,28 +2748,16 @@ func (b *FilamentBridge) SetToolheadMapping(printerName string, toolheadID int, 
 	}
 
 	if enabled && previousSpoolID > 0 && previousSpoolID != spoolID {
-		// Get the configured default location
-		locationName, err := b.GetAutoAssignPreviousSpoolLocation()
+		locationName, err := b.GetConfigValue(ConfigKeyNFCInventoryLocation)
 		if err != nil {
-			log.Printf("Warning: Failed to get auto-assign previous spool location setting: %v", err)
-			return nil // Don't fail the assignment
+			log.Printf("Warning: Failed to get inventory location for auto-assign: %v", err)
+			return nil
 		}
-
 		if locationName != "" {
-			// Verify the location exists in Spoolman
-			location, err := b.spoolman.FindLocationByName(locationName)
-			if err != nil || location == nil {
-				log.Printf("Warning: Auto-assign previous spool location '%s' does not exist, skipping auto-assignment of spool %d", locationName, previousSpoolID)
-				return nil // Don't fail the assignment
-			}
-
-			// Assign the previous spool to the default location
-			// Use isPrinterLocation = false since this is a storage location
-			if err := b.AssignSpoolToLocation(previousSpoolID, "", 0, locationName, false); err != nil {
+			if err := b.spoolman.UpdateSpoolLocation(previousSpoolID, locationName); err != nil {
 				log.Printf("Warning: Failed to auto-assign previous spool %d to location '%s': %v", previousSpoolID, locationName, err)
-				// Don't fail the original assignment if auto-assignment fails
 			} else {
-				log.Printf("Auto-assigned previous spool %d to location '%s'", previousSpoolID, locationName)
+				log.Printf("Auto-assigned previous spool %d to inventory location '%s'", previousSpoolID, locationName)
 			}
 		}
 	}
@@ -2898,7 +2989,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	cl := b.getCommLog(printerID)
 
 	cl.Append("TX", "poll_status", "GET /api/v1/status", "")
-	status, err := client.GetStatus()
+	status, statusRaw, err := client.GetStatus()
 	if err != nil {
 		cl.Append("RX", "error", fmt.Sprintf("GET /api/v1/status failed: %v", err), "")
 		failures, _ := b.IncrementFailureCount(printerID)
@@ -2909,20 +3000,10 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		}
 		return nil
 	}
-	{
-		nozzleTemp := 0.0
-		bedTemp := 0.0
-		if t, ok := status.Printer.Temperature["tool0"]; ok {
-			nozzleTemp = t.Actual
-		}
-		if t, ok := status.Printer.Temperature["bed"]; ok {
-			bedTemp = t.Actual
-		}
-		cl.Append("RX", "poll_status", fmt.Sprintf("state=%s nozzle=%.0f°C bed=%.0f°C", status.Printer.State, nozzleTemp, bedTemp), "")
-	}
+	cl.Append("RX", "poll_status", fmt.Sprintf("state=%s nozzle=%.0f°C bed=%.0f°C", status.Printer.State, status.Printer.TempNozzle, status.Printer.TempBed), prettyJSON(statusRaw))
 
 	cl.Append("TX", "poll_job", "GET /api/v1/job", "")
-	jobInfo, err := client.GetJobInfo()
+	jobInfo, jobRaw, err := client.GetJobInfo()
 	if err != nil {
 		cl.Append("RX", "error", fmt.Sprintf("GET /api/v1/job failed: %v", err), "")
 		log.Printf("Warning: Failed to get job info from %s (%s): %v", config.IPAddress, printerID, err)
@@ -2932,7 +3013,38 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		if jobInfo.File.Name != "" {
 			jobSummary = fmt.Sprintf("job_id=%d file=%q progress=%.1f%%", jobInfo.ID, jobInfo.File.DisplayName, jobInfo.Progress)
 		}
-		cl.Append("RX", "poll_job", jobSummary, "")
+		cl.Append("RX", "poll_job", jobSummary, prettyJSON(jobRaw))
+	}
+
+	b.rawResponsesMu.Lock()
+	b.rawResponses[printerID] = &PrusaLinkRawCapture{
+		CapturedAt: time.Now(),
+		Status:     statusRaw,
+		Job:        jobRaw,
+	}
+	b.rawResponsesMu.Unlock()
+
+	// Detect API shape changes (e.g. from firmware updates).
+	for _, check := range []struct {
+		endpoint string
+		body     []byte
+	}{
+		{"status", statusRaw},
+		{"job", jobRaw},
+	} {
+		if len(check.body) == 0 {
+			continue
+		}
+		added, removed, changed := b.apiMonitor.Check(printerID, check.endpoint, check.body)
+		if changed {
+			diff := FormatDiff("/api/v1/"+check.endpoint, added, removed)
+			cl.Append("EV", "api_change", diff, "")
+			if b.apiMonitor.ShouldAlert(printerID) {
+				b.addPrintError(printerID, "api/v1/"+check.endpoint,
+					"PrusaLink API shape changed — "+diff+". Check struct and update if needed.")
+				b.apiMonitor.SetAlertPending(printerID)
+			}
+		}
 	}
 
 	currentState := status.Printer.State
@@ -2982,8 +3094,8 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		_ = b.AppendPrintDebugLog(printerID, jobInfo.ID, fmt.Sprintf(
 			"[POLL] state=%s progress=%.1f%% time_printing=%ds time_left=%ds job_id=%d file=%q filament=%s",
 			currentState, printProgress,
-			status.Printer.Telemetry.PrintTime,
-			status.Printer.Telemetry.PrintTimeLeft,
+			status.Job.TimePrinting,
+			status.Job.TimeRemaining,
 			jobInfo.ID, currentJobDisplay, filamentStr))
 	}
 
@@ -2997,7 +3109,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	switch currentState {
 
 	case StatePrinting:
-		// Print is active — store the filename on first detection, keep wasPrinting=true
+		// Print is active — store the filename on first detection, keep wasPrinting=true.
+		// Unmute API-change alerts so firmware updates during a print are still detectable.
+		b.apiMonitor.UnmuteOnPrint(printerID)
 		isNewPrint := false
 		b.mutex.Lock()
 		if currentJobFilename != "" && storedJobFile == "" {
@@ -3906,17 +4020,26 @@ func (b *FilamentBridge) GetPrintErrors() []PrintError {
 	return errors
 }
 
-// AcknowledgePrintError marks a print error as acknowledged
+// AcknowledgePrintError marks a print error as acknowledged.
+// If the error was an API-change alert, the pending flag on the shape monitor
+// is also cleared so the next change can fire a new notification.
 func (b *FilamentBridge) AcknowledgePrintError(errorID string) error {
 	b.errorMutex.Lock()
-	defer b.errorMutex.Unlock()
-
-	if err, exists := b.printErrors[errorID]; exists {
-		err.Acknowledged = true
-		b.printErrors[errorID] = err
-		return nil
+	pe, exists := b.printErrors[errorID]
+	if !exists {
+		b.errorMutex.Unlock()
+		return fmt.Errorf("print error not found: %s", errorID)
 	}
-	return fmt.Errorf("print error not found: %s", errorID)
+	pe.Acknowledged = true
+	b.printErrors[errorID] = pe
+	isAPIChange := strings.HasPrefix(pe.Filename, "api/v1/")
+	printerID := pe.PrinterName
+	b.errorMutex.Unlock()
+
+	if isAPIChange {
+		b.apiMonitor.ClearAlert(printerID)
+	}
+	return nil
 }
 
 // sanitizeErrorID replaces problematic characters in error IDs to make them URL-safe
@@ -4020,7 +4143,7 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 			client := NewPrusaLinkClient(printerConfig.IPAddress, printerConfig.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
 
 			// Get current status
-			printerStatus, err := client.GetStatus()
+			printerStatus, _, err := client.GetStatus()
 			if err != nil {
 				log.Printf("Warning: Failed to get printer status from %s (%s - %s): %v",
 					printerConfig.IPAddress, printerID, printerName, err)
@@ -4032,8 +4155,18 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 			}
 
 			status.Printers[printerID] = PrinterData{
-				Name:  printerName,
-				State: printerStatus.Printer.State,
+				Name:          printerName,
+				State:         printerStatus.Printer.State,
+				TempNozzle:    printerStatus.Printer.TempNozzle,
+				TempBed:       printerStatus.Printer.TempBed,
+				Progress:      printerStatus.Job.Progress,
+				TimeRemaining: printerStatus.Job.TimeRemaining,
+				TimePrinting:  printerStatus.Job.TimePrinting,
+				AxisZ:         printerStatus.Printer.AxisZ,
+				Flow:          printerStatus.Printer.Flow,
+				Speed:         printerStatus.Printer.Speed,
+				FanHotend:     printerStatus.Printer.FanHotend,
+				FanPrint:      printerStatus.Printer.FanPrint,
 			}
 		}
 	} else {

@@ -1,13 +1,6 @@
 <!-- Filament Status Tab (Default) -->
 <div id="status-tab" class="tab-content {{if .IsFirstRun}}active{{end}}">
     <div id="status">
-        <div class="section-header">
-            <div>
-                <h2>Print Ops</h2>
-                <p class="tab-tagline">Shape the Moment</p>
-            </div>
-        </div>
-
         {{if .IsFirstRun}}
         <div class="welcome-banner">
             <h3>🎉 Welcome to The Moment!</h3>
@@ -28,7 +21,7 @@
         {{end}}
 
         {{if not .SpoolmanConnected}}
-        <div style="background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 20px; margin: 20px 0; border-radius: 8px;">
+        <div style="background: #3d1f00; border: 1px solid #f59e0b; color: #fbbf24; padding: 20px; margin: 20px 0; border-radius: 8px;">
             <h4 style="margin-top: 0;">⚠️ Spoolman Connection Issue</h4>
             <p>Cannot connect to Spoolman. Please ensure Spoolman is running and the URL is correct.</p>
             {{if .SpoolmanError}}
@@ -40,7 +33,7 @@
         {{if .HasPrintErrors}}
         <div id="print-errors-container">
             {{range .PrintErrors}}
-            <div class="print-error" data-error-id="{{.ID}}" style="background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 20px; margin: 20px 0; border-radius: 8px;">
+            <div class="print-error" data-error-id="{{.ID}}" style="background: #7f1d1d; border: 1px solid #ef4444; color: #fca5a5; padding: 20px; margin: 20px 0; border-radius: 8px;">
                 <h4 style="margin-top: 0;">⚠️ Print Processing Failed</h4>
                 <p><strong>Printer:</strong> {{.PrinterName}}</p>
                 <p><strong>File:</strong> {{.Filename}}</p>

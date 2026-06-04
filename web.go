@@ -175,7 +175,9 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/printers", ws.addPrinterHandler)
 		api.PUT("/printers/:id", ws.updatePrinterHandler)
 		api.PATCH("/printers/:id/debug-log", ws.togglePrinterDebugLogHandler)
+		api.POST("/printers/:id/test-camera", ws.testCameraURLHandler)
 		api.GET("/printers/:id/comm-log", ws.commLogHandler)
+		api.GET("/printers/:id/raw-responses", ws.rawResponsesHandler)
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
 		api.GET("/printers/:id/toolheads", ws.getToolheadNamesHandler)
 		api.PUT("/printers/:id/toolheads/:toolhead_id", ws.updateToolheadNameHandler)
@@ -753,24 +755,13 @@ func (ws *WebServer) getAutoAssignPreviousSpoolHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	location, err := ws.bridge.GetAutoAssignPreviousSpoolLocation()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"enabled":  enabled,
-		"location": location,
-	})
+	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
 }
 
 // updateAutoAssignPreviousSpoolHandler updates auto-assign previous spool settings
 func (ws *WebServer) updateAutoAssignPreviousSpoolHandler(c *gin.Context) {
 	var req struct {
-		Enabled  bool   `json:"enabled" binding:"required"`
-		Location string `json:"location"`
+		Enabled bool `json:"enabled" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -778,14 +769,7 @@ func (ws *WebServer) updateAutoAssignPreviousSpoolHandler(c *gin.Context) {
 		return
 	}
 
-	// Update enabled setting
 	if err := ws.bridge.SetAutoAssignPreviousSpoolEnabled(req.Enabled); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Update location setting
-	if err := ws.bridge.SetAutoAssignPreviousSpoolLocation(req.Location); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -813,14 +797,15 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 			printerType = PrinterTypePrusaLink
 		}
 		printerData := map[string]interface{}{
-			"name":         printerConfig.Name,
-			"model":        printerConfig.Model,
-			"ip_address":   printerConfig.IPAddress,
-			"api_key":      maskedKey,
-			"toolheads":    printerConfig.Toolheads,
-			"is_virtual":   printerConfig.IsVirtual,
-			"printer_type": printerType,
-			"debug_log":    printerConfig.DebugLog,
+			"name":                printerConfig.Name,
+			"model":               printerConfig.Model,
+			"ip_address":          printerConfig.IPAddress,
+			"api_key":             maskedKey,
+			"toolheads":           printerConfig.Toolheads,
+			"is_virtual":          printerConfig.IsVirtual,
+			"printer_type":        printerType,
+			"debug_log":           printerConfig.DebugLog,
+			"camera_snapshot_url": printerConfig.CameraSnapshotURL,
 		}
 
 		// Include uploaded file list for virtual printers so the card renders immediately
@@ -929,6 +914,28 @@ func (ws *WebServer) togglePrinterDebugLogHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"debug_log": cfg.DebugLog})
 }
 
+// testCameraURLHandler captures one JPEG from the supplied URL and returns it
+// as a base64 data URI so the UI can display a live preview.
+// POST /api/printers/:id/test-camera   body: {"url": "rtsp://..." or "http://..."}
+func (ws *WebServer) testCameraURLHandler(c *gin.Context) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.URL == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url required"})
+		return
+	}
+	jpeg, err := fetchSnapshotFromURL(body.URL)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"ok": false, "error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":        true,
+		"thumbnail": "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(jpeg),
+	})
+}
+
 // commLogHandler returns recent in-memory communication log entries for a printer.
 // Query param: since=<id> (int64) returns entries with ID > since; omit for last 100.
 func (ws *WebServer) commLogHandler(c *gin.Context) {
@@ -952,6 +959,34 @@ func (ws *WebServer) commLogHandler(c *gin.Context) {
 		entries = []CommLogEntry{}
 	}
 	c.JSON(http.StatusOK, gin.H{"printer_id": printerID, "entries": entries})
+}
+
+// rawResponsesHandler returns the most recent raw PrusaLink API response bodies for a printer.
+// The response body contains pretty-printed JSON for /api/v1/status and /api/v1/job,
+// suitable for use as test fixtures.
+func (ws *WebServer) rawResponsesHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	cap := ws.bridge.GetRawResponses(printerID)
+	if cap == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no raw responses captured yet — wait for the next poll cycle"})
+		return
+	}
+
+	// Unmarshal to interface{} so the JSON is embedded as objects, not strings.
+	var statusObj, jobObj interface{}
+	if len(cap.Status) > 0 {
+		_ = json.Unmarshal(cap.Status, &statusObj)
+	}
+	if len(cap.Job) > 0 {
+		_ = json.Unmarshal(cap.Job, &jobObj)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"printer_id":   printerID,
+		"captured_at":  cap.CapturedAt,
+		"status":       statusObj,
+		"job":          jobObj,
+	})
 }
 
 // updatePrinterHandler updates an existing printer configuration

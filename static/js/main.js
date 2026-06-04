@@ -200,18 +200,11 @@ function testSpoolmanURL() {
 
 function saveAutoAssignSettings() {
     const enabled = document.getElementById('autoAssignPreviousSpoolEnabled').checked;
-    const locationSelect = document.getElementById('autoAssignPreviousSpoolLocation');
-    const location = locationSelect ? locationSelect.value.trim() : '';
-
-    const settings = {
-        enabled: enabled,
-        location: location
-    };
 
     fetch('/api/config/auto-assign-previous-spool', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings)
+        body: JSON.stringify({ enabled })
     })
         .then(response => response.json())
         .then(data => {
@@ -373,11 +366,8 @@ function resetAdvancedSettings() {
 }
 
 // Auto-Assign Previous Spool Settings Functions
-// Store the checkbox change handler so we can remove it before adding a new one
-let autoAssignCheckboxHandler = null;
 
 function loadAutoAssignSettings() {
-    // First, load the settings
     fetch('/api/config/auto-assign-previous-spool')
         .then(response => response.json())
         .then(data => {
@@ -385,88 +375,7 @@ function loadAutoAssignSettings() {
                 console.error('Error loading auto-assign settings:', data.error);
                 return;
             }
-
-            const enabled = data.enabled || false;
-            const location = data.location || '';
-
-            document.getElementById('autoAssignPreviousSpoolEnabled').checked = enabled;
-
-            // Show/hide location dropdown based on checkbox
-            const locationGroup = document.getElementById('autoAssignLocationGroup');
-            if (locationGroup) {
-                locationGroup.style.display = enabled ? 'block' : 'none';
-            }
-
-            // Load locations and populate dropdown
-            return fetch('/api/locations')
-                .then(response => response.json())
-                .then(locationsData => {
-                    if (locationsData.error) {
-                        console.error('Error loading locations:', locationsData.error);
-                        return;
-                    }
-
-                    const locationSelect = document.getElementById('autoAssignPreviousSpoolLocation');
-                    if (!locationSelect) return;
-
-                    // Clear existing options except the first one
-                    locationSelect.innerHTML = '<option value="">Select a location...</option>';
-
-                    // Filter out printer toolhead locations (we only want storage locations)
-                    const storageLocations = locationsData.locations.filter(loc => {
-                        return !loc.is_virtual && loc.type !== 'printer';
-                    });
-
-                    // Sort locations alphabetically by name
-                    storageLocations.sort((a, b) => {
-                        const nameA = (a.name || '').toLowerCase();
-                        const nameB = (b.name || '').toLowerCase();
-                        return nameA.localeCompare(nameB);
-                    });
-
-                    // Add locations to dropdown
-                    storageLocations.forEach(loc => {
-                        const option = document.createElement('option');
-                        option.value = loc.name;
-                        option.textContent = loc.name;
-                        if (loc.name === location) {
-                            option.selected = true;
-                        }
-                        locationSelect.appendChild(option);
-                    });
-
-                    // If the saved location is not in the list (e.g., it was deleted), add it as selected
-                    if (location && !storageLocations.find(loc => loc.name === location)) {
-                        const option = document.createElement('option');
-                        option.value = location;
-                        option.textContent = location + ' (not found)';
-                        option.selected = true;
-                        locationSelect.appendChild(option);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error loading locations:', error);
-                });
-        })
-        .then(() => {
-            // Set up checkbox change handler
-            const checkbox = document.getElementById('autoAssignPreviousSpoolEnabled');
-            const locationGroup = document.getElementById('autoAssignLocationGroup');
-
-            if (checkbox && locationGroup) {
-                // Remove existing event listener if it exists
-                if (autoAssignCheckboxHandler) {
-                    checkbox.removeEventListener('change', autoAssignCheckboxHandler);
-                }
-
-                // Create and store the new handler function
-                autoAssignCheckboxHandler = function () {
-                    locationGroup.style.display = this.checked ? 'block' : 'none';
-                };
-
-                // Add the event listener
-                checkbox.addEventListener('change', autoAssignCheckboxHandler);
-            }
+            document.getElementById('autoAssignPreviousSpoolEnabled').checked = data.enabled || false;
         })
         .catch(error => {
             console.error('Error loading auto-assign settings:', error);

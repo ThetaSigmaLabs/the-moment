@@ -73,10 +73,14 @@
             lines.push([time, dir, evtype, summary].join('\t'));
         });
         if (!lines.length) return;
-        navigator.clipboard.writeText(lines.join('\n')).catch(function () {
-            // Fallback: prompt
-            window.prompt('Copy:', lines.join('\n'));
-        });
+        var text = lines.join('\n');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).catch(function () {
+                window.prompt('Copy:', text);
+            });
+        } else {
+            window.prompt('Copy:', text);
+        }
     };
 
     // ── Public: clear entries (keeps polling) ──────────────────────────────────

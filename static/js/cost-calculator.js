@@ -335,10 +335,14 @@ function savePrinterCostSettings(printerName) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     })
-        .then(function(r) { return r.json(); })
+        .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+        })
         .then(function(data) {
             if (data.error) { showToast('Error: ' + data.error); return; }
-            // Flash the save button briefly
+            // Flash the save button, then reload cards from DB to confirm the write landed.
+            // If the write silently failed the card will reset to 0, making the failure visible.
             var btns = document.querySelectorAll('#printerCostCards button');
             btns.forEach(function(b) {
                 if (b.getAttribute('onclick') && b.getAttribute('onclick').includes(JSON.stringify(printerName))) {
@@ -347,6 +351,7 @@ function savePrinterCostSettings(printerName) {
                     setTimeout(function() { b.textContent = orig; }, 1800);
                 }
             });
+            loadPrinterCostSettings();
         })
         .catch(function(err) { showToast('Error saving: ' + err.message); });
 }

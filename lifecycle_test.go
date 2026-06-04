@@ -21,6 +21,8 @@ package main
 import (
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -63,6 +65,19 @@ func setupBridgeWithMocks(t *testing.T, spoolMap map[int]float64) (*FilamentBrid
 func poll(t *testing.T, bridge *FilamentBridge, printer *MockPrusaLink, printerName string, toolheads int) {
 	t.Helper()
 	cfg := printer.PrinterConfig(printerName, toolheads)
+	if err := bridge.SavePrinterConfig("test-printer-id", cfg); err != nil {
+		t.Fatalf("SavePrinterConfig: %v", err)
+	}
+	if err := bridge.monitorPrusaLink("test-printer-id", cfg); err != nil {
+		t.Fatalf("monitorPrusaLink: %v", err)
+	}
+}
+
+// pollWithCamera is like poll but injects a CameraSnapshotURL into the printer config.
+func pollWithCamera(t *testing.T, bridge *FilamentBridge, printer *MockPrusaLink, printerName string, toolheads int, cameraURL string) {
+	t.Helper()
+	cfg := printer.PrinterConfig(printerName, toolheads)
+	cfg.CameraSnapshotURL = cameraURL
 	if err := bridge.SavePrinterConfig("test-printer-id", cfg); err != nil {
 		t.Fatalf("SavePrinterConfig: %v", err)
 	}
@@ -924,4 +939,105 @@ func TestLifecycle_AttentionSnapshot(t *testing.T) {
 	}
 
 	t.Logf("✅ Attention + finish snapshots: %d camera attachment(s)", cameraCount)
+}
+
+// TestLifecycle_SnapshotCaptured_FromConfiguredHTTPURL verifies that when a
+// CameraSnapshotURL is configured, snapshots are fetched from that URL rather
+// than the PrusaLink /api/v1/cameras endpoint.
+func TestLifecycle_SnapshotCaptured_FromConfiguredHTTPURL(t *testing.T) {
+	const spoolID = 50
+	const printWeight = 15.0
+
+	// Stand up a tiny HTTP server that returns a JPEG on any GET request.
+	var httpHits int
+	cameraServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpHits++
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Write(minimalJPEG) //nolint:errcheck
+	}))
+	t.Cleanup(cameraServer.Close)
+
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: printWeight})
+	// No SetCameraSnapshot — PrusaLink camera API returns 404; snapshot must come from URL.
+
+	cameraURL := cameraServer.URL + "/snapshot.jpg"
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(50)
+	pollWithCamera(t, bridge, printer, "Core One L", 1, cameraURL)
+
+	printer.SetState(StateFinished)
+	pollWithCamera(t, bridge, printer, "Core One L", 1, cameraURL)
+
+	// Configured HTTP URL must have been called (not the PrusaLink camera API).
+	if httpHits == 0 {
+		t.Error("expected at least one hit on configured camera URL, got 0")
+	}
+	if n := printer.SnapshotCallCount(); n != 0 {
+		t.Errorf("PrusaLink /api/v1/cameras should not have been called when URL is configured, got %d call(s)", n)
+	}
+
+	// A camera attachment must exist on the finished print record.
+	history, err := bridge.GetPrintHistory(5)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("GetPrintHistory: %v (len=%d)", err, len(history))
+	}
+	var cameraCount int
+	for _, hr := range history {
+		atts, _ := bridge.GetPrintAttachments(hr.ID)
+		for _, a := range atts {
+			if a.FileType == "camera" {
+				cameraCount++
+			}
+		}
+	}
+	if cameraCount == 0 {
+		t.Error("expected at least one camera attachment, got 0")
+	}
+	t.Logf("✅ Configured HTTP URL: %d snapshot(s) captured, %d HTTP hit(s)", cameraCount, httpHits)
+}
+
+// TestLifecycle_SnapshotBlankURLDisables verifies that leaving CameraSnapshotURL
+// empty produces no snapshots and no errors (same as no camera configured).
+func TestLifecycle_SnapshotBlankURLDisables(t *testing.T) {
+	const spoolID = 51
+
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 10.0})
+	// No camera, no URL — both are absent.
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(50)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateFinished)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	if n := printer.SnapshotCallCount(); n != 0 {
+		t.Errorf("expected 0 snapshot calls, got %d", n)
+	}
+	history, err := bridge.GetPrintHistory(5)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("GetPrintHistory: %v (len=%d)", err, len(history))
+	}
+	for _, hr := range history {
+		atts, _ := bridge.GetPrintAttachments(hr.ID)
+		for _, a := range atts {
+			if a.FileType == "camera" {
+				t.Errorf("unexpected camera attachment on print %d: %s", hr.ID, a.Filename)
+			}
+		}
+	}
+	t.Logf("✅ Blank URL: no snapshots, no errors")
 }
