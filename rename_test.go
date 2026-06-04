@@ -57,7 +57,7 @@ func testBridgeWithGcode(t *testing.T) (*FilamentBridge, int, int, string) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	attachID64, err := bridge.SavePrintAttachment(printID, "gcode", "original-name.gcode", relPath, 15)
+	attachID64, err := bridge.SavePrintAttachment(printID, "gcode", "original-name.gcode", relPath, "", 15)
 	if err != nil {
 		t.Fatalf("SavePrintAttachment: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestRenameAttachment_NonGcode(t *testing.T) {
 	relPath := filepath.Join("print-files", "2026", "01", "1_model.3mf")
 	os.WriteFile(filepath.Join(tmpDir, relPath), []byte("data"), 0644)
 
-	attachID64, _ := bridge.SavePrintAttachment(printID, "slicer", "model.3mf", relPath, 4)
+	attachID64, _ := bridge.SavePrintAttachment(printID, "slicer", "model.3mf", relPath, "", 4)
 	attachID := int(attachID64)
 
 	if err := bridge.RenameAttachment(attachID, "renamed.3mf"); err != nil {

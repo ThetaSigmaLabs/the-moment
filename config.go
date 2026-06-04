@@ -22,8 +22,19 @@ type PrinterConfig struct {
 	IsVirtual          bool   `json:"is_virtual,omitempty"`            // Virtual test printer — no real hardware
 	PrinterType        string `json:"printer_type,omitempty"`          // "prusalink" | "octoprint"
 	DebugLog           bool   `json:"debug_log,omitempty"`             // Capture per-poll debug log for print history
-	CameraSnapshotURL  string `json:"camera_snapshot_url,omitempty"`   // HTTP or RTSP URL for print-event snapshots
-	SortOrder          int    `json:"sort_order,omitempty"`            // Dashboard display order (lower = leftmost)
+	CameraSnapshotURL      string                 `json:"camera_snapshot_url,omitempty"`      // HTTP or RTSP URL for print-event snapshots
+	SortOrder              int                    `json:"sort_order,omitempty"`               // Dashboard display order (lower = leftmost)
+	ProgressSnapshotConfig ProgressSnapshotConfig `json:"progress_snapshot_config,omitempty"` // In-progress snapshot settings
+}
+
+// ProgressSnapshotConfig controls automatic camera snapshots during a print.
+// Mode "interval": capture every Interval percent (e.g. 10 → 10%, 20%, …, 90%).
+// Mode "milestones": capture at the listed percentages.
+// Mode "none" (or zero value): no progress snapshots.
+type ProgressSnapshotConfig struct {
+	Mode       string    `json:"mode,omitempty"`       // "none" | "interval" | "milestones"
+	Interval   float64   `json:"interval,omitempty"`   // percent step for interval mode
+	Milestones []float64 `json:"milestones,omitempty"` // explicit percentages for milestones mode
 }
 
 // FilamentSpool represents a filament spool from Spoolman

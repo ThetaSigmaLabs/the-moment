@@ -27,6 +27,7 @@ type MockPrinterState struct {
 	// State returned by GET /api/v1/status
 	PrinterState string  // "IDLE", "PRINTING", "PAUSED", "ATTENTION", "FINISHED", "STOPPED"
 	Progress     float64 // 0..100
+	JobID        int     // job ID returned in status/job responses; default 1
 
 	// Job info returned by GET /api/v1/job
 	JobFileName    string // e.g. "usb/testprint.gcode"
@@ -61,6 +62,7 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 
 	state := &MockPrinterState{
 		PrinterState:   StateIdle,
+		JobID:          1,
 		JobFileName:    "usb/testprint.gcode",
 		JobDisplayName: "Test Print",
 		GcodeContent:   gcodeWithUsage(10.0), // default: single toolhead, 10g
@@ -75,12 +77,13 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 		state.StatusCalls++
 		currentState := state.PrinterState
 		progress := state.Progress
+		jobID := state.JobID
 		state.mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{
 			"job": {
-				"id": 1,
+				"id": %d,
 				"progress": %f,
 				"time_remaining": 1800,
 				"time_printing": 3600
@@ -97,7 +100,7 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 				"fan_hotend": 5000,
 				"fan_print": 4500
 			}
-		}`, progress, currentState)
+		}`, jobID, progress, currentState)
 	})
 
 	// GET /api/v1/job — returns current job info
@@ -108,6 +111,7 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 		filename := state.JobFileName
 		displayName := state.JobDisplayName
 		progress := state.Progress
+		jobID := state.JobID
 		state.mu.Unlock()
 
 		// Return 204 No Content when idle — matches real PrusaLink behaviour
@@ -118,7 +122,7 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{
-			"id": 1,
+			"id": %d,
 			"state": %q,
 			"progress": %f,
 			"time_remaining": 1800,
@@ -132,7 +136,7 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 					"download": "/%s"
 				}
 			}
-		}`, currentState, progress, filename, displayName, filename)
+		}`, jobID, currentState, progress, filename, displayName, filename)
 	})
 
 	// GET /api/v1/info — printer info
@@ -238,6 +242,14 @@ func (m *MockPrusaLink) SetCameraSnapshot(jpeg []byte) {
 	m.State.mu.Lock()
 	defer m.State.mu.Unlock()
 	m.State.CameraSnapshot = jpeg
+}
+
+// SetJobID sets the job ID returned by the /api/v1/status and /api/v1/job endpoints.
+// Use unique IDs per test to prevent GetActivePrintSession cross-test interference.
+func (m *MockPrusaLink) SetJobID(id int) {
+	m.State.mu.Lock()
+	defer m.State.mu.Unlock()
+	m.State.JobID = id
 }
 
 // SnapshotCallCount returns how many times the snapshot endpoint was called.

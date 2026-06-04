@@ -85,6 +85,11 @@ type FilamentBridge struct {
 	// bambuClientFactory creates a new Bambu client; overridable in tests.
 	bambuClientFactory func(ip, serial, accessCode string) BambuStatusProvider
 
+	// lastSnapshotPct tracks the highest progress % at which a snapshot was taken for
+	// Bambu printers (which lack DB-backed active_print_sessions for snapshot tracking).
+	// Protected by b.mutex. Reset to 0 when a Bambu print ends.
+	lastSnapshotPct map[string]float64
+
 	// commLogs holds in-memory communication event ring buffers, one per printer.
 	commLogs   map[string]*PrinterCommLog
 	commLogsMu sync.RWMutex
@@ -238,6 +243,15 @@ type OctoPrintPayload struct {
 	// ThumbnailBase64 is an optional JPEG/PNG thumbnail extracted from the gcode file
 	// and sent by the OctoPrint plugin as a data URI (e.g. "data:image/jpeg;base64,...").
 	ThumbnailBase64 string `json:"thumbnail_base64,omitempty"`
+	// ProgressSnapshots contains in-progress camera snapshots bundled by the plugin.
+	// Each entry has a progress percentage and a base64-encoded JPEG (plain or data URI).
+	ProgressSnapshots []OctoPrintProgressSnapshot `json:"progress_snapshots,omitempty"`
+}
+
+// OctoPrintProgressSnapshot is a single progress camera snapshot bundled in the OctoPrint payload.
+type OctoPrintProgressSnapshot struct {
+	ProgressPct float64 `json:"progress_pct"`
+	JpegBase64  string  `json:"jpeg_base64"` // plain base64 or data URI "data:image/jpeg;base64,..."
 }
 
 // OctoPrintPayloadPause is a single pause entry within an OctoPrint payload.
@@ -331,6 +345,7 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		previousState:    make(map[string]string),
 		printStartTime:   make(map[string]time.Time),
 		bambuClients:     make(map[string]BambuStatusProvider),
+		lastSnapshotPct:  make(map[string]float64),
 		commLogs:         make(map[string]*PrinterCommLog),
 		rawResponses:     make(map[string]*PrusaLinkRawCapture),
 		apiMonitor:       NewAPIShapeMonitor(),
@@ -402,6 +417,22 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migratePrinterSortOrder(); err != nil {
 		return nil, fmt.Errorf("failed to migrate printer sort order: %w", err)
+	}
+
+	if err := bridge.migrateProgressSnapshotConfig(); err != nil {
+		return nil, fmt.Errorf("failed to migrate progress snapshot config: %w", err)
+	}
+
+	if err := bridge.migrateProgressSnapshotTracking(); err != nil {
+		return nil, fmt.Errorf("failed to migrate progress snapshot tracking: %w", err)
+	}
+
+	if err := bridge.migratePrintAttachmentLabel(); err != nil {
+		return nil, fmt.Errorf("failed to migrate print attachment label: %w", err)
+	}
+
+	if err := bridge.migratePendingSnapshotLabel(); err != nil {
+		return nil, fmt.Errorf("failed to migrate pending snapshot label: %w", err)
 	}
 
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
@@ -981,6 +1012,33 @@ func (b *FilamentBridge) migratePrinterSortOrder() error {
 	return nil
 }
 
+// migrateProgressSnapshotConfig adds per-printer progress snapshot configuration (JSON blob).
+func (b *FilamentBridge) migrateProgressSnapshotConfig() error {
+	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN progress_snapshot_config TEXT DEFAULT ''`)
+	return nil
+}
+
+// migrateProgressSnapshotTracking adds last_snapshot_progress to active_print_sessions
+// so the monitor loop knows the highest progress % at which a snapshot was already captured.
+func (b *FilamentBridge) migrateProgressSnapshotTracking() error {
+	b.db.Exec(`ALTER TABLE active_print_sessions ADD COLUMN last_snapshot_progress REAL DEFAULT 0`)
+	return nil
+}
+
+// migratePrintAttachmentLabel adds a friendly display label to print_attachments
+// (e.g. "25% progress", "Attention @ 42%", "Finished").
+func (b *FilamentBridge) migratePrintAttachmentLabel() error {
+	b.db.Exec(`ALTER TABLE print_attachments ADD COLUMN label TEXT DEFAULT ''`)
+	return nil
+}
+
+// migratePendingSnapshotLabel adds a label column to pending_print_snapshots so
+// the label is carried through when rows are flushed to print_attachments.
+func (b *FilamentBridge) migratePendingSnapshotLabel() error {
+	b.db.Exec(`ALTER TABLE pending_print_snapshots ADD COLUMN label TEXT DEFAULT ''`)
+	return nil
+}
+
 // migratePrinterDebugLog adds debug_log toggle to printer_configs and creates
 // the print_debug_logs table for per-print poll transcripts.
 func (b *FilamentBridge) migratePrinterDebugLog() error {
@@ -1079,6 +1137,7 @@ type ActivePrintSession struct {
 	LastSeenProgress       float64
 	LastSeenTimePrinting   int
 	ChangeCount            int
+	LastSnapshotProgress   float64 // highest progress % at which a snapshot was already captured
 }
 
 // UpsertActivePrintSession inserts a new active session record. ON CONFLICT DO NOTHING
@@ -1101,17 +1160,18 @@ func (b *FilamentBridge) GetActivePrintSession(printerID string, jobID int) (*Ac
 	var startedAt string
 	var filePath, gcodeMeta, gcodeLocal, assignJSON sql.NullString
 	var fileSizeBytes sql.NullInt64
-	var lastProgress sql.NullFloat64
+	var lastProgress, lastSnapProgress sql.NullFloat64
 	var lastTimePrinting sql.NullInt64
 	err := b.db.QueryRow(`
 		SELECT printer_id, job_id, started_at, file_path, file_size_bytes,
 		       gcode_metadata_json, gcode_local_path, initial_assignments_json,
-		       last_seen_progress, last_seen_time_printing, change_count
+		       last_seen_progress, last_seen_time_printing, change_count,
+		       COALESCE(last_snapshot_progress, 0)
 		FROM active_print_sessions WHERE printer_id = ? AND job_id = ?`,
 		printerID, jobID).Scan(
 		&s.PrinterID, &s.JobID, &startedAt, &filePath, &fileSizeBytes,
 		&gcodeMeta, &gcodeLocal, &assignJSON,
-		&lastProgress, &lastTimePrinting, &s.ChangeCount)
+		&lastProgress, &lastTimePrinting, &s.ChangeCount, &lastSnapProgress)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1143,6 +1203,9 @@ func (b *FilamentBridge) GetActivePrintSession(printerID string, jobID int) (*Ac
 	if lastTimePrinting.Valid {
 		s.LastSeenTimePrinting = int(lastTimePrinting.Int64)
 	}
+	if lastSnapProgress.Valid {
+		s.LastSnapshotProgress = lastSnapProgress.Float64
+	}
 	return &s, nil
 }
 
@@ -1153,6 +1216,16 @@ func (b *FilamentBridge) UpdateSessionProgress(printerID string, jobID int, prog
 		SET last_seen_progress = ?, last_seen_time_printing = ?
 		WHERE printer_id = ? AND job_id = ?`,
 		progress, timePrinting, printerID, jobID)
+	return err
+}
+
+// UpdateSessionSnapshotProgress records the highest progress % at which a snapshot was
+// captured, preventing duplicate captures on subsequent polls.
+func (b *FilamentBridge) UpdateSessionSnapshotProgress(printerID string, jobID int, pct float64) error {
+	_, err := b.db.Exec(`
+		UPDATE active_print_sessions SET last_snapshot_progress = ?
+		WHERE printer_id = ? AND job_id = ?`,
+		pct, printerID, jobID)
 	return err
 }
 
@@ -1319,7 +1392,7 @@ func (b *FilamentBridge) ReconcileActiveSessions() {
 								return
 							}
 							log.Printf("[RECONCILE] thumbnail backfilled for recovered print %d", capturedID)
-							_ = b.savePrintFile(int(capturedID), "gcode", filepath.Base(capturedPath), gcodeContent)
+							_ = b.savePrintFile(int(capturedID), "gcode", filepath.Base(capturedPath), "", gcodeContent)
 						}()
 					}
 				}
@@ -1356,19 +1429,20 @@ func (b *FilamentBridge) ReconcileActiveSessions() {
 type PrintAttachment struct {
 	ID             int    `json:"id"`
 	PrintHistoryID int    `json:"print_history_id"`
-	FileType       string `json:"file_type"` // "gcode", "slicer", "other"
+	FileType       string `json:"file_type"` // "gcode", "slicer", "other", "camera"
 	Filename       string `json:"filename"`
 	FileSize       int64  `json:"file_size"`
 	FilePath       string `json:"file_path"` // relative to GcodePath
 	StoredAt       string `json:"stored_at"`
+	Label          string `json:"label,omitempty"` // friendly display label, e.g. "25% progress", "Attention @ 42%"
 }
 
 // SavePrintAttachment inserts a print attachment record into the database.
-func (b *FilamentBridge) SavePrintAttachment(printHistoryID int, fileType, filename, filePath string, fileSize int64) (int64, error) {
+func (b *FilamentBridge) SavePrintAttachment(printHistoryID int, fileType, filename, filePath, label string, fileSize int64) (int64, error) {
 	res, err := b.db.Exec(`
-		INSERT INTO print_attachments (print_history_id, file_type, filename, file_size, file_path)
-		VALUES (?, ?, ?, ?, ?)`,
-		printHistoryID, fileType, filename, fileSize, filePath,
+		INSERT INTO print_attachments (print_history_id, file_type, filename, file_size, file_path, label)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		printHistoryID, fileType, filename, fileSize, filePath, label,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to save print attachment: %w", err)
@@ -1379,7 +1453,7 @@ func (b *FilamentBridge) SavePrintAttachment(printHistoryID int, fileType, filen
 // GetPrintAttachments returns all attachments for a given print history record.
 func (b *FilamentBridge) GetPrintAttachments(printHistoryID int) ([]PrintAttachment, error) {
 	rows, err := b.db.Query(`
-		SELECT id, print_history_id, file_type, filename, file_size, file_path, stored_at
+		SELECT id, print_history_id, file_type, filename, file_size, file_path, stored_at, COALESCE(label, '')
 		FROM print_attachments WHERE print_history_id = ? ORDER BY stored_at ASC`,
 		printHistoryID,
 	)
@@ -1390,7 +1464,7 @@ func (b *FilamentBridge) GetPrintAttachments(printHistoryID int) ([]PrintAttachm
 	var out []PrintAttachment
 	for rows.Next() {
 		var a PrintAttachment
-		if err := rows.Scan(&a.ID, &a.PrintHistoryID, &a.FileType, &a.Filename, &a.FileSize, &a.FilePath, &a.StoredAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.PrintHistoryID, &a.FileType, &a.Filename, &a.FileSize, &a.FilePath, &a.StoredAt, &a.Label); err != nil {
 			continue
 		}
 		out = append(out, a)
@@ -1405,9 +1479,9 @@ func (b *FilamentBridge) GetPrintAttachments(printHistoryID int) ([]PrintAttachm
 func (b *FilamentBridge) GetPrintAttachment(id int) (*PrintAttachment, error) {
 	var a PrintAttachment
 	err := b.db.QueryRow(`
-		SELECT id, print_history_id, file_type, filename, file_size, file_path, stored_at
+		SELECT id, print_history_id, file_type, filename, file_size, file_path, stored_at, COALESCE(label, '')
 		FROM print_attachments WHERE id = ?`, id,
-	).Scan(&a.ID, &a.PrintHistoryID, &a.FileType, &a.Filename, &a.FileSize, &a.FilePath, &a.StoredAt)
+	).Scan(&a.ID, &a.PrintHistoryID, &a.FileType, &a.Filename, &a.FileSize, &a.FilePath, &a.StoredAt, &a.Label)
 	if err != nil {
 		return nil, fmt.Errorf("attachment %d not found: %w", id, err)
 	}
@@ -1449,8 +1523,9 @@ func fileTypeFromName(filename string) string {
 }
 
 // savePrintFile writes content to disk under DataDir and inserts a print_attachments record.
-// fileType should be "gcode", "slicer", or "other". Safe to call even when DataDir is not yet set.
-func (b *FilamentBridge) savePrintFile(printID int, fileType, filename string, content []byte) error {
+// fileType should be "gcode", "slicer", "camera", or "other". label is a human-readable
+// display label shown in the history UI (empty string for non-camera files).
+func (b *FilamentBridge) savePrintFile(printID int, fileType, filename, label string, content []byte) error {
 	dir := b.gcodePath()
 	now := time.Now()
 	subDir := filepath.Join(dir, "print-files", fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", int(now.Month())))
@@ -1464,8 +1539,63 @@ func (b *FilamentBridge) savePrintFile(printID int, fileType, filename string, c
 	if err := os.WriteFile(absPath, content, 0644); err != nil {
 		return fmt.Errorf("failed to write attachment file: %w", err)
 	}
-	_, err := b.SavePrintAttachment(printID, fileType, safeName, relPath, int64(len(content)))
+	_, err := b.SavePrintAttachment(printID, fileType, safeName, relPath, label, int64(len(content)))
 	return err
+}
+
+// snapshotTargets returns the sorted list of progress percentages at which a snapshot
+// should be captured, based on the printer's ProgressSnapshotConfig. Returns nil when
+// mode is "none" or zero-value. The returned slice never includes 100 (handled by the
+// "finished" snapshot) and all values are in (0, 100).
+func snapshotTargets(cfg ProgressSnapshotConfig) []float64 {
+	switch cfg.Mode {
+	case "interval":
+		if cfg.Interval <= 0 || cfg.Interval >= 100 {
+			return nil
+		}
+		var targets []float64
+		for t := cfg.Interval; t < 100; t += cfg.Interval {
+			targets = append(targets, t)
+		}
+		return targets
+	case "milestones":
+		if len(cfg.Milestones) == 0 {
+			return nil
+		}
+		seen := map[float64]bool{}
+		var targets []float64
+		for _, m := range cfg.Milestones {
+			if m > 0 && m < 100 && !seen[m] {
+				targets = append(targets, m)
+				seen[m] = true
+			}
+		}
+		sort.Float64s(targets)
+		return targets
+	default:
+		return nil
+	}
+}
+
+// crossedTargets returns all targets from the sorted slice that fall strictly in
+// (lastPct, currentPct]. All milestones crossed in a single poll tick are returned
+// so none are skipped even when progress advances quickly.
+func crossedTargets(targets []float64, lastPct, currentPct float64) []float64 {
+	if len(targets) == 0 || currentPct <= lastPct {
+		return nil
+	}
+	var crossed []float64
+	for _, t := range targets {
+		if t > lastPct && t <= currentPct {
+			crossed = append(crossed, t)
+		}
+	}
+	return crossed
+}
+
+// labelFor returns the human-readable display label for a progress snapshot.
+func labelFor(pct float64) string {
+	return fmt.Sprintf("%.0f%% progress", pct)
 }
 
 // fetchSnapshotFromURL captures a JPEG from an HTTP/HTTPS or RTSP URL.
@@ -1549,14 +1679,16 @@ func (b *FilamentBridge) capturePrusaLinkSnapshot(config PrinterConfig, printID 
 
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	filename := fmt.Sprintf("%s_%s.jpg", eventType, ts)
-	if err := b.savePrintFile(printID, "camera", filename, jpegData); err != nil {
+	label := strings.ToUpper(eventType[:1]) + eventType[1:] // "Finished", "Cancelled"
+	if err := b.savePrintFile(printID, "camera", filename, label, jpegData); err != nil {
 		log.Printf("[SNAPSHOT] failed to save snapshot for print %d: %v", printID, err)
 	}
 }
 
 // savePendingSnapshot saves a JPEG to disk and records it in pending_print_snapshots
 // for association with a print_history record once the print ID is known.
-func (b *FilamentBridge) savePendingSnapshot(printerID string, startTime time.Time, eventType string, jpegData []byte) {
+// label is the human-readable display label (e.g. "Attention @ 42%", "25% progress").
+func (b *FilamentBridge) savePendingSnapshot(printerID string, startTime time.Time, eventType, label string, jpegData []byte) {
 	dir := b.gcodePath()
 	now := time.Now()
 	subDir := filepath.Join(dir, "print-files", fmt.Sprintf("%d", now.Year()), fmt.Sprintf("%02d", int(now.Month())))
@@ -1574,20 +1706,75 @@ func (b *FilamentBridge) savePendingSnapshot(printerID string, startTime time.Ti
 		return
 	}
 	_, err := b.db.Exec(`
-		INSERT INTO pending_print_snapshots (printer_id, print_start_time, event_type, file_path)
-		VALUES (?, ?, ?, ?)`,
-		printerID, startTime.UTC().Format(time.RFC3339Nano), eventType, relPath,
+		INSERT INTO pending_print_snapshots (printer_id, print_start_time, event_type, file_path, label)
+		VALUES (?, ?, ?, ?, ?)`,
+		printerID, startTime.UTC().Format(time.RFC3339Nano), eventType, relPath, label,
 	)
 	if err != nil {
 		log.Printf("[SNAPSHOT] failed to record pending snapshot: %v", err)
 	}
 }
 
+// captureProgressSnapshot captures a JPEG at a configured progress threshold and stores
+// it as a pending snapshot (associated with the print when it completes). It tries
+// CameraSnapshotURL first; for PrusaLink printers it falls back to the native camera
+// API. No-ops silently if no camera source is available (e.g. Bambu without a URL).
+func (b *FilamentBridge) captureProgressSnapshot(config PrinterConfig, printerID string, startTime time.Time, targetPct float64) error {
+	jpegData, err := b.fetchPrinterSnapshot(config)
+	if err != nil {
+		return err
+	}
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	eventType := fmt.Sprintf("progress_%02d", int(targetPct))
+	b.savePendingSnapshot(printerID, startTime, eventType, labelFor(targetPct), jpegData)
+	_ = ts
+	return nil
+}
+
+// captureInterruptSnapshot captures a JPEG at a printer interrupt event (attention or
+// resume) and stores it as a pending snapshot with a progress-annotated label.
+// eventKind is "attention" or "resume".
+func (b *FilamentBridge) captureInterruptSnapshot(config PrinterConfig, printerID string, startTime time.Time, progressPct float64, eventKind string) error {
+	jpegData, err := b.fetchPrinterSnapshot(config)
+	if err != nil {
+		return err
+	}
+	var label string
+	switch eventKind {
+	case "attention":
+		label = fmt.Sprintf("Attention @ %.0f%%", progressPct)
+	case "resume":
+		label = fmt.Sprintf("Resumed @ %.0f%%", progressPct)
+	default:
+		label = eventKind
+	}
+	b.savePendingSnapshot(printerID, startTime, eventKind, label, jpegData)
+	return nil
+}
+
+// fetchPrinterSnapshot captures a JPEG from a printer's camera. Tries CameraSnapshotURL
+// first; for PrusaLink printers falls back to the native /api/v1/cameras endpoint.
+// Returns an error if no camera is available or the capture fails.
+func (b *FilamentBridge) fetchPrinterSnapshot(config PrinterConfig) ([]byte, error) {
+	if config.CameraSnapshotURL != "" {
+		return fetchSnapshotFromURL(config.CameraSnapshotURL)
+	}
+	if config.PrinterType == PrinterTypePrusaLink || config.PrinterType == "" {
+		prusaClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
+		cameras, err := prusaClient.GetCameras()
+		if err != nil || len(cameras) == 0 {
+			return nil, fmt.Errorf("no camera available for %s", config.IPAddress)
+		}
+		return prusaClient.GetSnapshot(cameras[0].ID)
+	}
+	return nil, fmt.Errorf("no camera configured for %s", config.Name)
+}
+
 // flushPendingSnapshots promotes any pending snapshots for (printerID, startTime) into
 // print_attachments rows linked to printID, then deletes the staging records.
 func (b *FilamentBridge) flushPendingSnapshots(printerID string, startTime time.Time, printID int) {
 	rows, err := b.db.Query(`
-		SELECT id, event_type, file_path FROM pending_print_snapshots
+		SELECT id, event_type, file_path, COALESCE(label, '') FROM pending_print_snapshots
 		WHERE printer_id = ? AND julianday(print_start_time) = julianday(?)`,
 		printerID, startTime.UTC().Format(time.RFC3339Nano),
 	)
@@ -1600,11 +1787,12 @@ func (b *FilamentBridge) flushPendingSnapshots(printerID string, startTime time.
 		id        int
 		eventType string
 		filePath  string
+		label     string
 	}
 	var pending []pendingRow
 	for rows.Next() {
 		var p pendingRow
-		if err := rows.Scan(&p.id, &p.eventType, &p.filePath); err != nil {
+		if err := rows.Scan(&p.id, &p.eventType, &p.filePath, &p.label); err != nil {
 			continue
 		}
 		pending = append(pending, p)
@@ -1619,7 +1807,7 @@ func (b *FilamentBridge) flushPendingSnapshots(printerID string, startTime time.
 			_, _ = b.db.Exec(`DELETE FROM pending_print_snapshots WHERE id = ?`, p.id)
 			continue
 		}
-		if _, err := b.SavePrintAttachment(printID, "camera", filepath.Base(p.filePath), p.filePath, info.Size()); err != nil {
+		if _, err := b.SavePrintAttachment(printID, "camera", filepath.Base(p.filePath), p.filePath, p.label, info.Size()); err != nil {
 			log.Printf("[SNAPSHOT] failed to attach pending snapshot to print %d: %v", printID, err)
 			continue
 		}
@@ -2179,7 +2367,7 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolEnabled(enabled bool) error {
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
-	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, ''), COALESCE(sort_order, 0) FROM printer_configs")
+	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, ''), COALESCE(sort_order, 0), COALESCE(progress_snapshot_config, '') FROM printer_configs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer configs: %w", err)
 	}
@@ -2187,23 +2375,28 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 
 	configs := make(map[string]PrinterConfig)
 	for rows.Next() {
-		var printerID, name, model, ipAddress, apiKey, printerType, cameraSnapshotURL string
+		var printerID, name, model, ipAddress, apiKey, printerType, cameraSnapshotURL, pscJSON string
 		var toolheads, sortOrder int
 		var isVirtual, debugLog bool
-		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL, &sortOrder); err != nil {
+		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL, &sortOrder, &pscJSON); err != nil {
 			return nil, fmt.Errorf("failed to scan printer config row: %w", err)
 		}
+		var psc ProgressSnapshotConfig
+		if pscJSON != "" {
+			_ = json.Unmarshal([]byte(pscJSON), &psc)
+		}
 		configs[printerID] = PrinterConfig{
-			Name:              name,
-			Model:             model,
-			IPAddress:         ipAddress,
-			APIKey:            apiKey,
-			Toolheads:         toolheads,
-			IsVirtual:         isVirtual,
-			PrinterType:       printerType,
-			DebugLog:          debugLog,
-			CameraSnapshotURL: cameraSnapshotURL,
-			SortOrder:         sortOrder,
+			Name:                   name,
+			Model:                  model,
+			IPAddress:              ipAddress,
+			APIKey:                 apiKey,
+			Toolheads:              toolheads,
+			IsVirtual:              isVirtual,
+			PrinterType:            printerType,
+			DebugLog:               debugLog,
+			CameraSnapshotURL:      cameraSnapshotURL,
+			SortOrder:              sortOrder,
+			ProgressSnapshotConfig: psc,
 		}
 	}
 
@@ -2249,10 +2442,24 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 		}
 	}
 
+	pscJSON, _ := json.Marshal(config.ProgressSnapshotConfig)
+
 	_, err := b.db.Exec(`
-		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url, sort_order)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL, config.SortOrder)
+		INSERT INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url, sort_order, progress_snapshot_config)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(printer_id) DO UPDATE SET
+			name = excluded.name,
+			model = excluded.model,
+			ip_address = excluded.ip_address,
+			api_key = excluded.api_key,
+			toolheads = excluded.toolheads,
+			is_virtual = excluded.is_virtual,
+			printer_type = excluded.printer_type,
+			debug_log = excluded.debug_log,
+			camera_snapshot_url = excluded.camera_snapshot_url,
+			sort_order = excluded.sort_order,
+			progress_snapshot_config = excluded.progress_snapshot_config
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL, config.SortOrder, string(pscJSON))
 
 	b.mutex.Unlock()
 
@@ -3153,6 +3360,38 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		}
 		if jobInfo.ID != 0 {
 			_ = b.UpdateSessionProgress(printerID, jobInfo.ID, printProgress, jobInfo.TimePrinting)
+
+			// Progress snapshots: capture at configured interval or milestone thresholds.
+			targets := snapshotTargets(config.ProgressSnapshotConfig)
+			if len(targets) > 0 {
+				if session, _ := b.GetActivePrintSession(printerID, jobInfo.ID); session != nil {
+					for _, tgt := range crossedTargets(targets, session.LastSnapshotProgress, printProgress) {
+						b.mutex.RLock()
+						snapStart := b.printStartTime[printerID]
+						b.mutex.RUnlock()
+						if err := b.captureProgressSnapshot(config, printerID, snapStart, tgt); err != nil {
+							log.Printf("[SNAPSHOT] progress %.0f%% failed for %s: %v", tgt, printerID, err)
+						}
+						if uErr := b.UpdateSessionSnapshotProgress(printerID, jobInfo.ID, tgt); uErr != nil {
+							log.Printf("[SNAPSHOT] failed to update snapshot progress for %s: %v", printerID, uErr)
+						}
+					}
+				}
+			}
+		}
+
+		// Resume snapshot: printer just recovered from an attention/runout event.
+		if prevState == StateAttention {
+			log.Printf("▶️  Print RESUMED on %s (%s): %.1f%% for job: %s",
+				config.IPAddress, printerID, printProgress, jobName)
+			b.mutex.RLock()
+			resumeStart := b.printStartTime[printerID]
+			b.mutex.RUnlock()
+			if !resumeStart.IsZero() {
+				if err := b.captureInterruptSnapshot(config, printerID, resumeStart, printProgress, "resume"); err != nil {
+					log.Printf("[SNAPSHOT] resume snapshot failed for %s: %v", config.IPAddress, err)
+				}
+			}
 		}
 
 	case StatePaused:
@@ -3180,13 +3419,8 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 					log.Printf("[PRUSALINK] printer=%s failed to record attention event: %v", printerID, rErr)
 				}
 				// Capture a snapshot at this attention event; store pending until print_history ID is known.
-				prusaSnapClient := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkTimeout)
-				if cameras, camErr := prusaSnapClient.GetCameras(); camErr == nil && len(cameras) > 0 {
-					if jpegData, snapErr := prusaSnapClient.GetSnapshot(cameras[0].ID); snapErr == nil {
-						b.savePendingSnapshot(printerID, startTime, "attention", jpegData)
-					} else {
-						log.Printf("[SNAPSHOT] attention snapshot failed for %s: %v", config.IPAddress, snapErr)
-					}
+				if err := b.captureInterruptSnapshot(config, printerID, startTime, printProgress, "attention"); err != nil {
+					log.Printf("[SNAPSHOT] attention snapshot failed for %s: %v", config.IPAddress, err)
 				}
 			}
 		}
@@ -3426,11 +3660,44 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 		}
 		b.wasPrinting[printerID] = true
 		b.previousState[printerID] = currentState
+		startTime := b.printStartTime[printerID]
 		b.mutex.Unlock()
+
+		// Resume snapshot: Bambu print resumed after a pause.
+		if prevState == StatePaused && !startTime.IsZero() {
+			log.Printf("[BAMBU] ▶️  Print RESUMED on %s (%s): %.1f%%", printerID, config.Name, progressPct)
+			if err := b.captureInterruptSnapshot(config, printerID, startTime, progressPct, "resume"); err != nil {
+				log.Printf("[BAMBU][SNAPSHOT] resume snapshot failed for %s: %v", config.IPAddress, err)
+			}
+		}
+
+		// Progress snapshots: capture at configured interval or milestone thresholds.
+		targets := snapshotTargets(config.ProgressSnapshotConfig)
+		if len(targets) > 0 && !startTime.IsZero() {
+			b.mutex.RLock()
+			lastSnapPct := b.lastSnapshotPct[printerID]
+			b.mutex.RUnlock()
+			for _, tgt := range crossedTargets(targets, lastSnapPct, progressPct) {
+				if err := b.captureProgressSnapshot(config, printerID, startTime, tgt); err != nil {
+					log.Printf("[BAMBU][SNAPSHOT] progress %.0f%% failed for %s: %v", tgt, printerID, err)
+				}
+				b.mutex.Lock()
+				b.lastSnapshotPct[printerID] = tgt
+				b.mutex.Unlock()
+			}
+		}
 
 	case StatePaused:
 		if prevState != StatePaused {
-			log.Printf("[BAMBU] ⏸️  Print paused on %s (%s)", printerID, config.Name)
+			log.Printf("[BAMBU] ⏸️  Print paused on %s (%s) at %.1f%%", printerID, config.Name, progressPct)
+			b.mutex.RLock()
+			startTime := b.printStartTime[printerID]
+			b.mutex.RUnlock()
+			if !startTime.IsZero() {
+				if err := b.captureInterruptSnapshot(config, printerID, startTime, progressPct, "attention"); err != nil {
+					log.Printf("[BAMBU][SNAPSHOT] pause snapshot failed for %s: %v", config.IPAddress, err)
+				}
+			}
 		}
 		b.mutex.Lock()
 		b.wasPrinting[printerID] = wasPrinting
@@ -3452,6 +3719,7 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
+			b.lastSnapshotPct[printerID] = 0
 			if finishErr == nil {
 				b.currentJobFile[printerID] = ""
 				b.currentJobDisplayName[printerID] = ""
@@ -3486,6 +3754,7 @@ func (b *FilamentBridge) monitorBambu(printerID string, config PrinterConfig) er
 
 			b.mutex.Lock()
 			b.processingPrints[printerID] = false
+			b.lastSnapshotPct[printerID] = 0
 			b.currentJobFile[printerID] = ""
 			b.currentJobDisplayName[printerID] = ""
 			b.mutex.Unlock()
@@ -3766,7 +4035,7 @@ func (b *FilamentBridge) handlePrusaLinkPrintCancelled(printerID string, config 
 		if err := b.SnapshotAssignmentsForPrint(firstPrintID, printerID, startTime); err != nil {
 			log.Printf("Warning: failed to snapshot NFC assignments for cancelled print %d: %v", firstPrintID, err)
 		}
-		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
+		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), "", gcodeContent); err != nil {
 			log.Printf("Warning: could not save gcode file for cancelled print %d: %v", firstPrintID, err)
 		}
 		b.flushPendingSnapshots(printerID, startTime, firstPrintID)
@@ -4002,7 +4271,7 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 			}
 		}
 		// Save gcode to disk; best-effort — never aborts the print record.
-		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), gcodeContent); err != nil {
+		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(filename), "", gcodeContent); err != nil {
 			log.Printf("Warning: could not save gcode file for print %d: %v", firstPrintID, err)
 		}
 		// Promote any attention snapshots captured mid-print, then grab a completion snapshot.
@@ -4564,7 +4833,7 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 				printStarted, sessionID)
 		}
 		if firstPrintID > 0 {
-			if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(d.filename), gcodeContent); err != nil {
+			if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(d.filename), "", gcodeContent); err != nil {
 				log.Printf("Warning: could not save gcode file for retried print %d: %v", firstPrintID, err)
 			}
 		}

@@ -169,6 +169,31 @@
                         <p id="cameraTestMsg" style="font-size:0.85em;margin:4px 0 0;"></p>
                     </div>
                 </div>
+                <div class="form-group" id="editPrinterProgressSnapshotsGroup">
+                    <label>Progress Snapshots <span style="color:#777;font-weight:400;">(optional)</span></label>
+                    <select id="editProgressSnapshotMode" onchange="onProgressSnapshotModeChange(this.value)" style="width:100%;">
+                        <option value="none">None</option>
+                        <option value="interval">Every N%</option>
+                        <option value="milestones">At specific %</option>
+                    </select>
+                    <div id="progressSnapshotIntervalRow" style="display:none;margin-top:8px;">
+                        <label style="font-size:.88em;color:#aaa;">Capture every</label>
+                        <input type="number" id="editProgressSnapshotInterval" min="1" max="50" value="10"
+                               style="width:70px;margin:0 6px;">
+                        <span style="color:#aaa;font-size:.88em;">%</span>
+                        <small style="display:block;margin-top:4px;color:#666;">e.g. 10 → captures at 10%, 20%, … 90%</small>
+                    </div>
+                    <div id="progressSnapshotMilestonesRow" style="display:none;margin-top:8px;">
+                        <label style="font-size:.88em;color:#aaa;display:block;margin-bottom:6px;">Capture at:</label>
+                        <div style="display:flex;gap:14px;flex-wrap:wrap;">
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="25"> 25%</label>
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="50"> 50%</label>
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="75"> 75%</label>
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="90"> 90%</label>
+                        </div>
+                    </div>
+                    <small style="color:#555;display:block;margin-top:6px;">Requires a configured camera URL (or PrusaLink native camera). Attention and resume snapshots always fire when a camera is available.</small>
+                </div>
                 <div class="form-group">
                     <label for="editPrinterSortOrder">Display Order</label>
                     <input type="number" id="editPrinterSortOrder" name="sort_order" value="0" min="0" max="999" style="width:80px;">

@@ -97,6 +97,10 @@ class TheMomentPlugin(
         # Background polling thread for filament position
         self._stop_polling: threading.Event | None = None
         self._polling_thread: threading.Thread | None = None
+        # Progress snapshot state
+        self._progress_snapshot_config: dict = {}   # fetched from The Moment at print start
+        self._progress_snapshots: list[dict] = []   # [{progress_pct, jpeg_base64}, ...]
+        self._last_snapshot_pct: float = 0.0
 
     # ── Debug logging ────────────────────────────────────────────────────────
 
@@ -108,6 +112,61 @@ class TheMomentPlugin(
                 self._logger.info("[DEBUG] " + msg, *args)
         except Exception:
             pass  # settings not yet initialised during startup
+
+    # ── Progress snapshot helpers ────────────────────────────────────────────
+
+    def _snapshot_targets(self, cfg: dict) -> list[float]:
+        """Return sorted target percentages from a ProgressSnapshotConfig dict."""
+        mode = cfg.get("mode", "none")
+        if mode == "interval":
+            interval = float(cfg.get("interval") or 0)
+            if interval <= 0 or interval >= 100:
+                return []
+            targets = []
+            v = interval
+            while v < 100:
+                targets.append(v)
+                v += interval
+            return targets
+        if mode == "milestones":
+            milestones = [float(m) for m in (cfg.get("milestones") or []) if 0 < float(m) < 100]
+            return sorted(set(milestones))
+        return []
+
+    def _crossed_targets(self, targets: list[float], last_pct: float, current_pct: float) -> list[float]:
+        """Return targets strictly in (last_pct, current_pct]."""
+        if not targets or current_pct <= last_pct:
+            return []
+        return [t for t in targets if last_pct < t <= current_pct]
+
+    def _fetch_webcam_snapshot(self) -> bytes | None:
+        """Capture a JPEG from OctoPrint's configured webcam snapshot URL."""
+        try:
+            snap_url = self._settings.global_get(["webcam", "snapshot"])
+            if not snap_url:
+                return None
+            resp = requests.get(snap_url, timeout=10)
+            if resp.status_code == 200 and resp.content:
+                return resp.content
+        except Exception as exc:
+            self._logger.debug("Webcam snapshot failed: %s", exc)
+        return None
+
+    def _fetch_progress_snapshot_config(self, url: str, api_key: str, printer_id: str) -> dict:
+        """Fetch progress_snapshot_config for this printer from The Moment."""
+        if not url or not printer_id:
+            return {}
+        try:
+            headers = {"X-Api-Key": api_key} if api_key else {}
+            resp = requests.get(f"{url}/api/printers", headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                printers = data.get("printers") or {}
+                p = printers.get(printer_id) or {}
+                return p.get("progress_snapshot_config") or {}
+        except Exception as exc:
+            self._logger.debug("Failed to fetch progress_snapshot_config: %s", exc)
+        return {}
 
     # ── OctoPrint SettingsPlugin ─────────────────────────────────────────────
 
@@ -339,7 +398,8 @@ class TheMomentPlugin(
         self._stop_polling = None
 
     def _filament_poll_loop(self):
-        """Poll every 30 s and keep _last_filament_mm up to date."""
+        """Poll every 30 s and keep _last_filament_mm up to date.
+        Also checks print progress and captures webcam snapshots at configured thresholds."""
         while not self._stop_polling.wait(30):
             if self._print_started_at is None:
                 break
@@ -348,6 +408,34 @@ class TheMomentPlugin(
                 with self._lock:
                     self._last_filament_mm = reading
                 self._debug_log("Filament poll snapshot: %s", reading)
+
+            # Progress snapshot check
+            try:
+                data = self._printer.get_current_data()
+                completion = (data.get("progress") or {}).get("completion") or 0
+                current_pct = float(completion)
+            except Exception:
+                current_pct = 0.0
+
+            with self._lock:
+                cfg = self._progress_snapshot_config
+                last_pct = self._last_snapshot_pct
+
+            targets = self._snapshot_targets(cfg)
+            crossed = self._crossed_targets(targets, last_pct, current_pct)
+            for tgt in crossed:
+                jpeg = self._fetch_webcam_snapshot()
+                if jpeg:
+                    import base64
+                    b64 = base64.b64encode(jpeg).decode("ascii")
+                    with self._lock:
+                        self._progress_snapshots.append({"progress_pct": tgt, "jpeg_base64": b64})
+                        self._last_snapshot_pct = tgt
+                    self._logger.info("Progress snapshot captured at %.0f%%", tgt)
+                else:
+                    with self._lock:
+                        self._last_snapshot_pct = tgt
+                    self._debug_log("No webcam snapshot at %.0f%% (URL not configured or failed)", tgt)
 
     # ── Event handling ───────────────────────────────────────────────────────
 
@@ -432,6 +520,20 @@ class TheMomentPlugin(
                 self._session_id, self._current_file, self._current_spools, start_mm,
             )
         self._start_filament_polling()
+
+        # Fetch progress snapshot config in background (best-effort, don't block start).
+        threading.Thread(
+            target=self._load_progress_snapshot_config, daemon=True, name="tm-psc-fetch"
+        ).start()
+
+    def _load_progress_snapshot_config(self):
+        url = (self._settings.get(["url"]) or "").rstrip("/")
+        api_key = self._settings.get(["api_key"]) or ""
+        printer_id = self._settings.get(["printer_id"]) or ""
+        cfg = self._fetch_progress_snapshot_config(url, api_key, printer_id)
+        with self._lock:
+            self._progress_snapshot_config = cfg
+        self._debug_log("Progress snapshot config loaded: %s", cfg)
 
     def _on_print_paused(self, payload):
         with self._lock:
@@ -518,6 +620,8 @@ class TheMomentPlugin(
             file_origin = self._current_file_origin
             file_path = self._current_file_path
 
+            progress_snapshots = list(self._progress_snapshots)
+
             body = dict(
                 session_id=self._session_id,
                 source="octoprint",
@@ -551,6 +655,8 @@ class TheMomentPlugin(
             )
             if thumbnail_b64:
                 body["thumbnail_base64"] = thumbnail_b64
+            if progress_snapshots:
+                body["progress_snapshots"] = progress_snapshots
 
             self._logger.info(
                 "Print ended: status=%s file=%s duration=%.0fs filament=%s spoolman_managed=%s thumbnail=%s",

@@ -881,8 +881,8 @@ func TestLifecycle_SnapshotNoCamera(t *testing.T) {
 	t.Logf("✅ No camera — no snapshot, no error")
 }
 
-// TestLifecycle_AttentionSnapshot verifies that a snapshot captured at filament runout
-// (ATTENTION) and the final snapshot at print completion are both attached to the record.
+// TestLifecycle_AttentionSnapshot verifies that snapshots captured at filament runout
+// (ATTENTION), on resume, and at print completion are all attached to the record.
 func TestLifecycle_AttentionSnapshot(t *testing.T) {
 	const spoolID = 43
 	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
@@ -911,9 +911,9 @@ func TestLifecycle_AttentionSnapshot(t *testing.T) {
 	printer.SetState(StateFinished)
 	poll(t, bridge, printer, "Core One L", 1)
 
-	// Should have 2 snapshot calls: one at attention, one at finish
-	if n := printer.SnapshotCallCount(); n != 2 {
-		t.Errorf("expected 2 snapshot calls (attention + finish), got %d", n)
+	// Should have 3 snapshot calls: attention, resume, and finish
+	if n := printer.SnapshotCallCount(); n != 3 {
+		t.Errorf("expected 3 snapshot calls (attention + resume + finish), got %d", n)
 	}
 
 	history, err := bridge.GetPrintHistory(5)
@@ -934,11 +934,11 @@ func TestLifecycle_AttentionSnapshot(t *testing.T) {
 			}
 		}
 	}
-	if cameraCount != 2 {
-		t.Errorf("expected 2 camera attachments (attention + finish), got %d", cameraCount)
+	if cameraCount != 3 {
+		t.Errorf("expected 3 camera attachments (attention + resume + finish), got %d", cameraCount)
 	}
 
-	t.Logf("✅ Attention + finish snapshots: %d camera attachment(s)", cameraCount)
+	t.Logf("✅ Attention + resume + finish snapshots: %d camera attachment(s)", cameraCount)
 }
 
 // TestLifecycle_SnapshotCaptured_FromConfiguredHTTPURL verifies that when a
@@ -1040,4 +1040,289 @@ func TestLifecycle_SnapshotBlankURLDisables(t *testing.T) {
 		}
 	}
 	t.Logf("✅ Blank URL: no snapshots, no errors")
+}
+
+// pollWithSnapshot is like pollWithCamera but also sets a ProgressSnapshotConfig.
+func pollWithSnapshot(t *testing.T, bridge *FilamentBridge, printer *MockPrusaLink, printerName string, toolheads int, cameraURL string, psc ProgressSnapshotConfig) {
+	t.Helper()
+	cfg := printer.PrinterConfig(printerName, toolheads)
+	cfg.CameraSnapshotURL = cameraURL
+	cfg.ProgressSnapshotConfig = psc
+	if err := bridge.SavePrinterConfig("test-printer-id", cfg); err != nil {
+		t.Fatalf("SavePrinterConfig: %v", err)
+	}
+	if err := bridge.monitorPrusaLink("test-printer-id", cfg); err != nil {
+		t.Fatalf("monitorPrusaLink: %v", err)
+	}
+}
+
+// countPendingSnapshots returns the number of rows in pending_print_snapshots for the printer.
+func countPendingSnapshots(t *testing.T, bridge *FilamentBridge, printerID string) int {
+	t.Helper()
+	var n int
+	bridge.db.QueryRow(`SELECT COUNT(*) FROM pending_print_snapshots WHERE printer_id = ?`, printerID).Scan(&n)
+	return n
+}
+
+// lastSnapshotProgressDB returns the last_snapshot_progress for the active session.
+func lastSnapshotProgressDB(t *testing.T, bridge *FilamentBridge, printerID string, jobID int) float64 {
+	t.Helper()
+	session, err := bridge.GetActivePrintSession(printerID, jobID)
+	if err != nil || session == nil {
+		t.Fatalf("GetActivePrintSession(%s, %d): %v", printerID, jobID, err)
+	}
+	return session.LastSnapshotProgress
+}
+
+// TestProgressSnapshot_IntervalMode verifies that progress snapshots fire at the
+// correct thresholds in interval mode, and that last_snapshot_progress is updated.
+//
+// Sequence: PRINTING at 5% → 15% → 25%
+// With interval=10: snapshots should be captured at 10% and 20% (two crossings).
+func TestProgressSnapshot_IntervalMode(t *testing.T) {
+	const spoolID = 60
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 20.0})
+	printer.SetCameraSnapshot(minimalJPEG)
+
+	psc := ProgressSnapshotConfig{Mode: "interval", Interval: 10}
+
+	// Poll at 5% — no threshold crossed yet
+	printer.SetState(StatePrinting)
+	printer.SetProgress(5)
+	printer.SetJobID(200)
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 0 {
+		t.Errorf("at 5%%: expected 0 pending snapshots, got %d", n)
+	}
+
+	// Poll at 15% — crosses 10%
+	printer.SetProgress(15)
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 1 {
+		t.Errorf("at 15%%: expected 1 pending snapshot (10%%), got %d", n)
+	}
+	if lsp := lastSnapshotProgressDB(t, bridge, "test-printer-id", 200); lsp != 10 {
+		t.Errorf("last_snapshot_progress: want 10, got %.1f", lsp)
+	}
+
+	// Poll at 25% — crosses 20%
+	printer.SetProgress(25)
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 2 {
+		t.Errorf("at 25%%: expected 2 pending snapshots (10%%, 20%%), got %d", n)
+	}
+	if lsp := lastSnapshotProgressDB(t, bridge, "test-printer-id", 200); lsp != 20 {
+		t.Errorf("last_snapshot_progress: want 20, got %.1f", lsp)
+	}
+
+	t.Logf("✅ Progress snapshots: 2 captured at 10%% and 20%% thresholds")
+}
+
+// TestProgressSnapshot_NoDuplicates ensures polling at the same progress value
+// twice does not produce duplicate snapshots.
+func TestProgressSnapshot_NoDuplicates(t *testing.T) {
+	const spoolID = 61
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 20.0})
+	printer.SetCameraSnapshot(minimalJPEG)
+	printer.SetJobID(201)
+
+	psc := ProgressSnapshotConfig{Mode: "interval", Interval: 25}
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(30) // crosses 25%
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 1 {
+		t.Errorf("first poll at 30%%: expected 1 snapshot, got %d", n)
+	}
+
+	// Poll again at same progress — no new snapshot
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 1 {
+		t.Errorf("second poll at 30%%: expected still 1 snapshot, got %d", n)
+	}
+
+	t.Logf("✅ No duplicate progress snapshots on repeated polls at same progress")
+}
+
+// TestProgressSnapshot_NoCameraNoOp confirms that progress snapshots produce
+// no errors and no pending rows when no camera is configured.
+func TestProgressSnapshot_NoCameraNoOp(t *testing.T) {
+	const spoolID = 62
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 20.0})
+	printer.SetJobID(202)
+	// No SetCameraSnapshot — PrusaLink camera API returns empty list
+
+	psc := ProgressSnapshotConfig{Mode: "milestones", Milestones: []float64{25, 50, 75}}
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(80) // would cross 25, 50, 75
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 0 {
+		t.Errorf("no camera: expected 0 pending snapshots, got %d", n)
+	}
+	t.Logf("✅ No camera: no snapshots, no errors")
+}
+
+// TestProgressSnapshot_FlushLabel confirms that pending progress snapshots flushed
+// to print_attachments carry the correct label.
+func TestProgressSnapshot_FlushLabel(t *testing.T) {
+	const spoolID = 63
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 20.0})
+	printer.SetCameraSnapshot(minimalJPEG)
+	printer.SetJobID(203)
+
+	psc := ProgressSnapshotConfig{Mode: "milestones", Milestones: []float64{50}}
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(60) // crosses 50%
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 1 {
+		t.Fatalf("expected 1 pending snapshot, got %d", n)
+	}
+
+	// Complete the print — pending snapshot should be flushed to print_attachments
+	printer.SetState(StateFinished)
+	pollWithSnapshot(t, bridge, printer, "Core One L", 1, "", psc)
+
+	history, err := bridge.GetPrintHistory(5)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("GetPrintHistory: %v", err)
+	}
+	attachments, err := bridge.GetPrintAttachments(history[0].ID)
+	if err != nil {
+		t.Fatalf("GetPrintAttachments: %v", err)
+	}
+
+	var found bool
+	for _, a := range attachments {
+		if a.FileType == "camera" && a.Label == "50% progress" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected camera attachment with label '50%% progress', got: %v", attachments)
+	}
+	t.Logf("✅ Progress snapshot label '50%% progress' correctly flushed to print_attachments")
+}
+
+// TestInterruptSnapshot_AttentionLabel verifies that an attention snapshot is
+// stored as a pending snapshot with a progress-annotated label.
+func TestInterruptSnapshot_AttentionLabel(t *testing.T) {
+	const spoolID = 64
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 50.0})
+	printer.SetCameraSnapshot(minimalJPEG)
+	printer.SetJobID(204)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(42)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateAttention)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// Check that a pending snapshot exists with the attention label
+	var label string
+	bridge.db.QueryRow(
+		`SELECT COALESCE(label,'') FROM pending_print_snapshots WHERE printer_id = ? AND event_type = 'attention'`,
+		"test-printer-id",
+	).Scan(&label)
+
+	if label != "Attention @ 42%" {
+		t.Errorf("attention snapshot label: want 'Attention @ 42%%', got %q", label)
+	}
+	t.Logf("✅ Attention snapshot label: %q", label)
+}
+
+// TestInterruptSnapshot_ResumeLabel verifies that a resume snapshot fires when
+// the state transitions from StateAttention back to StatePrinting.
+func TestInterruptSnapshot_ResumeLabel(t *testing.T) {
+	const spoolID = 65
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 50.0})
+	printer.SetCameraSnapshot(minimalJPEG)
+	printer.SetJobID(205)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(42)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateAttention)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	// Resume: state goes back to PRINTING
+	printer.SetState(StatePrinting)
+	printer.SetProgress(44) // slightly advanced after spool swap
+	poll(t, bridge, printer, "Core One L", 1)
+
+	var resumeLabel string
+	bridge.db.QueryRow(
+		`SELECT COALESCE(label,'') FROM pending_print_snapshots WHERE printer_id = ? AND event_type = 'resume'`,
+		"test-printer-id",
+	).Scan(&resumeLabel)
+
+	if resumeLabel != "Resumed @ 44%" {
+		t.Errorf("resume snapshot label: want 'Resumed @ 44%%', got %q", resumeLabel)
+	}
+	t.Logf("✅ Resume snapshot label: %q", resumeLabel)
+}
+
+// TestInterruptSnapshot_NoCameraNoOp verifies that attention/resume events with
+// no camera configured produce no snapshots and no errors.
+func TestInterruptSnapshot_NoCameraNoOp(t *testing.T) {
+	const spoolID = 66
+	bridge, printer, _ := setupBridgeWithMocks(t, map[int]float64{spoolID: 500.0})
+	t.Setenv("THE_MOMENT_GCODE_PATH", t.TempDir())
+	if err := bridge.SetToolheadMapping("Core One L", 0, spoolID); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+	printer.SetGcodeUsage(map[int]float64{0: 50.0})
+	printer.SetJobID(206)
+	// No SetCameraSnapshot
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(50)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StateAttention)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	printer.SetState(StatePrinting)
+	printer.SetProgress(52)
+	poll(t, bridge, printer, "Core One L", 1)
+
+	if n := countPendingSnapshots(t, bridge, "test-printer-id"); n != 0 {
+		t.Errorf("no camera: expected 0 pending snapshots, got %d", n)
+	}
+	t.Logf("✅ No camera: no attention/resume snapshots, no errors")
 }

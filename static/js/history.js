@@ -355,6 +355,7 @@ function _loadSnapshots(printID) {
                                 'onclick="openSnapshotLightbox(\'' + snapUrl + '\')">' +
                         '</td>' +
                         '<td style="padding:8px;vertical-align:middle;">' +
+                            (a.label ? '<span style="background:#1e1e2e;border:1px solid #3a3a4a;border-radius:3px;padding:2px 7px;font-size:.75em;color:#a98eff;display:inline-block;margin-bottom:4px;">' + _esc(a.label) + '</span>' : '') +
                             '<div style="color:#d0d0d0;font-size:0.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(a.filename) + '">' + _esc(a.filename) + '</div>' +
                             '<div style="color:#555;font-size:0.78em;margin-top:2px;">' + ts + (ts ? ' &nbsp;·&nbsp; ' : '') + size + '</div>' +
                         '</td>' +

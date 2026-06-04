@@ -80,6 +80,7 @@ function renderDashboardPrinters(printers, mappings) {
                 </div>
                 ${jobLine}
                 ${spools ? `<div class="dashboard-printer-spools">${spools}</div>` : ''}
+                <div class="dashboard-printer-snapshot-badge" style="display:none;margin-top:6px;"></div>
                 <button class="btn btn-small btn-secondary" style="margin-top:8px;align-self:flex-start;" onclick="switchToSpoolsForPrinter('${escapeHtml(id)}')">Assign Spool →</button>
             </div>`;
     }).join('');
@@ -129,6 +130,29 @@ function relativeTime(isoStr) {
     return Math.floor(hr / 24) + 'd ago';
 }
 
+// Per-printer last-fetch timestamps for active-snapshot polling (rate-limit: 60s).
+const _snapshotLastFetch = {};
+
+function _fetchActiveSnapshots(printerId) {
+    _snapshotLastFetch[printerId] = Date.now();
+    fetch('/api/printers/' + printerId + '/active-snapshots')
+        .then(r => r.json())
+        .then(data => {
+            const card = document.querySelector(`[data-dashboard-printer-id="${printerId}"]`);
+            if (!card) return;
+            const el = card.querySelector('.dashboard-printer-snapshot-badge');
+            if (!el) return;
+            const n = (data.snapshots || []).length;
+            if (n > 0) {
+                el.style.display = '';
+                el.innerHTML = `<span style="font-size:0.8em;color:#a98eff;cursor:pointer;" onclick="switchTab('history')" title="Progress snapshots captured so far">📸 ${n} progress photo${n !== 1 ? 's' : ''}</span>`;
+            } else {
+                el.style.display = 'none';
+            }
+        })
+        .catch(() => {});
+}
+
 // Called by websocket.js updateDashboard() to keep dashboard printer cards in sync.
 function updateDashboardPrinterStatus(printerId, printerData) {
     const card = document.querySelector(`[data-dashboard-printer-id="${printerId}"]`);
@@ -138,4 +162,16 @@ function updateDashboardPrinterStatus(printerId, printerData) {
     const state = (printerData.state || 'IDLE').toUpperCase();
     badge.className = `status ${state.toLowerCase()}`;
     badge.textContent = state === 'VIRTUAL' ? 'READY' : state;
+
+    // Refresh active-snapshot badge for PRINTING printers (max once per 60s).
+    const snapEl = card.querySelector('.dashboard-printer-snapshot-badge');
+    if (state === 'PRINTING') {
+        const last = _snapshotLastFetch[printerId] || 0;
+        if (Date.now() - last > 60000) {
+            _fetchActiveSnapshots(printerId);
+        }
+    } else if (snapEl) {
+        snapEl.style.display = 'none';
+        delete _snapshotLastFetch[printerId];
+    }
 }

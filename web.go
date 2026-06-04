@@ -179,6 +179,8 @@ func (ws *WebServer) setupRoutes() {
 		api.PUT("/printers/:id", ws.updatePrinterHandler)
 		api.PATCH("/printers/:id/debug-log", ws.togglePrinterDebugLogHandler)
 		api.POST("/printers/:id/test-camera", ws.testCameraURLHandler)
+		api.GET("/printers/:id/active-snapshots", ws.activePrinterSnapshotsHandler)
+		api.GET("/printers/:id/active-snapshots/:filename", ws.servePendingSnapshotHandler)
 		api.GET("/printers/:id/comm-log", ws.commLogHandler)
 		api.GET("/printers/:id/raw-responses", ws.rawResponsesHandler)
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
@@ -809,15 +811,16 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 			printerType = PrinterTypePrusaLink
 		}
 		printerData := map[string]interface{}{
-			"name":                printerConfig.Name,
-			"model":               printerConfig.Model,
-			"ip_address":          printerConfig.IPAddress,
-			"api_key":             maskedKey,
-			"toolheads":           printerConfig.Toolheads,
-			"is_virtual":          printerConfig.IsVirtual,
-			"printer_type":        printerType,
-			"debug_log":           printerConfig.DebugLog,
-			"camera_snapshot_url": printerConfig.CameraSnapshotURL,
+			"name":                    printerConfig.Name,
+			"model":                   printerConfig.Model,
+			"ip_address":              printerConfig.IPAddress,
+			"api_key":                 maskedKey,
+			"toolheads":               printerConfig.Toolheads,
+			"is_virtual":              printerConfig.IsVirtual,
+			"printer_type":            printerType,
+			"debug_log":               printerConfig.DebugLog,
+			"camera_snapshot_url":     printerConfig.CameraSnapshotURL,
+			"progress_snapshot_config": printerConfig.ProgressSnapshotConfig,
 		}
 
 		// Include uploaded file list for virtual printers so the card renders immediately
@@ -2001,6 +2004,24 @@ func (ws *WebServer) receivePrintHandler(c *gin.Context) {
 		log.Printf("Error logging OctoPrint record: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save print record"})
 		return
+	}
+
+	// Save any bundled progress snapshots from the plugin.
+	for _, snap := range payload.ProgressSnapshots {
+		raw := snap.JpegBase64
+		if idx := strings.Index(raw, ","); idx != -1 {
+			raw = raw[idx+1:] // strip "data:image/jpeg;base64," prefix
+		}
+		jpegData, decErr := base64.StdEncoding.DecodeString(raw)
+		if decErr != nil {
+			log.Printf("[SNAPSHOT] OctoPrint: bad base64 at %.0f%%: %v", snap.ProgressPct, decErr)
+			continue
+		}
+		ts := time.Now().UTC().Format("20060102T150405Z")
+		filename := fmt.Sprintf("progress_%02d_%s.jpg", int(snap.ProgressPct), ts)
+		if sErr := ws.bridge.savePrintFile(printID, "camera", filename, labelFor(snap.ProgressPct), jpegData); sErr != nil {
+			log.Printf("[SNAPSHOT] OctoPrint: failed to save progress snapshot for print %d: %v", printID, sErr)
+		}
 	}
 
 	c.JSON(http.StatusCreated, gin.H{"id": printID})
@@ -3560,7 +3581,7 @@ func (ws *WebServer) uploadPrintGcodeHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
 		return
 	}
-	if err := ws.bridge.savePrintFile(id, "gcode", header.Filename, content); err != nil {
+	if err := ws.bridge.savePrintFile(id, "gcode", header.Filename, "", content); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -3591,7 +3612,7 @@ func (ws *WebServer) uploadPrintAttachmentHandler(c *gin.Context) {
 		return
 	}
 	fileType := fileTypeFromName(header.Filename)
-	if err := ws.bridge.savePrintFile(id, fileType, header.Filename, content); err != nil {
+	if err := ws.bridge.savePrintFile(id, fileType, header.Filename, "", content); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -3629,6 +3650,71 @@ func (ws *WebServer) downloadPrintAttachmentHandler(c *gin.Context) {
 	}
 	absPath := ws.bridge.gcodePath() + "/" + a.FilePath
 	c.Header("Content-Disposition", "attachment; filename=\""+a.Filename+"\"")
+	c.File(absPath)
+}
+
+// activePrinterSnapshotsHandler returns pending snapshots for a printer's active print.
+// GET /api/printers/:id/active-snapshots
+func (ws *WebServer) activePrinterSnapshotsHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	rows, err := ws.bridge.db.Query(`
+		SELECT file_path, COALESCE(label,''), captured_at
+		FROM pending_print_snapshots
+		WHERE printer_id = ?
+		  AND julianday(print_start_time) = (
+		      SELECT MAX(julianday(print_start_time)) FROM pending_print_snapshots WHERE printer_id = ?
+		  )
+		ORDER BY captured_at ASC`,
+		printerID, printerID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type snap struct {
+		Filename   string `json:"filename"`
+		Label      string `json:"label"`
+		CapturedAt string `json:"captured_at"`
+		URL        string `json:"url"`
+	}
+	var snaps []snap
+	for rows.Next() {
+		var filePath, label, capturedAt string
+		if err := rows.Scan(&filePath, &label, &capturedAt); err != nil {
+			continue
+		}
+		filename := filepath.Base(filePath)
+		snaps = append(snaps, snap{
+			Filename:   filename,
+			Label:      label,
+			CapturedAt: capturedAt,
+			URL:        "/api/printers/" + printerID + "/active-snapshots/" + filename,
+		})
+	}
+	if snaps == nil {
+		snaps = []snap{}
+	}
+	c.JSON(http.StatusOK, gin.H{"snapshots": snaps})
+}
+
+// servePendingSnapshotHandler streams a pending snapshot file to the client.
+// GET /api/printers/:id/active-snapshots/:filename
+func (ws *WebServer) servePendingSnapshotHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	filename := filepath.Base(c.Param("filename")) // sanitize
+
+	var filePath string
+	err := ws.bridge.db.QueryRow(`
+		SELECT file_path FROM pending_print_snapshots
+		WHERE printer_id = ? AND file_path LIKE ?`,
+		printerID, "%/"+filename).Scan(&filePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "snapshot not found"})
+		return
+	}
+	absPath := filepath.Join(ws.bridge.gcodePath(), filePath)
+	c.Header("Content-Type", "image/jpeg")
 	c.File(absPath)
 }
 

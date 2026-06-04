@@ -6,16 +6,16 @@
 
 package main
 
-import "syscall"
+import "golang.org/x/sys/windows"
 
 // availableDiskSpace returns the number of free bytes available to the current user at path.
 func availableDiskSpace(path string) (int64, error) {
-	pathPtr, err := syscall.UTF16PtrFromString(path)
+	pathPtr, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return -1, err
 	}
 	var freeBytesAvailable, totalBytes, totalFreeBytes uint64
-	if err := syscall.GetDiskFreeSpaceEx(pathPtr, &freeBytesAvailable, &totalBytes, &totalFreeBytes); err != nil {
+	if err := windows.GetDiskFreeSpaceEx(pathPtr, &freeBytesAvailable, &totalBytes, &totalFreeBytes); err != nil {
 		return -1, err
 	}
 	return int64(freeBytesAvailable), nil

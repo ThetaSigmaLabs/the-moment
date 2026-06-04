@@ -759,6 +759,11 @@ function closeAddPrinterModal() {
     if (b) { b.disabled = false; b.textContent = 'Add Printer'; }
 }
 
+function onProgressSnapshotModeChange(mode) {
+    document.getElementById('progressSnapshotIntervalRow').style.display  = mode === 'interval'   ? '' : 'none';
+    document.getElementById('progressSnapshotMilestonesRow').style.display = mode === 'milestones' ? '' : 'none';
+}
+
 function closeEditPrinterModal() {
     switchEditPrinterTab('details');
     document.getElementById('editPrinterModal').style.display = 'none';
@@ -839,6 +844,13 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
 
     var isVirtual = fd.get('is_virtual') === 'true';
     var sortOrder = parseInt(fd.get('sort_order') || '0', 10) || 0;
+    var pscMode = document.getElementById('editProgressSnapshotMode').value || 'none';
+    var progressSnapshotConfig = { mode: pscMode };
+    if (pscMode === 'interval') {
+        progressSnapshotConfig.interval = parseFloat(document.getElementById('editProgressSnapshotInterval').value) || 10;
+    } else if (pscMode === 'milestones') {
+        progressSnapshotConfig.milestones = Array.from(document.querySelectorAll('.snapshotMilestone:checked')).map(function(cb) { return parseFloat(cb.value); });
+    }
     var payload = isVirtual
         ? { name: fd.get('name'), toolheads: parseInt(fd.get('toolheads')), is_virtual: true,
             ip_address: 'virtual', model: 'Virtual Test Printer', printer_type: 'prusalink',
@@ -848,6 +860,7 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
             toolheads: parseInt(fd.get('toolheads')),
             printer_type: fd.get('printer_type') || 'prusalink',
             camera_snapshot_url: fd.get('camera_snapshot_url') || '',
+            progress_snapshot_config: progressSnapshotConfig,
             sort_order: sortOrder };
     fetch('/api/printers/' + pid, {
         method: 'PUT',
@@ -895,6 +908,16 @@ function editPrinter(printerId) {
         document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
         document.getElementById('editPrinterCameraURL').value = p.camera_snapshot_url || '';
         document.getElementById('editPrinterSortOrder').value = p.sort_order != null ? p.sort_order : 0;
+        // Populate progress snapshot config
+        var psc = p.progress_snapshot_config || {};
+        var pscMode = psc.mode || 'none';
+        document.getElementById('editProgressSnapshotMode').value = pscMode;
+        onProgressSnapshotModeChange(pscMode);
+        document.getElementById('editProgressSnapshotInterval').value = psc.interval || 10;
+        var milestones = psc.milestones || [];
+        document.querySelectorAll('.snapshotMilestone').forEach(function(cb) {
+            cb.checked = milestones.indexOf(parseFloat(cb.value)) !== -1;
+        });
         // Reset camera test result from previous session
         var testResult = document.getElementById('cameraTestResult');
         if (testResult) { testResult.style.display = 'none'; }
