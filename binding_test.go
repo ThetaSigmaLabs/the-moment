@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -67,22 +66,16 @@ func macOSFirewallEnabled() bool {
 func testServerOnListener(t *testing.T, l net.Listener) (cleanup func()) {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "binding-test-*")
-	if err != nil {
-		t.Fatalf("MkdirTemp: %v", err)
-	}
-	os.Setenv("THE_MOMENT_DB_PATH", tmpDir)
+	t.Setenv("THE_MOMENT_DB_PATH", t.TempDir())
 
 	bridge, err := NewFilamentBridge(nil)
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		t.Fatalf("NewFilamentBridge: %v", err)
 	}
 
 	config, err := LoadConfig(bridge)
 	if err != nil {
 		bridge.Close()
-		os.RemoveAll(tmpDir)
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	bridge.UpdateConfig(config)
@@ -95,8 +88,6 @@ func testServerOnListener(t *testing.T, l net.Listener) (cleanup func()) {
 	return func() {
 		l.Close()
 		bridge.Close()
-		os.RemoveAll(tmpDir)
-		os.Unsetenv("THE_MOMENT_DB_PATH")
 	}
 }
 

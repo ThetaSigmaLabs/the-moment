@@ -26,26 +26,18 @@ import (
 func testServer(t *testing.T) (serverURL string, cleanup func()) {
 	t.Helper()
 
-	// Create a temp directory for the test database
-	tmpDir, err := os.MkdirTemp("", "the-moment-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-
-	// Point the bridge at the temp database
-	os.Setenv("THE_MOMENT_DB_PATH", tmpDir)
+	// Point the bridge at a fresh per-test temp database
+	t.Setenv("THE_MOMENT_DB_PATH", t.TempDir())
 
 	// Create a real bridge — same code path as production
 	bridge, err := NewFilamentBridge(nil)
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		t.Fatalf("failed to create bridge: %v", err)
 	}
 
 	// Load config from the fresh database
 	config, err := LoadConfig(bridge)
 	if err != nil {
-		os.RemoveAll(tmpDir)
 		t.Fatalf("failed to load config: %v", err)
 	}
 	bridge.UpdateConfig(config)
@@ -60,8 +52,6 @@ func testServer(t *testing.T) (serverURL string, cleanup func()) {
 	cleanup = func() {
 		ts.Close()
 		bridge.Close()
-		os.RemoveAll(tmpDir)
-		os.Unsetenv("THE_MOMENT_DB_PATH")
 	}
 
 	return ts.URL, cleanup
@@ -215,13 +205,8 @@ func TestAPI_NotFound(t *testing.T) {
 // TestFilamentBridgeDatabase tests the database layer directly
 // without going through HTTP at all
 func TestFilamentBridgeDatabase(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "the-moment-db-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-	os.Setenv("THE_MOMENT_DB_PATH", tmpDir)
-	defer os.Unsetenv("THE_MOMENT_DB_PATH")
+	tmpDir := t.TempDir()
+	t.Setenv("THE_MOMENT_DB_PATH", tmpDir)
 
 	bridge, err := NewFilamentBridge(nil)
 	if err != nil {

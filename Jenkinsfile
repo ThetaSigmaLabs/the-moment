@@ -14,16 +14,22 @@ pipeline {
             parallel {
                 stage('Tests: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    options { skipDefaultCheckout() }
                     environment {
                         PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
                     }
                     steps {
+                        cleanWs()
+                        checkout scm
                         sh 'make test-all'
                     }
                 }
                 stage('Tests: windows/amd64') {
                     agent { label 'windows' }
+                    options { skipDefaultCheckout() }
                     steps {
+                        cleanWs()
+                        checkout scm
                         // Verify tools are reachable under the NSSM service account PATH
                         bat 'go version'
                         bat 'gcc --version'
@@ -38,32 +44,30 @@ pipeline {
 
         // ── Build platform binaries ───────────────────────────────────────────
         // linux/arm64 — native CGO build on ARM64 agent
-        // linux/amd64 — CGO build inside a golang:1.24-alpine container on Windows
-        //               (amd64 container is native on beelink, no QEMU)
         // windows/amd64 — native CGO build on Windows agent (requires MinGW gcc)
+        // linux/amd64 binary — compiled inside the Docker image; no standalone artifact
         stage('Build Binaries') {
             parallel {
                 stage('linux/arm64') {
                     agent { label 'linux-arm64' }
+                    options { skipDefaultCheckout() }
                     environment {
                         PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
                     }
                     steps {
+                        cleanWs()
+                        checkout scm
                         sh 'CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o the-moment-linux-arm64 .'
                         sh 'file the-moment-linux-arm64'
                         stash name: 'bin-linux-arm64', includes: 'the-moment-linux-arm64'
                     }
                 }
-                stage('linux/amd64 + windows/amd64') {
+                stage('windows/amd64') {
                     agent { label 'windows' }
+                    options { skipDefaultCheckout() }
                     steps {
-                        // linux/amd64 — run inside an alpine container (native amd64, no QEMU needed)
-                        powershell '''
-                            docker run --rm --platform linux/amd64 `
-                              -v "${env:WORKSPACE}:/src" -w /src `
-                              golang:1.24-alpine `
-                              sh -c "apk add --no-cache gcc musl-dev && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags='-s -w' -o the-moment-linux-amd64 ."
-                        '''
+                        cleanWs()
+                        checkout scm
                         // windows/amd64 — native build, CGO_ENABLED=1 requires MinGW gcc in PATH
                         // CC=gcc is explicit so Go doesn't silently fall back to a wrong compiler
                         powershell '''
@@ -73,27 +77,29 @@ pipeline {
                             $env:GOARCH      = "amd64"
                             go build -ldflags="-s -w" -o the-moment-windows-amd64.exe .
                         '''
-                        // Verify both files exist and show sizes
-                        bat 'dir the-moment-linux-amd64 the-moment-windows-amd64.exe'
-                        stash name: 'bin-linux-amd64',    includes: 'the-moment-linux-amd64'
-                        stash name: 'bin-windows-amd64',  includes: 'the-moment-windows-amd64.exe'
+                        bat 'dir the-moment-windows-amd64.exe'
+                        stash name: 'bin-windows-amd64', includes: 'the-moment-windows-amd64.exe'
                     }
                 }
             }
         }
 
         // ── Build per-platform Docker images, push with arch suffix ──────────
-        // ARM64 uses plain docker build (inherits daemon.json insecure-registry).
-        // Windows uses docker build --platform linux/amd64 (native on amd64 host).
+        // ARM64: plain docker build on the ARM64 agent (inherits daemon.json insecure-registry).
+        // amd64: docker build --platform linux/amd64 on Windows via Docker Desktop.
+        //        The linux/amd64 binary is compiled inside the container by the Dockerfile.
         // Multi-arch manifest is assembled in the next stage.
         stage('Build Docker Images') {
             parallel {
                 stage('Docker: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    options { skipDefaultCheckout() }
                     environment {
                         PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
                     }
                     steps {
+                        cleanWs()
+                        checkout scm
                         sh '''
                             docker build --target production \
                               -t ${REGISTRY}/${IMAGE}:${TAG}-arm64 \
@@ -105,7 +111,10 @@ pipeline {
                 }
                 stage('Docker: linux/amd64') {
                     agent { label 'windows' }
+                    options { skipDefaultCheckout() }
                     steps {
+                        cleanWs()
+                        checkout scm
                         powershell '''
                             $img = "$env:REGISTRY/$($env:IMAGE):$($env:TAG)-amd64"
                             docker build --target production --platform linux/amd64 -t $img .
@@ -122,10 +131,12 @@ pipeline {
         // registry — created here with buildkitd.toml, removed after use).
         stage('Create Multi-arch Manifest') {
             agent { label 'linux-arm64' }
+            options { skipDefaultCheckout() }
             environment {
                 PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
             }
             steps {
+                cleanWs()
                 sh '''
                     cat > /tmp/buildkitd-${BUILD_NUMBER}.toml <<EOF
 [registry."${REGISTRY}"]
@@ -157,10 +168,12 @@ EOF
             parallel {
                 stage('Test: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    options { skipDefaultCheckout() }
                     environment {
                         PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
                     }
                     steps {
+                        cleanWs()
                         unstash 'bin-linux-arm64'
                         sh '''
                             chmod +x the-moment-linux-arm64
@@ -184,7 +197,9 @@ EOF
                 }
                 stage('Test: windows/amd64') {
                     agent { label 'windows' }
+                    options { skipDefaultCheckout() }
                     steps {
+                        cleanWs()
                         unstash 'bin-windows-amd64'
                         powershell '''
                             $tmpDir = "$env:TEMP\\tm-test-$env:BUILD_NUMBER-win"
@@ -223,10 +238,12 @@ EOF
             parallel {
                 stage('Docker Test: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    options { skipDefaultCheckout() }
                     environment {
                         PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
                     }
                     steps {
+                        cleanWs()
                         sh '''
                             docker pull ${REGISTRY}/${IMAGE}:${TAG}
                             docker run -d \
@@ -252,7 +269,9 @@ EOF
                 }
                 stage('Docker Test: linux/amd64') {
                     agent { label 'windows' }
+                    options { skipDefaultCheckout() }
                     steps {
+                        cleanWs()
                         powershell '''
                             $img  = "$env:REGISTRY/$($env:IMAGE):$env:TAG"
                             $name = "tm-docker-amd64-$env:BUILD_NUMBER"
@@ -288,25 +307,26 @@ EOF
             }
         }
 
-        // ── Archive all binaries ──────────────────────────────────────────────
+        // ── Archive binaries ──────────────────────────────────────────────────
+        // linux/amd64 is compiled inside the Docker image — no standalone artifact.
         stage('Archive') {
             agent { label 'linux-arm64' }
+            options { skipDefaultCheckout() }
             environment {
                 PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
             }
             steps {
+                cleanWs()
                 unstash 'bin-linux-arm64'
-                unstash 'bin-linux-amd64'
                 unstash 'bin-windows-amd64'
                 sh '''
                     sha256sum \
                       the-moment-linux-arm64 \
-                      the-moment-linux-amd64 \
                       the-moment-windows-amd64.exe \
                       > checksums.txt
                     cat checksums.txt
                 '''
-                archiveArtifacts artifacts: 'the-moment-linux-arm64, the-moment-linux-amd64, the-moment-windows-amd64.exe, checksums.txt',
+                archiveArtifacts artifacts: 'the-moment-linux-arm64, the-moment-windows-amd64.exe, checksums.txt',
                                   fingerprint: true
             }
         }
@@ -315,7 +335,7 @@ EOF
     post {
         failure { echo 'Pipeline FAILED — check stage logs above.' }
         success {
-            echo "Phase 2 complete. Multi-arch image at ${REGISTRY}/${IMAGE}:${TAG} (linux/arm64 + linux/amd64). Binaries: linux/arm64, linux/amd64, windows/amd64."
+            echo "Build complete. Multi-arch image at ${REGISTRY}/${IMAGE}:${TAG} (linux/arm64 + linux/amd64). Binaries: linux/arm64, windows/amd64."
         }
     }
 }
