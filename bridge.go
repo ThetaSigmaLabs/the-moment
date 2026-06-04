@@ -5966,17 +5966,18 @@ type DashboardStats struct {
 
 // GetDashboardStats returns aggregate print stats for the dashboard view.
 // Uses julianday() for date comparisons — direct datetime() TEXT comparison is broken with go-sqlite3 v1.14.x.
+// print_history has no created_at; print_finished is when a print completes.
 func (b *FilamentBridge) GetDashboardStats() (*DashboardStats, error) {
 	s := &DashboardStats{}
 	b.db.QueryRow(`SELECT COUNT(*) FROM print_history WHERE status = 'completed'`).Scan(&s.TotalPrintsAllTime)
-	b.db.QueryRow(`SELECT COUNT(*) FROM print_history WHERE status = 'completed' AND julianday(created_at) >= julianday('now', '-30 days')`).Scan(&s.Prints30d)
-	b.db.QueryRow(`SELECT COALESCE(SUM(filament_used), 0) FROM print_history WHERE status = 'completed' AND filament_used > 0 AND julianday(created_at) >= julianday('now', '-30 days')`).Scan(&s.FilamentUsed30dG)
+	b.db.QueryRow(`SELECT COUNT(*) FROM print_history WHERE status = 'completed' AND julianday(print_finished) >= julianday('now', '-30 days')`).Scan(&s.Prints30d)
+	b.db.QueryRow(`SELECT COALESCE(SUM(filament_used), 0) FROM print_history WHERE status = 'completed' AND filament_used > 0 AND julianday(print_finished) >= julianday('now', '-30 days')`).Scan(&s.FilamentUsed30dG)
 	b.db.QueryRow(`
 		SELECT COALESCE(SUM(pc.total_cost), 0), COALESCE(MAX(pc.currency), '')
 		FROM print_history ph
 		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
-		WHERE ph.status = 'completed' AND julianday(ph.created_at) >= julianday('now', '-30 days')`).Scan(&s.TotalCost30d, &s.Currency)
-	b.db.QueryRow(`SELECT COALESCE(AVG(print_time_minutes), 0) FROM print_history WHERE status = 'completed' AND print_time_minutes > 0 AND julianday(created_at) >= julianday('now', '-30 days')`).Scan(&s.AvgPrintTimeMin)
+		WHERE ph.status = 'completed' AND julianday(ph.print_finished) >= julianday('now', '-30 days')`).Scan(&s.TotalCost30d, &s.Currency)
+	b.db.QueryRow(`SELECT COALESCE(AVG(print_time_minutes), 0) FROM print_history WHERE status = 'completed' AND print_time_minutes > 0 AND julianday(print_finished) >= julianday('now', '-30 days')`).Scan(&s.AvgPrintTimeMin)
 	return s, nil
 }
 
