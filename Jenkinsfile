@@ -5,8 +5,6 @@ pipeline {
         REGISTRY = '10.9.8.8:5050'
         IMAGE    = 'the-moment'
         TAG      = "${BUILD_NUMBER}"
-        // Unix-only PATH — Windows agent uses its system PATH
-        PATH     = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
     }
 
     stages {
@@ -16,6 +14,9 @@ pipeline {
             parallel {
                 stage('Tests: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    environment {
+                        PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+                    }
                     steps {
                         sh 'make test-all'
                     }
@@ -44,6 +45,9 @@ pipeline {
             parallel {
                 stage('linux/arm64') {
                     agent { label 'linux-arm64' }
+                    environment {
+                        PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+                    }
                     steps {
                         sh 'CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o the-moment-linux-arm64 .'
                         sh 'file the-moment-linux-arm64'
@@ -86,6 +90,9 @@ pipeline {
             parallel {
                 stage('Docker: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    environment {
+                        PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+                    }
                     steps {
                         sh '''
                             docker build --target production \
@@ -115,6 +122,9 @@ pipeline {
         // registry — created here with buildkitd.toml, removed after use).
         stage('Create Multi-arch Manifest') {
             agent { label 'linux-arm64' }
+            environment {
+                PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+            }
             steps {
                 sh '''
                     cat > /tmp/buildkitd-${BUILD_NUMBER}.toml <<EOF
@@ -147,6 +157,9 @@ EOF
             parallel {
                 stage('Test: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    environment {
+                        PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+                    }
                     steps {
                         unstash 'bin-linux-arm64'
                         sh '''
@@ -210,6 +223,9 @@ EOF
             parallel {
                 stage('Docker Test: linux/arm64') {
                     agent { label 'linux-arm64' }
+                    environment {
+                        PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+                    }
                     steps {
                         sh '''
                             docker pull ${REGISTRY}/${IMAGE}:${TAG}
@@ -275,6 +291,9 @@ EOF
         // ── Archive all binaries ──────────────────────────────────────────────
         stage('Archive') {
             agent { label 'linux-arm64' }
+            environment {
+                PATH = '/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+            }
             steps {
                 unstash 'bin-linux-arm64'
                 unstash 'bin-linux-amd64'

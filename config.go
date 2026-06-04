@@ -23,6 +23,7 @@ type PrinterConfig struct {
 	PrinterType        string `json:"printer_type,omitempty"`          // "prusalink" | "octoprint"
 	DebugLog           bool   `json:"debug_log,omitempty"`             // Capture per-poll debug log for print history
 	CameraSnapshotURL  string `json:"camera_snapshot_url,omitempty"`   // HTTP or RTSP URL for print-event snapshots
+	SortOrder          int    `json:"sort_order,omitempty"`            // Dashboard display order (lower = leftmost)
 }
 
 // FilamentSpool represents a filament spool from Spoolman

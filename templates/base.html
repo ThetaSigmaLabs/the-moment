@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="/static/css/nfc.css">
     <link rel="stylesheet" href="/static/css/modals.css">
     <link rel="stylesheet" href="/static/css/mobile.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
 
     <!-- Preload critical JavaScript -->
     <link rel="preload" href="/static/js/main.js" as="script">
@@ -50,9 +51,10 @@
         <div class="content">
             <!-- Tab Navigation -->
             <ul class="tabs">
-                <li><button class="tab {{if not .IsFirstRun}}active{{end}}" onclick="switchTab('history')">🗂️ Print History<span class="tab-sub">Relive the Moment</span></button></li>
-                <li><button class="tab {{if .IsFirstRun}}active{{end}}" onclick="switchTab('status')">🖨️ Print Ops<span class="tab-sub">Shape the Moment</span></button></li>
-                <li><button class="tab" onclick="switchTab('nfc')">📱 NFC<span class="tab-sub">Define the Moment</span></button></li>
+                <li><button class="tab active" onclick="switchTab('dashboard')">🏠 Dashboard<span class="tab-sub">The Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('history')">📋 History<span class="tab-sub">Relive the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('printers')">🖨️ Printers<span class="tab-sub">Create the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('spools')">🧵 Spools<span class="tab-sub">Shape the Moment</span></button></li>
                 <li><button class="tab" onclick="switchTab('settings')">⚙️ Settings<span class="tab-sub">Configure the Moment</span></button></li>
             </ul>
             
@@ -88,5 +90,6 @@
     <script src="/static/js/websocket.js?v={{.AppVersion}}"></script>
     <script src="/static/js/nfc.js?v={{.AppVersion}}"></script>
     <script src="/static/js/commlog.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/dashboard.js?v={{.AppVersion}}"></script>
 </body>
 </html>

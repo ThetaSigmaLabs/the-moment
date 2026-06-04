@@ -7,14 +7,12 @@
 // Tab switching functionality
 function switchTab(tabName) {
     // Hide all tab contents
-    const tabContents = document.querySelectorAll('.tab-content');
-    tabContents.forEach(content => {
+    document.querySelectorAll('.tab-content').forEach(content => {
         content.classList.remove('active');
     });
 
     // Remove active class from all tabs
-    const tabs = document.querySelectorAll('.tab');
-    tabs.forEach(tab => {
+    document.querySelectorAll('.tab').forEach(tab => {
         tab.classList.remove('active');
     });
 
@@ -24,33 +22,34 @@ function switchTab(tabName) {
     // Add active class to clicked tab
     event.target.classList.add('active');
 
-    // Sync Spoolman locations when Print Ops tab is opened so changes made in
+    if (tabName === 'dashboard') {
+        loadDashboardStats();
+    }
+
+    // Sync Spoolman locations when Spools tab is opened so changes made in
     // Spoolman are reflected immediately rather than waiting for the 5-min poll.
-    if (tabName === 'status') {
+    if (tabName === 'spools') {
         fetch('/api/nfc/sync-locations-now', { method: 'POST' }).catch(() => {});
+        loadSpoolTags();
+    }
+
+    if (tabName === 'printers') {
+        loadPrinters();
+        loadLocationTags();
     }
 
     // Load configuration when settings tab is opened
     if (tabName === 'settings') {
-        // Load data for the currently active settings sub-tab
-        const activeSettingsTab = document.querySelector('.settings-tab.active');
-        if (activeSettingsTab) {
-            // Determine which tab is active and load its data
-            const activeTabContent = document.querySelector('.settings-tab-content.active');
-            if (activeTabContent) {
-                const tabId = activeTabContent.id.replace('-tab', '');
-                if (tabId === 'getting-started') {
-                    // Getting Started tab doesn't need data loading
-                } else if (tabId === 'basic-config') {
-                    loadConfiguration();
-                } else if (tabId === 'printers') {
-                    loadPrinters();
-                } else if (tabId === 'cost') {
-                    loadCostSettings();
-                } else if (tabId === 'advanced') {
-                    loadAdvancedSettings();
-                    loadAutoAssignSettings();
-                }
+        const activeTabContent = document.querySelector('.settings-tab-content.active');
+        if (activeTabContent) {
+            const tabId = activeTabContent.id.replace('-tab', '');
+            if (tabId === 'basic-config') {
+                loadConfiguration();
+            } else if (tabId === 'cost') {
+                loadCostSettings();
+            } else if (tabId === 'advanced') {
+                loadAdvancedSettings();
+                loadAutoAssignSettings();
             }
         }
     }
@@ -93,12 +92,8 @@ function switchSettingsTab(tabName, clickedElement) {
     }
 
     // Load data for specific tabs
-    if (tabName === 'getting-started') {
-        // Getting Started tab doesn't need data loading
-    } else if (tabName === 'basic-config') {
+    if (tabName === 'basic-config') {
         loadConfiguration();
-    } else if (tabName === 'printers') {
-        loadPrinters();
     } else if (tabName === 'cost') {
         loadCostSettings();
     } else if (tabName === 'advanced') {
@@ -428,9 +423,8 @@ function convertTimestampsToLocal() {
 document.addEventListener('DOMContentLoaded', function () {
     convertTimestampsToLocal();
     connectWebSocket();
-    loadNfcData();
-    loadPrinters();
-    initCustomDropdowns();
+    initCustomDropdowns();  // needed for server-rendered Spools tab dropdowns
     initColorSwatches();
     initEditButtonColors();
+    loadDashboardStats();   // populate Dashboard tab on first load
 });

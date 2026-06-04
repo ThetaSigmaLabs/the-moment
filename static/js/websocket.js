@@ -132,15 +132,19 @@ function updatePrinterStatuses(printers) {
     Object.entries(printers).forEach(([printerId, printerData]) => {
         if (printerId === 'no_printers') return;
 
-        // Find the printer element
+        // Update status badge in the Spools tab server-rendered cards
         const printerElement = document.querySelector(`[data-printer-id="${printerId}"]`);
-        if (!printerElement) return;
+        if (printerElement) {
+            const statusBadge = printerElement.querySelector('.status');
+            if (statusBadge) {
+                statusBadge.className = `status ${printerData.state}`;
+                statusBadge.textContent = printerData.state;
+            }
+        }
 
-        // Update status badge
-        const statusBadge = printerElement.querySelector('.status');
-        if (statusBadge) {
-            statusBadge.className = `status ${printerData.state}`;
-            statusBadge.textContent = printerData.state;
+        // Keep Dashboard printer cards in sync
+        if (typeof updateDashboardPrinterStatus === 'function') {
+            updateDashboardPrinterStatus(printerId, printerData);
         }
     });
 }

@@ -298,8 +298,10 @@ type PrinterStatus struct {
 // PrinterData carries the current state of one printer in the WebSocket broadcast.
 // Live fields are populated for PrusaLink printers only; other types leave them zero.
 type PrinterData struct {
-	Name  string `json:"name"`
-	State string `json:"state"`
+	Name      string `json:"name"`
+	State     string `json:"state"`
+	SortOrder int    `json:"sort_order"`
+	DebugLog  bool   `json:"debug_log,omitempty"`
 	// Live status — PrusaLink only
 	TempNozzle    float64 `json:"temp_nozzle,omitempty"`
 	TempBed       float64 `json:"temp_bed,omitempty"`
@@ -396,6 +398,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migrateCameraSnapshotURL(); err != nil {
 		return nil, fmt.Errorf("failed to migrate camera snapshot URL: %w", err)
+	}
+
+	if err := bridge.migratePrinterSortOrder(); err != nil {
+		return nil, fmt.Errorf("failed to migrate printer sort order: %w", err)
 	}
 
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
@@ -966,6 +972,12 @@ func (b *FilamentBridge) migratePrintSessions() error {
 // migrateCameraSnapshotURL adds camera_snapshot_url column to printer_configs.
 func (b *FilamentBridge) migrateCameraSnapshotURL() error {
 	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN camera_snapshot_url TEXT DEFAULT ''`)
+	return nil
+}
+
+// migratePrinterSortOrder adds sort_order column to printer_configs for dashboard display ordering.
+func (b *FilamentBridge) migratePrinterSortOrder() error {
+	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN sort_order INTEGER DEFAULT 0`)
 	return nil
 }
 
@@ -2167,7 +2179,7 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolEnabled(enabled bool) error {
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
-	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, '') FROM printer_configs")
+	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, ''), COALESCE(sort_order, 0) FROM printer_configs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer configs: %w", err)
 	}
@@ -2176,9 +2188,9 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 	configs := make(map[string]PrinterConfig)
 	for rows.Next() {
 		var printerID, name, model, ipAddress, apiKey, printerType, cameraSnapshotURL string
-		var toolheads int
+		var toolheads, sortOrder int
 		var isVirtual, debugLog bool
-		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL); err != nil {
+		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL, &sortOrder); err != nil {
 			return nil, fmt.Errorf("failed to scan printer config row: %w", err)
 		}
 		configs[printerID] = PrinterConfig{
@@ -2191,6 +2203,7 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 			PrinterType:       printerType,
 			DebugLog:          debugLog,
 			CameraSnapshotURL: cameraSnapshotURL,
+			SortOrder:         sortOrder,
 		}
 	}
 
@@ -2237,9 +2250,9 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	}
 
 	_, err := b.db.Exec(`
-		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL)
+		INSERT OR REPLACE INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url, sort_order)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL, config.SortOrder)
 
 	b.mutex.Unlock()
 
@@ -4107,8 +4120,9 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 			// Virtual printers have no hardware — show as ready without any API call
 			if printerConfig.IsVirtual {
 				status.Printers[printerID] = PrinterData{
-					Name:  printerName,
-					State: StateVirtual,
+					Name:      printerName,
+					State:     StateVirtual,
+					SortOrder: printerConfig.SortOrder,
 				}
 				continue
 			}
@@ -4116,8 +4130,9 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 			// OctoPrint printers push data; no polling status available
 			if printerConfig.PrinterType == PrinterTypeOctoPrint {
 				status.Printers[printerID] = PrinterData{
-					Name:  printerName,
-					State: StateOctoPrint,
+					Name:      printerName,
+					State:     StateOctoPrint,
+					SortOrder: printerConfig.SortOrder,
 				}
 				continue
 			}
@@ -4134,8 +4149,9 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 					}
 				}
 				status.Printers[printerID] = PrinterData{
-					Name:  printerName,
-					State: bambuState,
+					Name:      printerName,
+					State:     bambuState,
+					SortOrder: printerConfig.SortOrder,
 				}
 				continue
 			}
@@ -4148,8 +4164,10 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				log.Printf("Warning: Failed to get printer status from %s (%s - %s): %v",
 					printerConfig.IPAddress, printerID, printerName, err)
 				status.Printers[printerID] = PrinterData{
-					Name:  printerName,
-					State: StateOffline,
+					Name:      printerName,
+					State:     StateOffline,
+					SortOrder: printerConfig.SortOrder,
+					DebugLog:  printerConfig.DebugLog,
 				}
 				continue
 			}
@@ -4157,6 +4175,8 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 			status.Printers[printerID] = PrinterData{
 				Name:          printerName,
 				State:         printerStatus.Printer.State,
+				SortOrder:     printerConfig.SortOrder,
+				DebugLog:      printerConfig.DebugLog,
 				TempNozzle:    printerStatus.Printer.TempNozzle,
 				TempBed:       printerStatus.Printer.TempBed,
 				Progress:      printerStatus.Job.Progress,
@@ -5930,6 +5950,34 @@ func (b *FilamentBridge) SyncSpoolmanLocationsToDB() (bool, error) {
 	}
 
 	return changed, nil
+}
+
+// ─── Dashboard Stats ─────────────────────────────────────────────────────────
+
+// DashboardStats holds aggregated print statistics for the dashboard.
+type DashboardStats struct {
+	TotalPrintsAllTime int     `json:"total_prints_all_time"`
+	Prints30d          int     `json:"prints_30d"`
+	FilamentUsed30dG   float64 `json:"filament_used_30d_g"`
+	TotalCost30d       float64 `json:"total_cost_30d"`
+	AvgPrintTimeMin    float64 `json:"avg_print_time_min"`
+	Currency           string  `json:"currency"`
+}
+
+// GetDashboardStats returns aggregate print stats for the dashboard view.
+// Uses julianday() for date comparisons — direct datetime() TEXT comparison is broken with go-sqlite3 v1.14.x.
+func (b *FilamentBridge) GetDashboardStats() (*DashboardStats, error) {
+	s := &DashboardStats{}
+	b.db.QueryRow(`SELECT COUNT(*) FROM print_history WHERE status = 'completed'`).Scan(&s.TotalPrintsAllTime)
+	b.db.QueryRow(`SELECT COUNT(*) FROM print_history WHERE status = 'completed' AND julianday(created_at) >= julianday('now', '-30 days')`).Scan(&s.Prints30d)
+	b.db.QueryRow(`SELECT COALESCE(SUM(filament_used), 0) FROM print_history WHERE status = 'completed' AND filament_used > 0 AND julianday(created_at) >= julianday('now', '-30 days')`).Scan(&s.FilamentUsed30dG)
+	b.db.QueryRow(`
+		SELECT COALESCE(SUM(pc.total_cost), 0), COALESCE(MAX(pc.currency), '')
+		FROM print_history ph
+		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
+		WHERE ph.status = 'completed' AND julianday(ph.created_at) >= julianday('now', '-30 days')`).Scan(&s.TotalCost30d, &s.Currency)
+	b.db.QueryRow(`SELECT COALESCE(AVG(print_time_minutes), 0) FROM print_history WHERE status = 'completed' AND print_time_minutes > 0 AND julianday(created_at) >= julianday('now', '-30 days')`).Scan(&s.AvgPrintTimeMin)
+	return s, nil
 }
 
 // All The Moment location management functions have been removed - locations are now managed in Spoolman only

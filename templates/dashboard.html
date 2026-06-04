@@ -1,0 +1,92 @@
+<!-- Dashboard Tab -->
+<div id="dashboard-tab" class="tab-content active">
+
+    {{if .IsFirstRun}}
+    <!-- First-run onboarding card -->
+    <div style="background:linear-gradient(135deg,rgba(108,58,170,0.25),rgba(44,27,105,0.25));border:1px solid rgba(124,92,252,0.35);border-radius:12px;padding:28px 32px;margin-bottom:24px;">
+        <h3 style="margin:0 0 12px;color:var(--brand-light);">🎉 Welcome to The Moment!</h3>
+        <p style="color:var(--text-secondary);margin:0 0 20px;font-size:0.93em;">
+            Get up and running in four steps:
+        </p>
+        <ol style="color:var(--text-secondary);font-size:0.9em;line-height:2;margin:0 0 20px;padding-left:20px;">
+            <li>Spoolman starts automatically with docker compose. Or set your Spoolman URL in <strong>Settings → Basic Configuration</strong>.</li>
+            <li><strong><a href="#" onclick="switchTab('printers');return false;" style="color:var(--brand-light);">Go to Printers →</a></strong> and click <em>Add Printer</em>.</li>
+            <li><strong><a href="#" onclick="switchTab('spools');return false;" style="color:var(--brand-light);">Go to Spools →</a></strong> and assign filament to each toolhead.</li>
+            <li>Start printing — The Moment tracks everything automatically.</li>
+        </ol>
+        <button class="btn" onclick="switchTab('printers')">🚀 Add Your First Printer</button>
+    </div>
+    {{end}}
+
+    <!-- Alerts -->
+    {{if not .SpoolmanConnected}}
+    <div class="dashboard-alert dashboard-alert-warn" style="margin-bottom:16px;">
+        <h4>⚠️ Spoolman Connection Issue</h4>
+        <p>Cannot connect to Spoolman. Ensure Spoolman is running and the URL is correct in Settings → Basic Configuration.</p>
+        {{if .SpoolmanError}}<p><strong>Error:</strong> {{.SpoolmanError}}</p>{{end}}
+    </div>
+    {{end}}
+
+    {{if .HasPrintErrors}}
+    <div id="print-errors-container">
+        {{range .PrintErrors}}
+        <div class="dashboard-alert dashboard-alert-error" data-error-id="{{.ID}}" style="margin-bottom:10px;">
+            <h4 style="margin:0 0 8px;">⚠️ Print Processing Failed</h4>
+            <p><strong>Printer:</strong> {{.PrinterName}}</p>
+            <p><strong>File:</strong> {{.Filename}}</p>
+            <p><strong>Time:</strong> <span class="error-timestamp" data-timestamp="{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Timestamp.Format "2006-01-02 15:04:05"}}</span></p>
+            <p><strong>Error:</strong> {{.Error}}</p>
+            <p style="margin-bottom:10px;">Please update Spoolman manually with the correct filament usage for this print.</p>
+            <button class="btn btn-small" onclick="acknowledgeError('{{.ID}}')" style="background:#dc3545;">Acknowledge</button>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+
+    <!-- Stats Row -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <span style="font-size:0.82em;color:var(--text-muted);">Last 30 days</span>
+        <button class="btn btn-small btn-secondary" onclick="loadDashboardStats()" title="Refresh stats">↺ Refresh</button>
+    </div>
+    <div class="dashboard-stats-grid">
+        <div class="stat-card">
+            <div class="stat-value" id="stat-prints-30d">—</div>
+            <div class="stat-label">Prints (30 days)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="stat-filament-30d">—</div>
+            <div class="stat-label">Filament (30 days)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="stat-cost-30d">—</div>
+            <div class="stat-label">Est. cost (30 days)</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value" id="stat-avg-time">—</div>
+            <div class="stat-label">Avg print time</div>
+        </div>
+    </div>
+
+    <!-- Live Printers -->
+    <div style="margin-bottom:24px;">
+        <div class="dashboard-section-header">
+            <span class="dashboard-section-title">🖨️ Live Printers</span>
+            <a href="#" onclick="switchTab('spools');return false;" style="font-size:0.82em;color:var(--brand-light);text-decoration:none;">Assign Spools →</a>
+        </div>
+        <div class="dashboard-printers-grid" id="dashboard-printers">
+            <p style="color:var(--text-secondary);font-size:0.9em;">Loading printers…</p>
+        </div>
+    </div>
+
+    <!-- Recent Prints -->
+    <div>
+        <div class="dashboard-section-header">
+            <span class="dashboard-section-title">📋 Recent Prints</span>
+            <a href="#" onclick="switchTab('history');return false;" style="font-size:0.82em;color:var(--brand-light);text-decoration:none;">View all →</a>
+        </div>
+        <div class="dashboard-recent-list" id="dashboard-recent-prints">
+            <p style="color:var(--text-secondary);font-size:0.9em;">Loading…</p>
+        </div>
+    </div>
+
+</div>

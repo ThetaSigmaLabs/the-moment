@@ -169,6 +169,11 @@
                         <p id="cameraTestMsg" style="font-size:0.85em;margin:4px 0 0;"></p>
                     </div>
                 </div>
+                <div class="form-group">
+                    <label for="editPrinterSortOrder">Display Order</label>
+                    <input type="number" id="editPrinterSortOrder" name="sort_order" value="0" min="0" max="999" style="width:80px;">
+                    <small>Lower numbers appear first on the dashboard (0 = default).</small>
+                </div>
                 <div class="modal-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeEditPrinterModal()">Cancel</button>
                     <button type="submit" class="btn">Update Printer</button>

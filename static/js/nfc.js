@@ -46,10 +46,10 @@ function switchNfcTab(tabName, clickedElement) {
     }
 }
 
+// loadNfcData is kept for compatibility; spool/location tags now load lazily when
+// their parent tabs (Spools, Printers) are opened.
 async function loadNfcData() {
-    await loadSpoolTags();
-    await loadFilamentTags();
-    await loadLocationTags();
+    // no-op: lazy loading handled by switchTab()
 }
 
 async function loadSpoolTags() {

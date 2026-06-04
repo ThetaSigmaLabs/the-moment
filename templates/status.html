@@ -1,50 +1,6 @@
-<!-- Filament Status Tab (Default) -->
-<div id="status-tab" class="tab-content {{if .IsFirstRun}}active{{end}}">
+<!-- Spools Tab -->
+<div id="spools-tab" class="tab-content">
     <div id="status">
-        {{if .IsFirstRun}}
-        <div class="welcome-banner">
-            <h3>🎉 Welcome to The Moment!</h3>
-            <p>This appears to be your first time running The Moment. Let's get you set up with your printer configuration.</p>
-            <div style="background: rgba(255,255,255,0.1); padding: 20px; border-radius: 8px; margin: 20px 0;">
-                <h4 style="margin-top: 0;">Quick Setup Steps:</h4>
-                <ol>
-                    <li><strong>If you started via docker compose up, Spoolman is already started for you here: 
-                    <li><strong>Otherwise, configure the Spoolman URL to use in the Settings</li>
-                    <!-- Start Spoolman:</strong> <code>docker run -d --name spoolman -p 8000:8000 -v spoolman-data:/home/spoolman/data ghcr.io/donkie/spoolman:latest</code></li> -->
-                    <li><strong>Configure Printers:</strong> Click 'Start Configuration' below to set your printer hostnames or IP addresses</li>
-                    <li><strong>Map Spools:</strong> Assign your filament spools to specific toolheads</li>
-                    <li><strong>Start Printing:</strong> The system will automatically track filament usage!</li>
-                </ol>
-            </div>
-            <button class="btn" onclick="toggleConfig()">🚀 Start Configuration</button>
-        </div>
-        {{end}}
-
-        {{if not .SpoolmanConnected}}
-        <div style="background: #3d1f00; border: 1px solid #f59e0b; color: #fbbf24; padding: 20px; margin: 20px 0; border-radius: 8px;">
-            <h4 style="margin-top: 0;">⚠️ Spoolman Connection Issue</h4>
-            <p>Cannot connect to Spoolman. Please ensure Spoolman is running and the URL is correct.</p>
-            {{if .SpoolmanError}}
-            <p><strong>Error:</strong> {{.SpoolmanError}}</p>
-            {{end}}
-        </div>
-        {{end}}
-
-        {{if .HasPrintErrors}}
-        <div id="print-errors-container">
-            {{range .PrintErrors}}
-            <div class="print-error" data-error-id="{{.ID}}" style="background: #7f1d1d; border: 1px solid #ef4444; color: #fca5a5; padding: 20px; margin: 20px 0; border-radius: 8px;">
-                <h4 style="margin-top: 0;">⚠️ Print Processing Failed</h4>
-                <p><strong>Printer:</strong> {{.PrinterName}}</p>
-                <p><strong>File:</strong> {{.Filename}}</p>
-                <p><strong>Time:</strong> <span class="error-timestamp" data-timestamp="{{.Timestamp.Format "2006-01-02T15:04:05Z07:00"}}">{{.Timestamp.Format "2006-01-02 15:04:05"}}</span></p>
-                <p><strong>Error:</strong> {{.Error}}</p>
-                <p><strong>Action Required:</strong> Please update Spoolman manually with the correct filament usage for this print.</p>
-                <button class="btn" onclick="acknowledgeError('{{.ID}}')" style="background: #dc3545; margin-top: 10px;">Acknowledge</button>
-            </div>
-            {{end}}
-        </div>
-        {{end}}
 
         {{range $printerID, $printerConfig := .Printers}}
         {{$printerData := index $.Status.Printers $printerID}}
@@ -67,7 +23,7 @@
             {{if $printerConfig.IsVirtual}}
             <p style="color:#aaa;font-size:0.9em;margin-bottom:4px;">
                 <strong>Toolheads:</strong> {{$printerConfig.Toolheads}} &nbsp;|&nbsp;
-                Map spools below, then upload &amp; process a G-code file in <strong>Settings → Printers</strong>.
+                Map spools below, then upload &amp; process a G-code file in <strong>Printers</strong>.
             </p>
             {{else}}
             <p><strong>Model:</strong> {{$printerConfig.Model}} ({{$printerConfig.Toolheads}} toolhead{{if ne $printerConfig.Toolheads 1}}s{{end}})</p>
@@ -155,4 +111,53 @@
         </div>
         {{end}}
     </div>
+
+    <!-- NFC Spool Tags -->
+    <div class="config-section" style="margin-top:20px;border-top:1px solid var(--surface-border);padding-top:20px;">
+        <h4 style="margin-top:0;">🏷️ NFC Spool Tags</h4>
+        <p class="help-text">Select a spool to generate its NFC URL and QR code. Scan the QR code with NFC Tools Pro to program your tags.</p>
+
+        <div class="nfc-side-by-side">
+            <!-- Left: Spool List -->
+            <div class="nfc-list-panel">
+                <div class="nfc-search-container">
+                    <input type="text" id="spool-search" class="nfc-search-input" placeholder="Search spools..." autocomplete="off">
+                </div>
+                <div class="nfc-list-container" id="spool-list-container">
+                    <p>Loading spools...</p>
+                </div>
+            </div>
+
+            <!-- Right: QR Code Display -->
+            <div class="nfc-display-panel">
+                <div id="spool-qr-display" class="nfc-qr-display" style="display: none;">
+                    <div class="nfc-selected-info">
+                        <h4 id="spool-selected-name">Selected Spool</h4>
+                        <div id="spool-selected-details"></div>
+                    </div>
+                    <div class="nfc-qr-large-container">
+                        <img id="spool-qr-large" src="" alt="QR Code" class="nfc-qr-large">
+                        <div class="nfc-url-container">
+                            <div id="spool-url-text" class="nfc-url-large"></div>
+                            <button class="nfc-copy-btn" onclick="copyUrlToClipboard('spool-url-text', this)" title="Copy URL">
+                                <span class="nfc-copy-icon">📋</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1);">
+                        <button id="spool-bin-btn" class="btn" onclick="openSpoolTagEditor()" style="width:100%; background:#7c3aed;">
+                            📲 Edit OpenPrintTag Fields &amp; Download .bin
+                        </button>
+                        <p style="font-size:0.78em; color:#888; margin:6px 0 0; text-align:center;">For ICODE SLIX2 tags — use NFC Tools "Write Dump"</p>
+                    </div>
+                </div>
+                <div id="spool-no-selection" class="nfc-no-selection">
+                    <div class="nfc-no-selection-icon">🏷️</div>
+                    <h4>Select a Spool</h4>
+                    <p>Choose a spool from the list to generate its QR code</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </div>

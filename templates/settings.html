@@ -2,67 +2,18 @@
 <div id="settings-tab" class="tab-content">
     <!-- Settings Sub-tabs -->
     <div class="settings-tabs">
-        <button class="settings-tab active" onclick="switchSettingsTab('getting-started', this)">📚 Getting Started</button>
-        <button class="settings-tab" onclick="switchSettingsTab('basic-config', this)">🔧 Basic Configuration</button>
-        <button class="settings-tab" onclick="switchSettingsTab('printers', this)">🖨️ Printers</button>
+        <button class="settings-tab active" onclick="switchSettingsTab('basic-config', this)">🔧 Basic Configuration</button>
         <button class="settings-tab" onclick="switchSettingsTab('cost', this)">💰 Cost Settings</button>
         <button class="settings-tab" onclick="switchSettingsTab('advanced', this)">⚙️ Advanced Settings</button>
         <button class="settings-tab" onclick="switchSettingsTab('about', this)">ℹ️ About</button>
     </div>
-    
-    <!-- Getting Started Tab -->
-    <div id="getting-started-tab" class="settings-tab-content active">
-        <div class="help-section">
-            <ol>
-                <li><strong>Spoolman:</strong> Spoolman is included in The Moment's <code>docker-compose.yml</code> and starts automatically alongside it. If you have an existing Spoolman instance, point The Moment at it via Settings → Basic Configuration → Spoolman URL. Add your filament spools in Spoolman before proceeding.</li>
-                <li><strong>Add Printers:</strong> Go to Settings → Printers and click "Add Printer". Supported interfaces: OctoPrint (Ender 3 and similar), PrusaLink (Prusa printers), and Bambu (X1C, P1S, A1, etc. via MQTT on LAN). A virtual test printer is also available for testing without hardware.</li>
-                <li><strong>Assign Spools to Toolheads:</strong> Go to the Filament Status tab and assign a Spoolman spool to each toolhead. This tells The Moment which filament is loaded.</li>
-                <li><strong>Start Printing:</strong> The Moment polls your printers automatically. When a print finishes, filament usage is logged and written back to Spoolman.</li>
-                <li><strong>NFC Tags (optional):</strong> Go to the NFC Management tab to generate tag files for your spools and printer toolhead locations. Write them to NTAG213 stickers using NFC Tools. Scanning a tag on your phone opens the assignment page directly.</li>
-            </ol>
-        </div>
-    </div>
-    
+
     <!-- Basic Configuration Tab -->
-    <div id="basic-config-tab" class="settings-tab-content">
+    <div id="basic-config-tab" class="settings-tab-content active">
         <div class="config-section">
             <div id="config-form">
                 <p>Loading configuration...</p>
             </div>
-        </div>
-    </div>
-    
-    <!-- Printers Tab -->
-    <div id="printers-tab" class="settings-tab-content">
-        <div class="config-section">
-            <div style="margin-bottom: 20px;">
-                <button class="btn" onclick="showAddPrinterForm()">➕ Add Printer</button>
-                <button class="btn btn-secondary" onclick="showVirtualPrinterForm()" style="margin-left:8px;" title="Create a virtual test printer to upload G-code files and validate Spoolman integration without hardware">🧪 Add Virtual Test Printer</button>
-                <button class="btn btn-secondary" onclick="showImportPrinterForm()" style="margin-left:8px;" title="Import a virtual printer from a previously exported JSON file">📥 Import Virtual Printer</button>
-            </div>
-            <div id="printer-list">
-                <p>Loading printers...</p>
-            </div>
-        </div>
-
-        <!-- Orphaned Spool Assignments -->
-        <div class="config-section" style="margin-top:20px;border-top:1px solid var(--surface-border);padding-top:20px;">
-            <h4 style="margin-top:0;">🔓 Stuck Spool Assignments</h4>
-            <p style="color:var(--text-secondary);font-size:0.9em;margin-bottom:12px;">
-                If you deleted a printer and its spools are still showing as assigned elsewhere,
-                use this to find and release them. This only removes assignments for printers
-                that no longer exist — active printers are not affected.
-            </p>
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-                <button class="btn btn-small btn-secondary" id="checkStuckBtn" onclick="checkOrphanedMappings()">
-                    🔍 Check for Stuck Assignments
-                </button>
-                <button class="btn btn-small btn-danger" id="clearOrphansBtn"
-                        onclick="clearOrphanedMappings()" style="display:none;">
-                    🔓 Release All Stuck Spools
-                </button>
-            </div>
-            <div id="orphanStatus" style="margin-top:12px;font-size:0.88em;"></div>
         </div>
     </div>
     
@@ -326,7 +277,7 @@
                     <span>Sync spool locations with Spoolman automatically</span>
                 </label>
                 <small>
-                    When enabled, assigning a spool to a toolhead in Print Ops writes its location to Spoolman
+                    When enabled, assigning a spool to a toolhead in the Spools tab writes its location to Spoolman
                     as <em>{Printer Name} - T{index}</em> (e.g. "Ender3 - T0"). The Moment also polls Spoolman
                     every 5 minutes and updates toolhead assignments when you move a spool's location there.
                     Unassigning returns the spool to the Inventory location below.

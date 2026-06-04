@@ -838,14 +838,17 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
     if (btn) { btn.disabled = true; btn.textContent = 'Updating…'; }
 
     var isVirtual = fd.get('is_virtual') === 'true';
+    var sortOrder = parseInt(fd.get('sort_order') || '0', 10) || 0;
     var payload = isVirtual
         ? { name: fd.get('name'), toolheads: parseInt(fd.get('toolheads')), is_virtual: true,
-            ip_address: 'virtual', model: 'Virtual Test Printer', printer_type: 'prusalink' }
+            ip_address: 'virtual', model: 'Virtual Test Printer', printer_type: 'prusalink',
+            sort_order: sortOrder }
         : { name: fd.get('name'), model: fd.get('model'),
             ip_address: fd.get('ip_address'), api_key: fd.get('api_key'),
             toolheads: parseInt(fd.get('toolheads')),
             printer_type: fd.get('printer_type') || 'prusalink',
-            camera_snapshot_url: fd.get('camera_snapshot_url') || '' };
+            camera_snapshot_url: fd.get('camera_snapshot_url') || '',
+            sort_order: sortOrder };
     fetch('/api/printers/' + pid, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -891,6 +894,7 @@ function editPrinter(printerId) {
         document.getElementById('editPrinterAPIKey').value = p.api_key || '';
         document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
         document.getElementById('editPrinterCameraURL').value = p.camera_snapshot_url || '';
+        document.getElementById('editPrinterSortOrder').value = p.sort_order != null ? p.sort_order : 0;
         // Reset camera test result from previous session
         var testResult = document.getElementById('cameraTestResult');
         if (testResult) { testResult.style.display = 'none'; }

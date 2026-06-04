@@ -158,6 +158,7 @@ func (ws *WebServer) setupRoutes() {
 	// API routes
 	api := ws.router.Group("/api")
 	{
+		api.GET("/stats", ws.statsHandler)
 		api.GET("/status", ws.statusHandler)
 		api.GET("/spools", ws.spoolsHandler)
 		api.GET("/filaments", ws.filamentsHandler)
@@ -2038,6 +2039,17 @@ func (ws *WebServer) getSessionsHandler(c *gin.Context) {
 }
 
 // getHistoryHandler returns all print history records (newest first).
+// statsHandler returns aggregated print statistics for the dashboard.
+// GET /api/stats
+func (ws *WebServer) statsHandler(c *gin.Context) {
+	stats, err := ws.bridge.GetDashboardStats()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, stats)
+}
+
 // GET /api/history?limit=200
 func (ws *WebServer) getHistoryHandler(c *gin.Context) {
 	limit := 200
