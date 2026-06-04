@@ -65,15 +65,17 @@ services:
     ports:
       - "${THE_MOMENT_PORT:-5000}:${THE_MOMENT_PORT:-5000}"
     volumes:
-      # Three bind mounts — one per data type — so each can be backed up or relocated independently.
+      # Four bind mounts — one per data type plus the backup store — so each can be relocated independently.
       - ${THE_MOMENT_DB_PATH:-./the-moment-data/db}:/app/data/db
       - ${THE_MOMENT_GCODE_PATH:-./the-moment-data/gcode}:/app/data/gcode
       - ${THE_MOMENT_UPLOADS_PATH:-./the-moment-data/uploads}:/app/data/uploads
+      - ${BACKUP_DIR:-./backups}:/app/data/backups
     environment:
       THE_MOMENT_PORT: ${THE_MOMENT_PORT:-5000}
       THE_MOMENT_DB_PATH: /app/data/db
       THE_MOMENT_GCODE_PATH: /app/data/gcode
       THE_MOMENT_UPLOADS_PATH: /app/data/uploads
+      BACKUP_DIR: /app/data/backups
 
       # Point The Moment at the Spoolman service on the internal Docker network.
       # Uses the service name "spoolman" — Docker DNS resolves this automatically.

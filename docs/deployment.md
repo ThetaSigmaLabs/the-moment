@@ -176,9 +176,10 @@ Without any env vars the binary uses these defaults (resolved relative to the wo
 | DB directory | `./the-moment-data/db/` |
 | Gcode directory | `./the-moment-data/gcode/` |
 | Uploads directory | `./the-moment-data/uploads/` |
+| Backup store | `./backups/` |
 | Port | `5000` |
 
-The data directories are created automatically on first run.
+The data directories are created automatically on first run. The backup store is created on the first backup.
 
 ### 4. Open the UI
 
@@ -261,7 +262,7 @@ _Source: `config.go` (`getDBFilePath`, `getGcodePath`, `getUploadsPath`), `const
 | `THE_MOMENT_GCODE_PATH` | `config.go`, `docker-compose.yml` | `./the-moment-data/gcode` | `/app/data/gcode` | Root directory for print history file attachments: gcode, bgcode, slicer project files. Files are stored under `print-files/YYYY/MM/`. |
 | `THE_MOMENT_UPLOADS_PATH` | `config.go`, `docker-compose.yml` | `./the-moment-data/uploads` | `/app/data/uploads` | Root directory for virtual printer uploaded files. Reserved; virtual printer files currently stored as SQLite BLOBs. |
 
-In Docker, host paths set in `.env` are bind-mounted into the container at the fixed paths above. The container always sees `/app/data/db`, `/app/data/gcode`, `/app/data/uploads` regardless of what the host paths are.
+In Docker, host paths set in `.env` are bind-mounted into the container at the fixed paths above. The container always sees `/app/data/db`, `/app/data/gcode`, `/app/data/uploads`, and `/app/data/backups` regardless of what the host paths are.
 
 ### Ports
 
@@ -285,9 +286,9 @@ In Docker, host paths set in `.env` are bind-mounted into the container at the f
 
 ### Backup
 
-| Variable | Read by | Default | Purpose |
-|---|---|---|---|
-| `BACKUP_DIR` | `Makefile` | `./backups` | Directory where `make backup` writes `backup-YYYYMMDD-HHMMSS.tar.gz` archives. Point at a network share or a path your backup agent monitors. |
+| Variable | Read by | Default (native) | Docker container value | Purpose |
+|---|---|---|---|---|
+| `BACKUP_DIR` | `Makefile`, `config.go`, `docker-compose.yml` | `./backups` | `/app/data/backups` | Directory where backup archives are stored (created by in-app backup, `make backup`, or `make backup-native`). Point at a network share or a path your backup agent monitors. |
 
 ---
 

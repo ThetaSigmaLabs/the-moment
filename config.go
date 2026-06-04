@@ -179,3 +179,11 @@ func getUploadsPath() string {
 	}
 	return filepath.Join("the-moment-data", "uploads")
 }
+
+// getBackupDir returns the directory where backup archives are stored.
+func getBackupDir() string {
+	if d := os.Getenv("BACKUP_DIR"); d != "" {
+		return d
+	}
+	return "backups"
+}
