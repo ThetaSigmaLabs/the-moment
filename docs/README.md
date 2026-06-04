@@ -15,6 +15,7 @@
 | [OctoPrint Plugin](octoprint-plugin.md) | How to install, configure, and use the OctoPrint plugin; what data it sends; troubleshooting |
 | [Cost Tracking](cost-tracking.md) | How print cost is calculated: the formula, global settings, per-printer overrides, high-temp detection, and filament pricing |
 | [Virtual Test Printers](virtual-printers.md) | How to create a virtual printer, upload G-code, simulate prints, and export/import printer libraries |
+| [Backup, Restore & Migration](backup-restore.md) | How to back up data, restore from a backup, and migrate to a new PC (Docker and native) |
 
 ## Overview
 

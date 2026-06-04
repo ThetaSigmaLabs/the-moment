@@ -101,3 +101,17 @@ const (
 
 // ConfigKeyBambuDebug enables verbose Bambu MQTT debug logging when set to "true".
 const ConfigKeyBambuDebug = "bambu_debug"
+
+// Backup config keys
+const (
+	ConfigKeyLastBackupTime = "last_backup_time"
+	ConfigKeyRestorePending = "restore_pending"
+)
+
+// Backup scope constants
+const (
+	BackupScopeAll     = "all"
+	BackupScopeDB      = "db"
+	BackupScopeGcode   = "gcode"
+	BackupScopeUploads = "uploads"
+)

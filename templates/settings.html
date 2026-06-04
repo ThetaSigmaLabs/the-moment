@@ -263,10 +263,9 @@
         <div class="config-section" style="margin-top: 30px;">
             <h3>🏷️ NFC Spool Locations</h3>
             <div class="help-text">
-                These Spoolman location names are used by the NFC spool-tag workflow.
-                When a spool is displaced from a toolhead the old spool moves to <strong>Inventory</strong> automatically.
+                These Spoolman location names are shared by the NFC workflow and the settings below.
                 When a spool is finished, tapping its tag and choosing Trash moves it to <strong>Trash</strong> so the tag can be re-programmed.
-                Both locations are created in Spoolman automatically the first time they are used.
+                Each location is created in Spoolman automatically the first time it is used.
             </div>
 
             <!-- Spoolman Location Sync Toggle -->
@@ -274,13 +273,13 @@
                 <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
                     <input type="checkbox" id="spoolmanLocationSyncEnabled"
                            onchange="document.getElementById('spoolmanLocationSyncRow').style.display=this.checked?'':'none'; saveNFCConfig();">
-                    <span>Sync spool locations with Spoolman automatically</span>
+                    <span>Bidirectional location sync with Spoolman</span>
                 </label>
                 <small>
-                    When enabled, assigning a spool to a toolhead in the Spools tab writes its location to Spoolman
-                    as <em>{Printer Name} - T{index}</em> (e.g. "Ender3 - T0"). The Moment also polls Spoolman
-                    every 5 minutes and updates toolhead assignments when you move a spool's location there.
-                    Unassigning returns the spool to the Inventory location below.
+                    When enabled, The Moment keeps Spoolman's spool location field in sync with toolhead assignments — in both directions.
+                    Assigning a spool writes <em>{Printer Name} - T{index}</em> (e.g. "Ender3 - T0") to Spoolman.
+                    Unassigning, deleting a printer, or reducing toolhead count moves the spool to the Inventory location.
+                    Spoolman is also polled every 5 minutes: editing a spool's location directly in Spoolman will update the toolhead assignment here automatically.
                     <strong>Changes save immediately.</strong>
                 </small>
             </div>
@@ -310,22 +309,96 @@
             </div>
         </div>
 
-        <!-- Spool Assignment Settings Section -->
+        <!-- Backup & Restore Section -->
         <div class="config-section" style="margin-top: 30px;">
-            <h3>🔄 Spool Assignment Settings</h3>
+            <h3>💾 Backup &amp; Restore</h3>
             <div class="help-text">
-                When enabled, replacing a spool on a toolhead automatically moves the previous spool to the
-                <strong>Inventory Location</strong> configured in NFC Spool Locations above.
+                Backups include the database, G-code attachments, and virtual printer uploads.
+                Spoolman data is <strong>not</strong> included — use <code>make backup</code> (Docker) for a full system backup that covers both.
+            </div>
+
+            <!-- Restore-pending banner -->
+            <div id="restorePendingBanner" style="display:none; background:var(--warning-bg,#fff3cd); border:1px solid var(--warning-border,#ffc107); border-radius:6px; padding:12px 16px; margin-bottom:16px; color:var(--text-primary);">
+                ⚠️ <strong>Restart required.</strong> A restore completed successfully. Restart the service to load the restored data:
+                <br><code>Docker: make down &amp;&amp; make up</code> &nbsp;|&nbsp; <code>Native: stop and restart the binary</code>
+            </div>
+
+            <!-- Create backup -->
+            <div style="margin-bottom: 20px;">
+                <h4 style="margin:0 0 10px;">Create a Backup</h4>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <select id="backupScope" style="padding:6px 10px; border-radius:4px; border:1px solid var(--input-border,#ccc);">
+                        <option value="db">Database only (small, fast)</option>
+                        <option value="all">All data — database + G-code + uploads (large)</option>
+                        <option value="gcode">G-code files only</option>
+                        <option value="uploads">Virtual printer uploads only</option>
+                    </select>
+                    <button class="btn" onclick="createBackup()">💾 Create Backup</button>
+                    <span id="backupCreateStatus" style="font-size:0.9em; color:var(--text-secondary);"></span>
+                </div>
+                <div class="help-text" style="margin-top:8px;">
+                    "Database only" covers all print history, printer configs, costs, and settings.
+                    Use it for quick daily backups. Choose "All data" before migrating to a new PC.
+                </div>
+            </div>
+
+            <!-- Upload a backup -->
+            <div style="margin-bottom: 20px;">
+                <h4 style="margin:0 0 10px;">Upload a Backup</h4>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <input type="file" id="backupUploadInput" accept=".tar.gz" style="max-width:360px;">
+                    <button class="btn btn-secondary" onclick="uploadBackup()">📤 Upload</button>
+                    <span id="backupUploadStatus" style="font-size:0.9em; color:var(--text-secondary);"></span>
+                </div>
+                <div class="help-text" style="margin-top:8px;">
+                    Upload a backup archive from another PC to make it available in the list below.
+                </div>
+            </div>
+
+            <!-- Backup list -->
+            <div>
+                <h4 style="margin:0 0 10px;">Backup Archives</h4>
+                <div id="backupListContainer">
+                    <p style="color:var(--text-secondary); font-size:0.9em;">Loading…</p>
+                </div>
+            </div>
+
+            <!-- Restore confirm modal -->
+            <div id="restoreModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+                <div style="background:var(--surface-bg,#fff); border-radius:8px; padding:28px 32px; max-width:520px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.25);">
+                    <h3 style="margin:0 0 16px;">Confirm Restore</h3>
+                    <div id="restorePreflightInfo" style="margin-bottom:16px; font-size:0.9em; line-height:1.6;"></div>
+                    <div style="margin-bottom:16px;">
+                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.9em;">
+                            <input type="checkbox" id="restoreConfirmCheck">
+                            I understand that the selected data will be permanently overwritten and the service must be restarted afterward.
+                        </label>
+                    </div>
+                    <div style="display:flex; gap:10px; justify-content:flex-end;">
+                        <button class="btn btn-secondary" onclick="closeRestoreModal()">Cancel</button>
+                        <button class="btn btn-danger" id="restoreConfirmBtn" onclick="confirmRestore()" disabled>Restore</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Spool Displacement Section -->
+        <div class="config-section" style="margin-top: 30px;">
+            <h3>🔄 Spool Displacement</h3>
+            <div class="help-text">
+                Covers one specific scenario: assigning a spool to a toolhead that already has one.
+                When enabled, the displaced spool is automatically moved to the <strong>Inventory</strong> location.
+                Works independently of bidirectional location sync.
             </div>
             <div class="spool-assignment-settings">
                 <div class="form-group">
                     <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                         <input type="checkbox" id="autoAssignPreviousSpoolEnabled" style="width: auto; cursor: pointer;">
-                        <span>Enable automatic assignment of previous spool to Inventory location</span>
+                        <span>Move displaced spool to Inventory when replaced</span>
                     </label>
                 </div>
                 <div style="margin-top: 20px; text-align: center;">
-                    <button class="btn" onclick="saveAutoAssignSettings()">💾 Save Spool Assignment Settings</button>
+                    <button class="btn" onclick="saveAutoAssignSettings()">💾 Save Spool Displacement Settings</button>
                 </div>
             </div>
         </div>

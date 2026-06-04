@@ -109,6 +109,8 @@ function switchSettingsTab(tabName, clickedElement) {
     } else if (tabName === 'advanced') {
         loadAdvancedSettings();
         loadAutoAssignSettings();
+        loadBackupList();
+        checkRestorePending();
     }
 }
 
@@ -427,6 +429,191 @@ function convertTimestampsToLocal() {
             element.textContent = localTime;
         }
     });
+}
+
+// ── Backup & Restore ──────────────────────────────────────────────────────────
+
+let _pendingRestoreFilename = null;
+
+function checkRestorePending() {
+    fetch('/api/config')
+        .then(r => r.json())
+        .then(cfg => {
+            const banner = document.getElementById('restorePendingBanner');
+            if (banner && cfg.restore_pending === 'true') {
+                banner.style.display = 'block';
+            }
+        })
+        .catch(() => {});
+}
+
+function loadBackupList() {
+    fetch('/api/backup')
+        .then(r => r.json())
+        .then(entries => {
+            const container = document.getElementById('backupListContainer');
+            if (!container) return;
+            if (!entries || entries.length === 0) {
+                container.innerHTML = '<p style="color:var(--text-secondary); font-size:0.9em;">No backups yet.</p>';
+                return;
+            }
+            const rows = entries.map(e => {
+                const date = new Date(e.created_at).toLocaleString();
+                const size = formatBackupBytes(e.size_bytes);
+                return `<tr>
+                    <td style="padding:6px 10px;">${e.filename}</td>
+                    <td style="padding:6px 10px;">${e.scope}</td>
+                    <td style="padding:6px 10px;">${size}</td>
+                    <td style="padding:6px 10px;">${date}</td>
+                    <td style="padding:6px 10px; white-space:nowrap;">
+                        <a class="btn btn-secondary" style="padding:3px 10px; font-size:0.85em; text-decoration:none;"
+                           href="/api/backup/${encodeURIComponent(e.filename)}/download" download>⬇ Download</a>
+                        <button class="btn" style="padding:3px 10px; font-size:0.85em; background:var(--accent-color,#6c5ce7);"
+                           onclick="openRestoreModal('${e.filename}')">↩ Restore</button>
+                        <button class="btn btn-danger" style="padding:3px 10px; font-size:0.85em;"
+                           onclick="deleteBackup('${e.filename}')">🗑 Delete</button>
+                    </td>
+                </tr>`;
+            }).join('');
+            container.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:0.9em;">
+                <thead><tr style="border-bottom:1px solid var(--surface-border);">
+                    <th style="text-align:left; padding:6px 10px;">Filename</th>
+                    <th style="text-align:left; padding:6px 10px;">Scope</th>
+                    <th style="text-align:left; padding:6px 10px;">Size</th>
+                    <th style="text-align:left; padding:6px 10px;">Created</th>
+                    <th style="text-align:left; padding:6px 10px;">Actions</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>`;
+        })
+        .catch(() => {
+            const container = document.getElementById('backupListContainer');
+            if (container) container.innerHTML = '<p style="color:var(--error-color,#e74c3c); font-size:0.9em;">Failed to load backups.</p>';
+        });
+}
+
+function createBackup() {
+    const scope = document.getElementById('backupScope').value;
+    const status = document.getElementById('backupCreateStatus');
+    status.textContent = 'Creating backup…';
+    fetch('/api/backup/create', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({scope})
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { status.textContent = 'Error: ' + data.error; return; }
+            status.textContent = 'Created: ' + data.filename;
+            loadBackupList();
+        })
+        .catch(() => { status.textContent = 'Failed to create backup.'; });
+}
+
+function uploadBackup() {
+    const input = document.getElementById('backupUploadInput');
+    const status = document.getElementById('backupUploadStatus');
+    if (!input.files || input.files.length === 0) {
+        status.textContent = 'Select a file first.';
+        return;
+    }
+    const formData = new FormData();
+    formData.append('file', input.files[0]);
+    status.textContent = 'Uploading…';
+    fetch('/api/backup/upload', {method: 'POST', body: formData})
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { status.textContent = 'Error: ' + data.error; return; }
+            status.textContent = 'Uploaded: ' + data.filename;
+            input.value = '';
+            loadBackupList();
+        })
+        .catch(() => { status.textContent = 'Upload failed.'; });
+}
+
+function deleteBackup(filename) {
+    if (!confirm('Delete backup ' + filename + '?\nThis cannot be undone.')) return;
+    fetch('/api/backup/' + encodeURIComponent(filename), {method: 'DELETE'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { showToast('Delete failed: ' + data.error, 'error'); return; }
+            showToast('Backup deleted.', 'success');
+            loadBackupList();
+        })
+        .catch(() => showToast('Delete failed.', 'error'));
+}
+
+function openRestoreModal(filename) {
+    _pendingRestoreFilename = filename;
+    const info = document.getElementById('restorePreflightInfo');
+    const btn = document.getElementById('restoreConfirmBtn');
+    const check = document.getElementById('restoreConfirmCheck');
+    const modal = document.getElementById('restoreModal');
+    info.textContent = 'Checking…';
+    btn.disabled = true;
+    check.checked = false;
+    modal.style.display = 'flex';
+
+    fetch('/api/backup/' + encodeURIComponent(filename) + '/preflight')
+        .then(r => r.json())
+        .then(result => {
+            if (!result.valid) {
+                info.innerHTML = '<span style="color:var(--error-color,#e74c3c);">❌ ' + (result.message || 'Invalid backup') + '</span>';
+                return;
+            }
+            const spaceStatus = result.space_ok
+                ? '<span style="color:var(--success-color,#27ae60);">✓ Sufficient disk space</span>'
+                : '<span style="color:var(--error-color,#e74c3c);">✗ ' + result.message + '</span>';
+            const replacing = (result.will_replace || []).map(s => '<li>' + s + '</li>').join('');
+            info.innerHTML = `
+                <strong>Archive:</strong> ${filename}<br>
+                <strong>Scope:</strong> ${result.scope}<br>
+                <strong>Uncompressed size:</strong> ${formatBackupBytes(result.uncompressed_bytes)}<br>
+                <strong>Disk space:</strong> ${spaceStatus}<br>
+                <strong>Will overwrite (clean replace — no zombie files):</strong><ul style="margin:4px 0 0 18px;">${replacing}</ul>`;
+            if (result.space_ok) {
+                check.disabled = false;
+                check.onchange = () => { btn.disabled = !check.checked; };
+            } else {
+                check.disabled = true;
+            }
+        })
+        .catch(() => {
+            info.textContent = 'Failed to run preflight check.';
+        });
+}
+
+function closeRestoreModal() {
+    document.getElementById('restoreModal').style.display = 'none';
+    _pendingRestoreFilename = null;
+}
+
+function confirmRestore() {
+    if (!_pendingRestoreFilename) return;
+    const btn = document.getElementById('restoreConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Restoring…';
+    fetch('/api/backup/' + encodeURIComponent(_pendingRestoreFilename) + '/restore', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            closeRestoreModal();
+            if (data.error) { showToast('Restore failed: ' + data.error, 'error'); return; }
+            document.getElementById('restorePendingBanner').style.display = 'block';
+            showToast('Restore complete. Restart the service to load the restored data.', 'success');
+            loadBackupList();
+        })
+        .catch(() => {
+            closeRestoreModal();
+            showToast('Restore request failed.', 'error');
+        });
+}
+
+function formatBackupBytes(bytes) {
+    if (!bytes || bytes < 1024) return (bytes || 0) + ' B';
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let v = bytes, i = -1;
+    do { v /= 1024; i++; } while (v >= 1024 && i < units.length - 1);
+    return v.toFixed(1) + ' ' + units[i];
 }
 
 // Initialize everything when page loads

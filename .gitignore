@@ -44,6 +44,7 @@ Thumbs.db
 # Data directories
 the-moment-data/
 spoolman-data/
+backups/
 
 # Environment files (use .env.example as template)
 .env

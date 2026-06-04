@@ -8,7 +8,7 @@ THE_MOMENT_PORT         ?= 5000
 SPOOLMAN_DB_PATH        ?= ./spoolman-data
 BACKUP_DIR              ?= ./backups
 
-.PHONY: setup up down logs update ps open backup restore \
+.PHONY: setup up down logs update ps open backup restore backup-native restore-native \
         dev-build dev-up dev-down \
         test-unit test-integration test-all lint help
 
@@ -16,11 +16,11 @@ BACKUP_DIR              ?= ./backups
 
 setup: ## First-time setup: copy .env.example → .env (if absent) and create data dirs
 	@test -f .env || (cp .env.example .env && echo "Created .env from .env.example — review ports and TZ before continuing")
-	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH)
+	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH) $(BACKUP_DIR)
 	@echo "Ready. Run 'make up' to start."
 
 up: ## Create data directories and start all services
-	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH)
+	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH) $(BACKUP_DIR)
 	docker compose up -d
 
 down: ## Stop all services
@@ -31,7 +31,7 @@ logs: ## Tail logs from all services (Ctrl-C to stop)
 
 update: ## Pull latest images, create dirs, and restart
 	docker compose pull
-	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH)
+	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH) $(BACKUP_DIR)
 	docker compose up -d
 
 ps: ## Show running containers and their status
@@ -64,6 +64,28 @@ restore: ## Restore from a backup: make restore BACKUP=./backups/backup-YYYYMMDD
 	docker compose start
 	@echo "Restored from $(BACKUP)"
 
+backup-native: ## (Native only) Archive The Moment data to BACKUP_DIR. SCOPE=all|db|gcode|uploads (default: db)
+	@mkdir -p $(BACKUP_DIR)
+	$(eval _SCOPE := $(if $(SCOPE),$(SCOPE),db))
+	@set -e; \
+	 out="$(BACKUP_DIR)/the-moment-backup-$$(date +%Y%m%d-%H%M%S)-$(_SCOPE).tar.gz"; \
+	 case "$(_SCOPE)" in \
+	   all)     tar -czf "$$out" $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) ;; \
+	   db)      tar -czf "$$out" $(THE_MOMENT_DB_PATH) ;; \
+	   gcode)   tar -czf "$$out" $(THE_MOMENT_GCODE_PATH) ;; \
+	   uploads) tar -czf "$$out" $(THE_MOMENT_UPLOADS_PATH) ;; \
+	   *)       echo "Error: unknown scope '$(_SCOPE)' — use all, db, gcode, or uploads"; exit 1 ;; \
+	 esac; \
+	 echo "Backup saved: $$out"
+
+restore-native: ## (Native only) Restore data — STOP the binary first: make restore-native BACKUP=<path>
+	@test -n "$(BACKUP)" || { echo "Error: specify BACKUP=<path>"; exit 1; }
+	@test -f "$(BACKUP)" || { echo "Error: not found: $(BACKUP)"; exit 1; }
+	@echo "WARNING: This will overwrite existing data directories."
+	@echo "Press Enter to continue or Ctrl-C to cancel."; read _
+	tar -xzf "$(BACKUP)" --overwrite
+	@echo "Restored from $(BACKUP). Start the moment binary to use the restored data."
+
 # ── Development ────────────────────────────────────────────────────────────────
 
 DEV_COMPOSE = docker compose -f docker-compose.yml -f docker-compose.dev.yml
@@ -72,7 +94,7 @@ dev-build: ## Build the dev image (run once; re-run if go.mod changes)
 	$(DEV_COMPOSE) build the-moment
 
 dev-up: ## Start dev stack with air hot-reload (foreground — Ctrl-C to stop)
-	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH)
+	mkdir -p $(THE_MOMENT_DB_PATH) $(THE_MOMENT_GCODE_PATH) $(THE_MOMENT_UPLOADS_PATH) $(SPOOLMAN_DB_PATH) $(BACKUP_DIR)
 	$(DEV_COMPOSE) up
 
 dev-down: ## Stop dev stack

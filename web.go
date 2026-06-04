@@ -10,13 +10,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net"
 	"net/http"
 	neturl "net/url"
+	"os"
+	"path/filepath"
 	"sort"
-	"io"
 	"strconv"
 	"strings"
 	"sync"
@@ -198,6 +200,15 @@ func (ws *WebServer) setupRoutes() {
 		// Virtual printer export / import
 		api.GET("/printers/:id/export", ws.exportVirtualPrinterHandler)
 		api.POST("/printers/import", ws.importVirtualPrinterHandler)
+
+		// Backup management
+		api.GET("/backup", ws.listBackupsHandler)
+		api.POST("/backup/create", ws.createBackupHandler)
+		api.POST("/backup/upload", ws.uploadBackupHandler)
+		api.GET("/backup/:filename/download", ws.downloadBackupHandler)
+		api.GET("/backup/:filename/preflight", ws.preflightRestoreHandler)
+		api.POST("/backup/:filename/restore", ws.restoreBackupHandler)
+		api.DELETE("/backup/:filename", ws.deleteBackupHandler)
 
 		// Spool assignment maintenance
 		api.GET("/orphaned-mappings", ws.getOrphanedMappingsHandler)
@@ -3683,4 +3694,127 @@ func (ws *WebServer) renameAttachmentHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "renamed"})
+}
+
+// ── Backup & Restore handlers ─────────────────────────────────────────────────
+
+// GET /api/backup
+func (ws *WebServer) listBackupsHandler(c *gin.Context) {
+	entries, err := ListBackups()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, entries)
+}
+
+// POST /api/backup/create   body: {"scope":"db"}
+func (ws *WebServer) createBackupHandler(c *gin.Context) {
+	var body struct {
+		Scope string `json:"scope"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Scope == "" {
+		body.Scope = BackupScopeDB
+	}
+	filename, err := ws.bridge.CreateBackup(body.Scope)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"filename": filename})
+}
+
+// POST /api/backup/upload   multipart field: "file"
+func (ws *WebServer) uploadBackupHandler(c *gin.Context) {
+	if err := c.Request.ParseMultipartForm(2 << 30); err != nil { // 2 GiB max
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse upload"})
+		return
+	}
+	file, header, err := c.Request.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no file provided (use field name 'file')"})
+		return
+	}
+	defer file.Close()
+
+	if !validBackupFilename(header.Filename) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "filename must match the-moment-backup-YYYYMMDD-HHMMSS-<scope>.tar.gz"})
+		return
+	}
+
+	backupDir := getBackupDir()
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create backup directory"})
+		return
+	}
+
+	destPath := filepath.Join(backupDir, filepath.Base(header.Filename))
+	out, err := os.Create(destPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save file"})
+		return
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, file); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to write file"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"filename": header.Filename})
+}
+
+// GET /api/backup/:filename/download
+func (ws *WebServer) downloadBackupHandler(c *gin.Context) {
+	filename := c.Param("filename")
+	if !validBackupFilename(filename) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid backup filename"})
+		return
+	}
+	path := filepath.Join(getBackupDir(), filepath.Base(filename))
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "backup not found"})
+		return
+	}
+	c.Header("Content-Disposition", "attachment; filename="+filepath.Base(filename))
+	c.Header("Content-Type", "application/gzip")
+	c.File(path)
+}
+
+// GET /api/backup/:filename/preflight
+func (ws *WebServer) preflightRestoreHandler(c *gin.Context) {
+	filename := c.Param("filename")
+	result, err := PreflightRestore(filename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+// POST /api/backup/:filename/restore
+func (ws *WebServer) restoreBackupHandler(c *gin.Context) {
+	filename := c.Param("filename")
+	if err := ws.bridge.RestoreBackup(filename); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":           "restored",
+		"restart_required": true,
+		"message":          "Restore complete. Restart the service to load the restored data: Docker — run 'make down && make up'; native — stop and restart the binary.",
+	})
+}
+
+// DELETE /api/backup/:filename
+func (ws *WebServer) deleteBackupHandler(c *gin.Context) {
+	filename := c.Param("filename")
+	if err := DeleteBackup(filename); err != nil {
+		if err.Error() == "backup not found" {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
