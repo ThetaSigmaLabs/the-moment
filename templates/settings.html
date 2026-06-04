@@ -363,21 +363,15 @@
         <div class="config-section" style="margin-top: 30px;">
             <h3>🔄 Spool Assignment Settings</h3>
             <div class="help-text">
-                Automatically assign the previous spool to a default location when assigning a new spool to a toolhead. This is useful when you have a storage location (bin, shelf, drybox) where spools are kept when not in use.
+                When enabled, replacing a spool on a toolhead automatically moves the previous spool to the
+                <strong>Inventory Location</strong> configured in NFC Spool Locations above.
             </div>
             <div class="spool-assignment-settings">
                 <div class="form-group">
                     <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
                         <input type="checkbox" id="autoAssignPreviousSpoolEnabled" style="width: auto; cursor: pointer;">
-                        <span>Enable automatic assignment of previous spool to default location</span>
+                        <span>Enable automatic assignment of previous spool to Inventory location</span>
                     </label>
-                </div>
-                <div class="form-group" id="autoAssignLocationGroup" style="display: none; margin-top: 15px;">
-                    <label for="autoAssignPreviousSpoolLocation">Default Location Name</label>
-                    <select id="autoAssignPreviousSpoolLocation" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #666; background: rgba(255,255,255,0.1); color: #fff;">
-                        <option value="">Select a location...</option>
-                    </select>
-                    <small>Select an existing location where spools will be automatically assigned when removed from a toolhead.</small>
                 </div>
                 <div style="margin-top: 20px; text-align: center;">
                     <button class="btn" onclick="saveAutoAssignSettings()">💾 Save Spool Assignment Settings</button>

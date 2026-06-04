@@ -177,6 +177,7 @@ func (ws *WebServer) setupRoutes() {
 		api.PATCH("/printers/:id/debug-log", ws.togglePrinterDebugLogHandler)
 		api.POST("/printers/:id/test-camera", ws.testCameraURLHandler)
 		api.GET("/printers/:id/comm-log", ws.commLogHandler)
+		api.GET("/printers/:id/raw-responses", ws.rawResponsesHandler)
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
 		api.GET("/printers/:id/toolheads", ws.getToolheadNamesHandler)
 		api.PUT("/printers/:id/toolheads/:toolhead_id", ws.updateToolheadNameHandler)
@@ -754,24 +755,13 @@ func (ws *WebServer) getAutoAssignPreviousSpoolHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-
-	location, err := ws.bridge.GetAutoAssignPreviousSpoolLocation()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"enabled":  enabled,
-		"location": location,
-	})
+	c.JSON(http.StatusOK, gin.H{"enabled": enabled})
 }
 
 // updateAutoAssignPreviousSpoolHandler updates auto-assign previous spool settings
 func (ws *WebServer) updateAutoAssignPreviousSpoolHandler(c *gin.Context) {
 	var req struct {
-		Enabled  bool   `json:"enabled" binding:"required"`
-		Location string `json:"location"`
+		Enabled bool `json:"enabled" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -779,14 +769,7 @@ func (ws *WebServer) updateAutoAssignPreviousSpoolHandler(c *gin.Context) {
 		return
 	}
 
-	// Update enabled setting
 	if err := ws.bridge.SetAutoAssignPreviousSpoolEnabled(req.Enabled); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Update location setting
-	if err := ws.bridge.SetAutoAssignPreviousSpoolLocation(req.Location); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -976,6 +959,34 @@ func (ws *WebServer) commLogHandler(c *gin.Context) {
 		entries = []CommLogEntry{}
 	}
 	c.JSON(http.StatusOK, gin.H{"printer_id": printerID, "entries": entries})
+}
+
+// rawResponsesHandler returns the most recent raw PrusaLink API response bodies for a printer.
+// The response body contains pretty-printed JSON for /api/v1/status and /api/v1/job,
+// suitable for use as test fixtures.
+func (ws *WebServer) rawResponsesHandler(c *gin.Context) {
+	printerID := c.Param("id")
+	cap := ws.bridge.GetRawResponses(printerID)
+	if cap == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "no raw responses captured yet — wait for the next poll cycle"})
+		return
+	}
+
+	// Unmarshal to interface{} so the JSON is embedded as objects, not strings.
+	var statusObj, jobObj interface{}
+	if len(cap.Status) > 0 {
+		_ = json.Unmarshal(cap.Status, &statusObj)
+	}
+	if len(cap.Job) > 0 {
+		_ = json.Unmarshal(cap.Job, &jobObj)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"printer_id":   printerID,
+		"captured_at":  cap.CapturedAt,
+		"status":       statusObj,
+		"job":          jobObj,
+	})
 }
 
 // updatePrinterHandler updates an existing printer configuration

@@ -79,19 +79,25 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprintf(w, `{
+			"job": {
+				"id": 1,
+				"progress": %f,
+				"time_remaining": 1800,
+				"time_printing": 3600
+			},
 			"printer": {
 				"state": %q,
-				"temperature": {
-					"bed":   {"actual": 60.0, "target": 60.0},
-					"tool0": {"actual": 215.0, "target": 215.0}
-				},
-				"telemetry": {
-					"print_time": 3600,
-					"print_time_left": 1800,
-					"progress": %f
-				}
+				"temp_nozzle": 215.0,
+				"target_nozzle": 215.0,
+				"temp_bed": 60.0,
+				"target_bed": 60.0,
+				"axis_z": 10.0,
+				"flow": 100,
+				"speed": 100,
+				"fan_hotend": 5000,
+				"fan_print": 4500
 			}
-		}`, currentState, progress)
+		}`, progress, currentState)
 	})
 
 	// GET /api/v1/job — returns current job info

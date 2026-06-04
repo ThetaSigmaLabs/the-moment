@@ -38,8 +38,7 @@ const (
 	ConfigKeyPrusaLinkTimeout                = "prusalink_timeout"
 	ConfigKeyPrusaLinkFileDownloadTimeout    = "prusalink_file_download_timeout"
 	ConfigKeySpoolmanTimeout                 = "spoolman_timeout"
-	ConfigKeyAutoAssignPreviousSpoolEnabled  = "auto_assign_previous_spool_enabled"
-	ConfigKeyAutoAssignPreviousSpoolLocation = "auto_assign_previous_spool_location"
+	ConfigKeyAutoAssignPreviousSpoolEnabled = "auto_assign_previous_spool_enabled"
 	ConfigKeyTheMomentAPIKey                = "the_moment_api_key"
 	ConfigKeyOctoPrintDebug                 = "octoprint_debug"
 

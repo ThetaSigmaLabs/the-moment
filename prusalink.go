@@ -25,28 +25,31 @@ type PrusaLinkClient struct {
 	httpClient *http.Client
 }
 
-// PrusaLinkStatus represents the status response from /api/v1/status
-// Tool temperatures are stored as a flat map so the struct handles any number
-// of toolheads (MINI has 1, XL has 5, INDX will have 8+).
+// PrusaLinkStatus represents the status response from /api/v1/status.
+// Field layout verified against real Core One L response.
 type PrusaLinkStatus struct {
+	Job struct {
+		ID            int     `json:"id"`
+		Progress      float64 `json:"progress"`
+		TimeRemaining int     `json:"time_remaining"`
+		TimePrinting  int     `json:"time_printing"`
+	} `json:"job"`
 	Printer struct {
-		State       string             `json:"state"`
-		Temperature map[string]ToolTemp `json:"temperature"` // keys: "bed", "tool0"..."toolN"
-		Telemetry   struct {
-			PrintTime     int     `json:"print_time"`
-			PrintTimeLeft int     `json:"print_time_left"`
-			Progress      float64 `json:"progress"`
-		} `json:"telemetry"`
+		State        string  `json:"state"`
+		TempNozzle   float64 `json:"temp_nozzle"`
+		TargetNozzle float64 `json:"target_nozzle"`
+		TempBed      float64 `json:"temp_bed"`
+		TargetBed    float64 `json:"target_bed"`
+		AxisZ        float64 `json:"axis_z"`
+		Flow         int     `json:"flow"`
+		Speed        int     `json:"speed"`
+		FanHotend    int     `json:"fan_hotend"`
+		FanPrint     int     `json:"fan_print"`
 	} `json:"printer"`
 }
 
-// ToolTemp holds actual and target temperatures for a single tool or bed
-type ToolTemp struct {
-	Actual float64 `json:"actual"`
-	Target float64 `json:"target"`
-}
-
-// PrusaLinkJob represents the job response from /api/v1/job
+// PrusaLinkJob represents the job response from /api/v1/job.
+// Field layout verified against real Core One L response.
 type PrusaLinkJob struct {
 	ID            int     `json:"id"`
 	State         string  `json:"state"`
@@ -58,8 +61,11 @@ type PrusaLinkJob struct {
 		DisplayName string `json:"display_name"`
 		Path        string `json:"path"`
 		Size        int    `json:"size"`
+		MTimestamp  int64  `json:"m_timestamp"`
 		Refs        struct {
-			Download string `json:"download"`
+			Download  string `json:"download"`
+			Icon      string `json:"icon"`
+			Thumbnail string `json:"thumbnail"`
 		} `json:"refs"`
 	} `json:"file"`
 	// Filament usage data (available on some firmware versions)
@@ -112,62 +118,73 @@ func (c *PrusaLinkClient) addAPIKey(req *http.Request) {
 	}
 }
 
-// GetStatus retrieves the current status of the printer
-func (c *PrusaLinkClient) GetStatus() (*PrusaLinkStatus, error) {
+// GetStatus retrieves the current status of the printer.
+// Returns the decoded struct, the raw response body, and any error.
+func (c *PrusaLinkClient) GetStatus() (*PrusaLinkStatus, []byte, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/status", nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create status request: %w", err)
+		return nil, nil, fmt.Errorf("failed to create status request: %w", err)
 	}
 	c.addAPIKey(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get status from PrusaLink: %w", err)
+		return nil, nil, fmt.Errorf("failed to get status from PrusaLink: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read status response: %w", err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("PrusaLink API error: %d - %s", resp.StatusCode, string(body))
+		return nil, body, fmt.Errorf("PrusaLink API error: %d - %s", resp.StatusCode, string(body))
 	}
 
 	var status PrusaLinkStatus
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
-		return nil, fmt.Errorf("failed to decode status response: %w", err)
+	if err := json.Unmarshal(body, &status); err != nil {
+		return nil, body, fmt.Errorf("failed to decode status response: %w", err)
 	}
 
-	return &status, nil
+	return &status, body, nil
 }
 
-// GetJobInfo retrieves the current job information
-func (c *PrusaLinkClient) GetJobInfo() (*PrusaLinkJob, error) {
+// GetJobInfo retrieves the current job information.
+// Returns the decoded struct, the raw response body, and any error.
+// body is nil when the response is 204 No Content.
+func (c *PrusaLinkClient) GetJobInfo() (*PrusaLinkJob, []byte, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/job", nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create job request: %w", err)
+		return nil, nil, fmt.Errorf("failed to create job request: %w", err)
 	}
 	c.addAPIKey(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get job info from PrusaLink: %w", err)
+		return nil, nil, fmt.Errorf("failed to get job info from PrusaLink: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		return &PrusaLinkJob{}, nil // No active job
+		return &PrusaLinkJob{}, nil, nil // No active job
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read job response: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("PrusaLink API error: %d - %s", resp.StatusCode, string(body))
+		return nil, body, fmt.Errorf("PrusaLink API error: %d - %s", resp.StatusCode, string(body))
 	}
 
 	var job PrusaLinkJob
-	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
-		return nil, fmt.Errorf("failed to decode job response: %w", err)
+	if err := json.Unmarshal(body, &job); err != nil {
+		return nil, body, fmt.Errorf("failed to decode job response: %w", err)
 	}
 
-	return &job, nil
+	return &job, body, nil
 }
 
 // GetPrinterInfo retrieves the printer information
@@ -515,6 +532,6 @@ func (c *PrusaLinkClient) GetSnapshot(cameraID string) ([]byte, error) {
 
 // TestConnection tests the connection to PrusaLink
 func (c *PrusaLinkClient) TestConnection() error {
-	_, err := c.GetStatus()
+	_, _, err := c.GetStatus()
 	return err
 }
