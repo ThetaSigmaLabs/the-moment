@@ -101,7 +101,7 @@ pipeline {
                         cleanWs()
                         checkout scm
                         sh '''
-                            docker build --target production \
+                            docker build --platform linux/arm64 --target production \
                               -t ${REGISTRY}/${IMAGE}:${TAG}-arm64 \
                               .
                             docker push ${REGISTRY}/${IMAGE}:${TAG}-arm64

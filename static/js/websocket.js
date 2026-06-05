@@ -146,6 +146,14 @@ function updatePrinterStatuses(printers) {
         if (typeof updateDashboardPrinterStatus === 'function') {
             updateDashboardPrinterStatus(printerId, printerData);
         }
+
+        // Close active print modal immediately when its printer leaves an active state
+        if (typeof _apmPrinterId !== 'undefined' && _apmPrinterId === printerId) {
+            const s = (printerData.state || '').toUpperCase();
+            if (s !== 'PRINTING' && s !== 'PAUSED' && s !== 'ATTENTION') {
+                if (typeof closeActivePrintModal === 'function') closeActivePrintModal();
+            }
+        }
     });
 }
 

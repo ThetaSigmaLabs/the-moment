@@ -118,6 +118,34 @@
   color: var(--brand-light);
 }
 
+/* ── Print Progress ───────────────────────────────────────────────────────── */
+.dashboard-printer-progress-wrap:empty { display: none; }
+
+.dashboard-printer-progress {
+  margin-top: 2px;
+}
+
+.dashboard-printer-progress-bar {
+  height: 4px;
+  background: var(--surface-border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.dashboard-printer-progress-fill {
+  height: 100%;
+  background: #ffb347;
+  border-radius: 2px;
+  transition: width 0.8s ease;
+}
+
+.dashboard-printer-progress-label {
+  font-size: 0.8em;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ── Recent Prints List ───────────────────────────────────────────────────── */
 .dashboard-recent-list {
   display: flex;

@@ -72,6 +72,11 @@ function renderDashboardPrinters(printers, mappings) {
             ? `<span title="PrusaLink comms logging enabled" style="font-size:0.72em;background:rgba(255,160,0,0.18);color:#ffa000;border:1px solid rgba(255,160,0,0.35);border-radius:4px;padding:1px 5px;margin-left:6px;vertical-align:middle;">DEBUG</span>`
             : '';
 
+        const isActive = ['PRINTING', 'PAUSED', 'ATTENTION'].includes(state);
+        const viewPrintBtn = isActive
+            ? `<button class="btn btn-small btn-secondary dashboard-view-print-btn" style="margin-top:8px;align-self:flex-start;" onclick="openActivePrintModal('${escapeHtml(id)}')">View Print →</button>`
+            : '';
+
         return `
             <div class="dashboard-printer-card" data-dashboard-printer-id="${escapeHtml(id)}">
                 <div class="dashboard-printer-header">
@@ -79,8 +84,10 @@ function renderDashboardPrinters(printers, mappings) {
                     <span class="status ${state.toLowerCase()}">${label}</span>
                 </div>
                 ${jobLine}
+                <div class="dashboard-printer-progress-wrap">${buildProgressHTML(p)}</div>
                 ${spools ? `<div class="dashboard-printer-spools">${spools}</div>` : ''}
                 <div class="dashboard-printer-snapshot-badge" style="display:none;margin-top:6px;"></div>
+                ${viewPrintBtn}
                 <button class="btn btn-small btn-secondary" style="margin-top:8px;align-self:flex-start;" onclick="switchToSpoolsForPrinter('${escapeHtml(id)}')">Assign Spool →</button>
             </div>`;
     }).join('');
@@ -118,6 +125,35 @@ function renderRecentPrints(records) {
             <span class="dashboard-print-date">${when}</span>
         </div>`;
     }).join('');
+}
+
+function formatDuration(seconds) {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m`;
+    return '<1m';
+}
+
+function buildProgressHTML(p) {
+    const state = (p.state || '').toUpperCase();
+    if (!['PRINTING', 'PAUSED', 'ATTENTION'].includes(state)) return '';
+
+    const pct    = Math.min(100, Math.max(0, p.progress || 0));
+    const heating = (p.target_nozzle || 0) > 0 && (p.temp_nozzle || 0) < (p.target_nozzle || 0) - 10;
+    const timeLeft = (p.time_remaining || 0) > 0 ? formatDuration(p.time_remaining) : '';
+
+    let label;
+    if (heating && pct < 2) {
+        label = 'Heating up' + (timeLeft ? ` · ${timeLeft} left` : '');
+    } else {
+        label = `${pct.toFixed(1)}%` + (timeLeft ? ` · ${timeLeft} left` : '');
+    }
+
+    return `<div class="dashboard-printer-progress">
+        <div class="dashboard-printer-progress-bar"><div class="dashboard-printer-progress-fill" style="width:${pct}%"></div></div>
+        <span class="dashboard-printer-progress-label">${label}</span>
+    </div>`;
 }
 
 function relativeTime(isoStr) {
@@ -163,6 +199,9 @@ function updateDashboardPrinterStatus(printerId, printerData) {
     badge.className = `status ${state.toLowerCase()}`;
     badge.textContent = state === 'VIRTUAL' ? 'READY' : state;
 
+    const progressWrap = card.querySelector('.dashboard-printer-progress-wrap');
+    if (progressWrap) progressWrap.innerHTML = buildProgressHTML(printerData);
+
     // Refresh active-snapshot badge for PRINTING printers (max once per 60s).
     const snapEl = card.querySelector('.dashboard-printer-snapshot-badge');
     if (state === 'PRINTING') {
@@ -174,4 +213,180 @@ function updateDashboardPrinterStatus(printerId, printerData) {
         snapEl.style.display = 'none';
         delete _snapshotLastFetch[printerId];
     }
+
+    // Show/hide "View Print" button reactively as printer state changes.
+    const isActive = ['PRINTING', 'PAUSED', 'ATTENTION'].includes(state);
+    const viewBtn = card.querySelector('.dashboard-view-print-btn');
+    if (isActive && !viewBtn) {
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-small btn-secondary dashboard-view-print-btn';
+        btn.style.cssText = 'margin-top:8px;align-self:flex-start;';
+        btn.textContent = 'View Print →';
+        btn.onclick = function() { openActivePrintModal(printerId); };
+        const assignBtn = card.querySelector('button[onclick*="switchToSpoolsForPrinter"]');
+        if (assignBtn) card.insertBefore(btn, assignBtn);
+    } else if (!isActive && viewBtn) {
+        viewBtn.remove();
+        if (typeof _apmPrinterId !== 'undefined' && _apmPrinterId === printerId) {
+            closeActivePrintModal();
+        }
+    }
 }
+
+// ─── Active Print Modal ───────────────────────────────────────────────────────
+
+let _apmPrinterId = null;
+let _apmRefreshTimer = null;
+const _apmTabIds = ['live', 'snapshots', 'filament'];
+
+function openActivePrintModal(printerId) {
+    _apmPrinterId = printerId;
+    document.getElementById('activePrintModal').style.display = 'block';
+    switchActivePrintTab('live');
+    _apmLoad();
+    _apmRefreshTimer = setInterval(_apmLoad, 10000);
+}
+
+function closeActivePrintModal() {
+    const m = document.getElementById('activePrintModal');
+    if (m) m.style.display = 'none';
+    _apmPrinterId = null;
+    if (_apmRefreshTimer) { clearInterval(_apmRefreshTimer); _apmRefreshTimer = null; }
+}
+
+function switchActivePrintTab(tab) {
+    document.querySelectorAll('#activePrintModal .hm-tab').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.apmTab === tab);
+    });
+    _apmTabIds.forEach(function(t) {
+        const el = document.getElementById('apmTab-' + t);
+        if (el) el.style.display = (t === tab) ? 'block' : 'none';
+    });
+}
+
+function _apmLoad() {
+    if (!_apmPrinterId) return;
+    fetch('/api/printers/' + _apmPrinterId + '/active-print')
+        .then(function(r) {
+            if (r.status === 409) {
+                _apmSetRefreshStatus('Print ended.');
+                if (_apmRefreshTimer) { clearInterval(_apmRefreshTimer); _apmRefreshTimer = null; }
+                return null;
+            }
+            if (!r.ok) return null;
+            return r.json();
+        })
+        .then(function(data) { if (data) _apmPopulate(data); })
+        .catch(function() {});
+}
+
+function _apmPopulate(d) {
+    const titleEl = document.getElementById('activePrintTitle');
+    if (titleEl) titleEl.textContent = d.printer_name || d.printer_id;
+
+    const stateEl = document.getElementById('activePrintState');
+    if (stateEl) {
+        const s = (d.state || '').toUpperCase();
+        stateEl.textContent = s;
+        stateEl.style.color = s === 'PRINTING' ? '#4caf50' : s === 'PAUSED' ? '#ffa000' : '#ef5350';
+    }
+
+    const pct = Math.min(100, Math.max(0, d.progress || 0));
+    const pctEl = document.getElementById('apm-progress-pct');
+    if (pctEl) pctEl.textContent = pct.toFixed(1) + '%';
+    const barEl = document.getElementById('apm-progress-bar');
+    if (barEl) barEl.style.width = pct + '%';
+
+    const remEl = document.getElementById('apm-time-remaining');
+    if (remEl) remEl.textContent = (d.time_remaining || 0) > 0 ? formatDuration(d.time_remaining) + ' remaining' : '';
+
+    const elEl = document.getElementById('apm-time-printing');
+    if (elEl) elEl.textContent = (d.time_printing || 0) > 0 ? formatDuration(d.time_printing) : '—';
+
+    const zEl = document.getElementById('apm-axis-z');
+    if (zEl) zEl.textContent = (d.axis_z || 0) > 0 ? d.axis_z.toFixed(2) : '—';
+
+    const nozzEl = document.getElementById('apm-temp-nozzle');
+    if (nozzEl) nozzEl.textContent = (d.temp_nozzle || 0) > 0
+        ? d.temp_nozzle.toFixed(1) + ' / ' + (d.target_nozzle || 0).toFixed(0) + '°C'
+        : '—';
+
+    const bedEl = document.getElementById('apm-temp-bed');
+    if (bedEl) bedEl.textContent = (d.temp_bed || 0) > 0
+        ? d.temp_bed.toFixed(1) + ' / ' + (d.target_bed || 0).toFixed(0) + '°C'
+        : '—';
+
+    const fsEl = document.getElementById('apm-flow-speed');
+    if (fsEl) fsEl.textContent = (d.flow || d.speed)
+        ? (d.flow || 0) + '% / ' + (d.speed || 0) + '%'
+        : '—';
+
+    const fanEl = document.getElementById('apm-fans');
+    if (fanEl) fanEl.textContent = (d.fan_hotend || d.fan_print)
+        ? (d.fan_hotend || 0) + '% / ' + (d.fan_print || 0) + '%'
+        : '—';
+
+    const jobEl = document.getElementById('apm-job-name');
+    if (jobEl) jobEl.textContent = d.job_name || '—';
+
+    // Snapshots tab
+    const snaps = d.snapshots || [];
+    const snapBtn = document.getElementById('apmTab-snapshots-btn');
+    if (snapBtn) snapBtn.style.display = snaps.length > 0 ? '' : 'none';
+    const snapList = document.getElementById('apm-snapshot-list');
+    if (snapList) {
+        if (snaps.length === 0) {
+            snapList.innerHTML = '<span style="color:#555;">No snapshots yet.</span>';
+        } else {
+            snapList.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:10px;">' +
+                snaps.map(function(s) {
+                    const label = escapeHtml(s.label || s.filename);
+                    const url = escapeHtml(s.url);
+                    return '<div style="text-align:center;">' +
+                        '<img src="' + url + '" alt="' + label + '" ' +
+                        'style="width:90px;height:90px;object-fit:cover;border-radius:4px;cursor:zoom-in;display:block;" ' +
+                        'onclick="openSnapshotLightbox(\'' + url + '\')">' +
+                        '<div style="font-size:0.72em;color:#777;margin-top:4px;word-break:break-all;">' + label + '</div>' +
+                        '</div>';
+                }).join('') +
+                '</div>';
+        }
+    }
+
+    // Filament tab
+    const toolheads = d.toolheads || [];
+    const thEl = document.getElementById('apm-toolheads');
+    if (thEl) {
+        if (toolheads.length === 0) {
+            thEl.innerHTML = '<span style="color:#555;">No toolhead data.</span>';
+        } else {
+            thEl.innerHTML = toolheads.map(function(t) {
+                const dot = t.color_hex
+                    ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#' +
+                      escapeHtml(t.color_hex) + ';margin-right:6px;vertical-align:middle;flex-shrink:0;"></span>'
+                    : '';
+                const spoolInfo = t.spool_id > 0
+                    ? dot + escapeHtml(t.material || '') + (t.brand ? ' · ' + escapeHtml(t.brand) : '') +
+                      ' <span style="color:#666;font-size:0.88em;">#' + t.spool_id + '</span>'
+                    : '<span style="color:#555;">No spool assigned</span>';
+                return '<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #222;">' +
+                    '<span style="color:#888;min-width:90px;font-size:0.88em;flex-shrink:0;">' + escapeHtml(t.display_name) + '</span>' +
+                    '<span style="display:flex;align-items:center;">' + spoolInfo + '</span>' +
+                    '</div>';
+            }).join('');
+        }
+    }
+
+    _apmSetRefreshStatus('Updated ' + new Date().toLocaleTimeString());
+}
+
+function _apmSetRefreshStatus(msg) {
+    const el = document.getElementById('apm-refresh-status');
+    if (el) el.textContent = msg;
+}
+
+// Close on backdrop click
+document.addEventListener('click', function(e) {
+    const m = document.getElementById('activePrintModal');
+    if (m && e.target === m) closeActivePrintModal();
+});

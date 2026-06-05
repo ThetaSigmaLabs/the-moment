@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -318,7 +319,9 @@ type PrinterData struct {
 	DebugLog  bool   `json:"debug_log,omitempty"`
 	// Live status — PrusaLink only
 	TempNozzle    float64 `json:"temp_nozzle,omitempty"`
+	TargetNozzle  float64 `json:"target_nozzle,omitempty"`
 	TempBed       float64 `json:"temp_bed,omitempty"`
+	TargetBed     float64 `json:"target_bed,omitempty"`
 	Progress      float64 `json:"progress,omitempty"`
 	TimeRemaining int     `json:"time_remaining,omitempty"`
 	TimePrinting  int     `json:"time_printing,omitempty"`
@@ -1169,6 +1172,63 @@ func (b *FilamentBridge) GetActivePrintSession(printerID string, jobID int) (*Ac
 		       COALESCE(last_snapshot_progress, 0)
 		FROM active_print_sessions WHERE printer_id = ? AND job_id = ?`,
 		printerID, jobID).Scan(
+		&s.PrinterID, &s.JobID, &startedAt, &filePath, &fileSizeBytes,
+		&gcodeMeta, &gcodeLocal, &assignJSON,
+		&lastProgress, &lastTimePrinting, &s.ChangeCount, &lastSnapProgress)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	s.StartedAt, _ = time.Parse(time.RFC3339Nano, startedAt)
+	if s.StartedAt.IsZero() {
+		s.StartedAt, _ = time.Parse(time.RFC3339, startedAt)
+	}
+	if filePath.Valid {
+		s.FilePath = filePath.String
+	}
+	if fileSizeBytes.Valid {
+		s.FileSizeBytes = fileSizeBytes.Int64
+	}
+	if gcodeMeta.Valid {
+		s.GcodeMetadataJSON = gcodeMeta.String
+	}
+	if gcodeLocal.Valid {
+		s.GcodeLocalPath = gcodeLocal.String
+	}
+	if assignJSON.Valid {
+		s.InitialAssignmentsJSON = assignJSON.String
+	}
+	if lastProgress.Valid {
+		s.LastSeenProgress = lastProgress.Float64
+	}
+	if lastTimePrinting.Valid {
+		s.LastSeenTimePrinting = int(lastTimePrinting.Int64)
+	}
+	if lastSnapProgress.Valid {
+		s.LastSnapshotProgress = lastSnapProgress.Float64
+	}
+	return &s, nil
+}
+
+// GetActivePrintSessionForPrinter returns the most-recently-started active session for
+// a printer without requiring a job ID. Returns nil, nil if no session exists.
+func (b *FilamentBridge) GetActivePrintSessionForPrinter(printerID string) (*ActivePrintSession, error) {
+	var s ActivePrintSession
+	var startedAt string
+	var filePath, gcodeMeta, gcodeLocal, assignJSON sql.NullString
+	var fileSizeBytes sql.NullInt64
+	var lastProgress, lastSnapProgress sql.NullFloat64
+	var lastTimePrinting sql.NullInt64
+	err := b.db.QueryRow(`
+		SELECT printer_id, job_id, started_at, file_path, file_size_bytes,
+		       gcode_metadata_json, gcode_local_path, initial_assignments_json,
+		       last_seen_progress, last_seen_time_printing, change_count,
+		       COALESCE(last_snapshot_progress, 0)
+		FROM active_print_sessions WHERE printer_id = ?
+		ORDER BY julianday(started_at) DESC LIMIT 1`,
+		printerID).Scan(
 		&s.PrinterID, &s.JobID, &startedAt, &filePath, &fileSizeBytes,
 		&gcodeMeta, &gcodeLocal, &assignJSON,
 		&lastProgress, &lastTimePrinting, &s.ChangeCount, &lastSnapProgress)
@@ -4376,6 +4436,11 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 		return status, nil
 	}
 
+	b.mutex.RLock()
+	jobDisplayNames := make(map[string]string, len(b.currentJobDisplayName))
+	maps.Copy(jobDisplayNames, b.currentJobDisplayName)
+	b.mutex.RUnlock()
+
 	// Get printer statuses from PrusaLink
 	if len(configSnapshot.Printers) > 0 {
 		for printerID, printerConfig := range configSnapshot.Printers {
@@ -4447,10 +4512,13 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				SortOrder:     printerConfig.SortOrder,
 				DebugLog:      printerConfig.DebugLog,
 				TempNozzle:    printerStatus.Printer.TempNozzle,
+				TargetNozzle:  printerStatus.Printer.TargetNozzle,
 				TempBed:       printerStatus.Printer.TempBed,
+				TargetBed:     printerStatus.Printer.TargetBed,
 				Progress:      printerStatus.Job.Progress,
 				TimeRemaining: printerStatus.Job.TimeRemaining,
 				TimePrinting:  printerStatus.Job.TimePrinting,
+				JobName:       jobDisplayNames[printerID],
 				AxisZ:         printerStatus.Printer.AxisZ,
 				Flow:          printerStatus.Printer.Flow,
 				Speed:         printerStatus.Printer.Speed,

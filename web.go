@@ -181,6 +181,7 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/printers/:id/test-camera", ws.testCameraURLHandler)
 		api.GET("/printers/:id/active-snapshots", ws.activePrinterSnapshotsHandler)
 		api.GET("/printers/:id/active-snapshots/:filename", ws.servePendingSnapshotHandler)
+		api.GET("/printers/:id/active-print", ws.activePrintHandler)
 		api.GET("/printers/:id/comm-log", ws.commLogHandler)
 		api.GET("/printers/:id/raw-responses", ws.rawResponsesHandler)
 		api.DELETE("/printers/:id", ws.deletePrinterHandler)
@@ -3716,6 +3717,150 @@ func (ws *WebServer) servePendingSnapshotHandler(c *gin.Context) {
 	absPath := filepath.Join(ws.bridge.gcodePath(), filePath)
 	c.Header("Content-Type", "image/jpeg")
 	c.File(absPath)
+}
+
+// activePrintHandler returns live data for a printer's current print.
+// Returns 409 when the printer is not in an active state (PRINTING/PAUSED/ATTENTION).
+// GET /api/printers/:id/active-print
+func (ws *WebServer) activePrintHandler(c *gin.Context) {
+	printerID := c.Param("id")
+
+	configs, err := ws.bridge.GetAllPrinterConfigs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	cfg, ok := configs[printerID]
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "printer not found"})
+		return
+	}
+
+	status, err := ws.bridge.GetStatus()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	pd, hasPD := status.Printers[printerID]
+	if !hasPD {
+		c.JSON(http.StatusNotFound, gin.H{"error": "printer not in status"})
+		return
+	}
+	state := strings.ToUpper(pd.State)
+	if state != "PRINTING" && state != "PAUSED" && state != "ATTENTION" {
+		c.JSON(http.StatusConflict, gin.H{"error": "printer not active", "state": pd.State})
+		return
+	}
+
+	type activePrintSnap struct {
+		Filename   string `json:"filename"`
+		Label      string `json:"label"`
+		CapturedAt string `json:"captured_at"`
+		URL        string `json:"url"`
+	}
+	type activePrintToolhead struct {
+		ToolheadID  int    `json:"toolhead_id"`
+		DisplayName string `json:"display_name"`
+		SpoolID     int    `json:"spool_id"`
+		Material    string `json:"material"`
+		Brand       string `json:"brand"`
+		ColorHex    string `json:"color_hex"`
+	}
+	type activePrintResponse struct {
+		PrinterID     string                `json:"printer_id"`
+		PrinterName   string                `json:"printer_name"`
+		State         string                `json:"state"`
+		Progress      float64               `json:"progress"`
+		TimeRemaining int                   `json:"time_remaining"`
+		TimePrinting  int                   `json:"time_printing"`
+		JobName       string                `json:"job_name"`
+		TempNozzle    float64               `json:"temp_nozzle"`
+		TargetNozzle  float64               `json:"target_nozzle"`
+		TempBed       float64               `json:"temp_bed"`
+		TargetBed     float64               `json:"target_bed"`
+		AxisZ         float64               `json:"axis_z"`
+		Flow          int                   `json:"flow"`
+		Speed         int                   `json:"speed"`
+		FanHotend     int                   `json:"fan_hotend"`
+		FanPrint      int                   `json:"fan_print"`
+		StartedAt     string                `json:"started_at,omitempty"`
+		FilePath      string                `json:"file_path,omitempty"`
+		Snapshots     []activePrintSnap     `json:"snapshots"`
+		Toolheads     []activePrintToolhead `json:"toolheads"`
+	}
+
+	resp := activePrintResponse{
+		PrinterID:     printerID,
+		PrinterName:   cfg.Name,
+		State:         pd.State,
+		Progress:      pd.Progress,
+		TimeRemaining: pd.TimeRemaining,
+		TimePrinting:  pd.TimePrinting,
+		JobName:       pd.JobName,
+		TempNozzle:    pd.TempNozzle,
+		TargetNozzle:  pd.TargetNozzle,
+		TempBed:       pd.TempBed,
+		TargetBed:     pd.TargetBed,
+		AxisZ:         pd.AxisZ,
+		Flow:          pd.Flow,
+		Speed:         pd.Speed,
+		FanHotend:     pd.FanHotend,
+		FanPrint:      pd.FanPrint,
+		Snapshots:     []activePrintSnap{},
+		Toolheads:     []activePrintToolhead{},
+	}
+
+	if session, _ := ws.bridge.GetActivePrintSessionForPrinter(printerID); session != nil {
+		resp.StartedAt = session.StartedAt.UTC().Format(time.RFC3339)
+		resp.FilePath = session.FilePath
+	}
+
+	rows, err := ws.bridge.db.Query(`
+		SELECT file_path, COALESCE(label,''), captured_at
+		FROM pending_print_snapshots
+		WHERE printer_id = ?
+		  AND julianday(print_start_time) = (
+		      SELECT MAX(julianday(print_start_time)) FROM pending_print_snapshots WHERE printer_id = ?
+		  )
+		ORDER BY captured_at ASC`,
+		printerID, printerID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var fp, label, capturedAt string
+			if rows.Scan(&fp, &label, &capturedAt) == nil {
+				resp.Snapshots = append(resp.Snapshots, activePrintSnap{
+					Filename:   filepath.Base(fp),
+					Label:      label,
+					CapturedAt: capturedAt,
+					URL:        "/api/printers/" + printerID + "/active-snapshots/" + filepath.Base(fp),
+				})
+			}
+		}
+	}
+
+	toolheadNames, _ := ws.bridge.GetAllToolheadNames(printerID)
+	mappings, _ := ws.bridge.GetToolheadMappings(cfg.Name)
+	for i := 0; i < cfg.Toolheads; i++ {
+		name := fmt.Sprintf("T%d", i)
+		if n, ok := toolheadNames[i]; ok && n != "" {
+			name = n
+		}
+		th := activePrintToolhead{ToolheadID: i, DisplayName: name}
+		if m, ok := mappings[i]; ok && m.SpoolID > 0 {
+			th.SpoolID = m.SpoolID
+			if spool, err := ws.bridge.spoolman.GetSpoolByID(m.SpoolID); err == nil {
+				th.Material = spool.Material
+				th.Brand = spool.Brand
+				if spool.Filament != nil {
+					th.ColorHex = spool.Filament.ColorHex
+				}
+			}
+		}
+		resp.Toolheads = append(resp.Toolheads, th)
+	}
+
+	c.JSON(http.StatusOK, resp)
 }
 
 // deletePrintAttachmentHandler removes an attachment and its file from disk.

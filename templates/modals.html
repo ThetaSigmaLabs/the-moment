@@ -547,6 +547,89 @@
     </div>
 </div>
 
+<!-- Active Print Modal -->
+<div id="activePrintModal" class="modal">
+    <div class="modal-content" style="max-width:620px;padding:0;display:flex;flex-direction:column;max-height:88vh;">
+
+        <div class="modal-header" style="padding:14px 20px;margin:0;border-bottom:1px solid #2e2e2e;flex-shrink:0;">
+            <div>
+                <h3 id="activePrintTitle" style="margin:0;font-size:0.95em;word-break:break-all;color:#e0e0e0;font-weight:500;">Live Print</h3>
+                <span id="activePrintState" style="font-size:0.75em;margin-top:2px;display:block;"></span>
+            </div>
+            <button class="close" onclick="closeActivePrintModal()" style="margin:0;line-height:1;">&times;</button>
+        </div>
+
+        <div style="display:flex;border-bottom:2px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;overflow-x:auto;">
+            <button class="hm-tab active" data-apm-tab="live" onclick="switchActivePrintTab('live')">Live</button>
+            <button class="hm-tab" data-apm-tab="snapshots" id="apmTab-snapshots-btn"
+                    onclick="switchActivePrintTab('snapshots')" style="display:none;">Snapshots</button>
+            <button class="hm-tab" data-apm-tab="filament" onclick="switchActivePrintTab('filament')">Filament</button>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;min-height:0;">
+
+            <!-- Live tab -->
+            <div id="apmTab-live" style="padding:18px 20px;">
+                <div style="margin-bottom:18px;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                        <span id="apm-progress-pct" style="font-size:1.6em;font-weight:700;color:var(--brand-light);font-variant-numeric:tabular-nums;">—</span>
+                        <span id="apm-time-remaining" style="font-size:0.85em;color:var(--text-secondary);align-self:flex-end;padding-bottom:3px;"></span>
+                    </div>
+                    <div style="height:8px;background:var(--surface-border);border-radius:4px;overflow:hidden;">
+                        <div id="apm-progress-bar" style="height:100%;background:#ffb347;border-radius:4px;transition:width 0.8s ease;width:0%;"></div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-top:5px;">
+                        <span style="font-size:0.75em;color:var(--text-muted);">Elapsed: <span id="apm-time-printing">—</span></span>
+                        <span style="font-size:0.75em;color:var(--text-muted);">Z: <span id="apm-axis-z">—</span> mm</span>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Nozzle</div>
+                        <div id="apm-temp-nozzle" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Bed</div>
+                        <div id="apm-temp-bed" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Flow / Speed</div>
+                        <div id="apm-flow-speed" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Fans (Hotend / Print)</div>
+                        <div id="apm-fans" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                </div>
+                <div style="border-top:1px solid #2a2a2a;padding-top:12px;">
+                    <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">File</div>
+                    <div id="apm-job-name" style="font-size:0.88em;color:#c0c0c0;margin-top:3px;word-break:break-all;"></div>
+                </div>
+            </div>
+
+            <!-- Snapshots tab -->
+            <div id="apmTab-snapshots" style="display:none;padding:18px 20px;">
+                <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:14px;">Progress Snapshots (Pending)</div>
+                <div id="apm-snapshot-list" style="font-size:0.85em;color:#777;">Loading…</div>
+            </div>
+
+            <!-- Filament tab -->
+            <div id="apmTab-filament" style="display:none;padding:18px 20px;">
+                <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Current Toolhead Assignments</div>
+                <div id="apm-toolheads"></div>
+            </div>
+
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;align-items:center;
+                    padding:10px 20px;border-top:1px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;">
+            <span id="apm-refresh-status" style="font-size:0.75em;color:#555;margin-right:auto;"></span>
+            <button class="btn btn-small btn-secondary" onclick="closeActivePrintModal()">Close</button>
+        </div>
+
+    </div>
+</div>
+
 <!-- Snapshot lightbox — clicking anywhere closes it -->
 <div id="snapshotLightbox"
      onclick="closeSnapshotLightbox()"

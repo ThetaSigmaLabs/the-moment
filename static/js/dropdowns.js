@@ -12,8 +12,9 @@ async function loadAvailableSpools(dropdown) {
     const printerId = toolheadRow.getAttribute('data-printer-id');
     const toolheadId = toolheadRow.getAttribute('data-toolhead-id');
 
-    // Find printer name from the printer element
-    const printerElement = document.querySelector(`[data-printer-id="${printerId}"]`);
+    // Find printer name from the printer element — scope to .printer to avoid INPUT elements
+    // in the Printers tab that also carry data-printer-id and appear earlier in document order.
+    const printerElement = document.querySelector(`.printer[data-printer-id="${printerId}"]`);
     if (!printerElement) return;
 
     const printerNameElement = printerElement.querySelector('h3');
@@ -281,8 +282,9 @@ async function autoMapSpool(dropdown, selectedValue, selectedText, selectedColor
     const printerId = toolheadRow.getAttribute('data-printer-id');
     const toolheadId = toolheadRow.getAttribute('data-toolhead-id');
 
-    // Find printer name from the printer element
-    const printerElement = document.querySelector(`[data-printer-id="${printerId}"]`);
+    // Scope to .printer to avoid INPUT.toolhead-name-input elements in the Printers tab
+    // that also carry data-printer-id and appear earlier in document order.
+    const printerElement = document.querySelector(`.printer[data-printer-id="${printerId}"]`);
     if (!printerElement) {
         console.error('Could not find printer element');
         return;

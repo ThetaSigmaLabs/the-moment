@@ -4,23 +4,19 @@
 
 // The Moment Dashboard - Main JavaScript Functions
 
+const VALID_TABS = ['dashboard', 'history', 'printers', 'spools', 'settings'];
+
 // Tab switching functionality
 function switchTab(tabName) {
-    // Hide all tab contents
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
+    if (!VALID_TABS.includes(tabName)) tabName = 'dashboard';
 
-    // Remove active class from all tabs
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.classList.remove('active');
-    });
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
 
-    // Show selected tab content
     document.getElementById(tabName + '-tab').classList.add('active');
-
-    // Add active class to clicked tab
-    event.target.classList.add('active');
+    const btn = [...document.querySelectorAll('.tab')]
+        .find(t => t.getAttribute('onclick')?.includes(`'${tabName}'`));
+    if (btn) btn.classList.add('active');
 
     if (tabName === 'dashboard') {
         loadDashboardStats();
@@ -53,20 +49,18 @@ function switchTab(tabName) {
             }
         }
     }
+
+    if (location.hash !== '#' + tabName) {
+        location.hash = tabName;
+    }
 }
 
 function toggleConfig() {
-    // Switch to the settings tab
     switchTab('settings');
 }
 
 function showAbout() {
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.getElementById('settings-tab').classList.add('active');
-    const settingsBtn = [...document.querySelectorAll('.tab')]
-        .find(t => t.getAttribute('onclick') && t.getAttribute('onclick').includes("'settings'"));
-    if (settingsBtn) settingsBtn.classList.add('active');
+    switchTab('settings');
     switchSettingsTab('about', null);
 }
 
@@ -623,5 +617,14 @@ document.addEventListener('DOMContentLoaded', function () {
     initCustomDropdowns();  // needed for server-rendered Spools tab dropdowns
     initColorSwatches();
     initEditButtonColors();
-    loadDashboardStats();   // populate Dashboard tab on first load
+
+    // Hash-based routing: back/forward and direct URL navigation
+    window.addEventListener('hashchange', () => {
+        const tab = location.hash.slice(1);
+        switchTab(VALID_TABS.includes(tab) ? tab : 'dashboard');
+    });
+
+    // Honour hash on initial load; default to dashboard
+    const initialTab = location.hash.slice(1);
+    switchTab(VALID_TABS.includes(initialTab) ? initialTab : 'dashboard');
 });

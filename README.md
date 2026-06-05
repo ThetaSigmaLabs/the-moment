@@ -11,7 +11,7 @@ Every gram used. Every minute spent. Every dollar it cost. Logged automatically,
 
 ---
 
-![The Moment Dashboard](.github/screenshots/dashboard.png)
+![The Moment Dashboard](.github/screenshots/dashboard.jpg)
 *Live printer status with toolhead spool assignments across all printers*
 
 ---
@@ -53,7 +53,7 @@ The Moment sits between your printers and Spoolman. When a print finishes it aut
 - **Filament-change tracking** — spool swaps mid-print recorded as separate entries; each change gets its own usage row
 - **Location tracking** — spools carry their location (printer toolhead or storage shelf) in Spoolman; bidirectional sync keeps them in agreement
 
-![Filament Status](.github/screenshots/filament_tags.png)
+![Filament Status](.github/screenshots/filament_tags2.jpg)
 *Assign spools to toolheads; search by name, material, brand, or color*
 
 ### Complete Print History
@@ -85,10 +85,10 @@ Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assign
 - **QR codes** — generated alongside every NFC tag for environments where NFC isn't available
 - **OpenPrintTag CBOR** — spool tags encode a full [OpenPrintTag](https://specs.openprinttag.org)-compatible CBOR record: temperatures, color, weight, UUID, manufacturing date, material properties
 
-![NFC Tag Management](.github/screenshots/spool_tags.png)
+![NFC Tag Management](.github/screenshots/spool_tags.jpg)
 *Generate NFC tag files and QR codes for every spool in your Spoolman library*
 
-![Location Tags](.github/screenshots/location_tags.png)
+![Location Tags](.github/screenshots/location_tags.jpg)
 *Location tags for each printer toolhead and storage locations*
 
 ### Supported Printers
