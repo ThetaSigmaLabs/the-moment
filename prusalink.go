@@ -40,6 +40,8 @@ type PrusaLinkStatus struct {
 		TargetNozzle float64 `json:"target_nozzle"`
 		TempBed      float64 `json:"temp_bed"`
 		TargetBed    float64 `json:"target_bed"`
+		AxisX        float64 `json:"axis_x"`
+		AxisY        float64 `json:"axis_y"`
 		AxisZ        float64 `json:"axis_z"`
 		Flow         int     `json:"flow"`
 		Speed        int     `json:"speed"`

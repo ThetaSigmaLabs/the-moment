@@ -16,6 +16,8 @@
     "target_bed": 60.0,
     "temp_nozzle": 230.3,
     "target_nozzle": 230.0,
+    "axis_x": 0.0,
+    "axis_y": 0.0,
     "axis_z": 32.6,
     "flow": 100,
     "speed": 100,

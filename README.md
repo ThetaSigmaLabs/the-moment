@@ -30,6 +30,14 @@ Open `http://<your-server-ip>:5000` → Settings → Add Printer. Done.
 
 > **Prerequisites**: Docker with Compose, and [Spoolman](https://github.com/Donkie/Spoolman) — The Moment bundles Spoolman in the compose file so you get both with those three commands.
 
+### First time? Read this first
+
+The Moment reads filament and spool data from Spoolman — it doesn't create records itself. **Add your filament types and spools in Spoolman before your first print**, or there will be nothing to assign to a toolhead.
+
+Then: open The Moment → Settings → Add Printer → go to Print Ops → assign a spool to the toolhead → print.
+
+Full step-by-step: [docs/first-run.md](docs/first-run.md)
+
 ---
 
 ## The Problem
@@ -97,7 +105,7 @@ Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assign
 |---|---|---|---|
 | Any PrusaLink printer (CORE One, XL, MK4, Mini+) | PrusaLink API | Yes (XL tested with 5 heads) | Fully supported |
 | Any OctoPrint printer (Ender, CR-10, Voron, etc.) | OctoPrint plugin | Single-head | Fully supported |
-| Bambu X1C, P1S, A1, A1 Mini | MQTT over LAN | AMS slots → toolheads | Supported (not hardware-tested) |
+| Bambu X1C, P1S, A1, A1 Mini | MQTT over LAN | AMS slots → toolheads | **Beta — not hardware-tested** |
 | INDX 8-head | TBD | 8 toolheads | Future |
 
 ### Virtual Test Printers
@@ -184,6 +192,8 @@ The Moment ships an OctoPrint plugin that pushes print events directly.
 Full plugin documentation: [docs/octoprint-plugin.md](docs/octoprint-plugin.md)
 
 ### Bambu (X1C, P1S, A1, A1 Mini)
+
+> **Not hardware-tested.** Bambu support is implemented based on the MQTT protocol specification and community documentation, but has not been validated against a physical Bambu printer. The connection logic, AMS slot mapping, and filament weight reporting are believed to be correct — but treat this as a beta feature and expect rough edges. Feedback and test reports welcome.
 
 Bambu printers connect via MQTT over TLS on your LAN — no cloud relay, no Bambu account required.
 

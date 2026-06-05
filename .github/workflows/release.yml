@@ -23,7 +23,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.24'
 
       - name: Install cross-compilation tools
         run: |
@@ -76,9 +76,14 @@ jobs:
           go build -o the-moment-darwin-arm64 .
           chmod +x the-moment-darwin-arm64
 
+      - name: Build OctoPrint plugin zip
+        run: |
+          cd octoprint-plugin && zip -r ../octoprint-the-moment.zip setup.py octoprint_the_moment/ \
+            -x "octoprint_the_moment/__pycache__/*"
+
       - name: Create checksums
         run: |
-          sha256sum the-moment-* > checksums.txt
+          sha256sum the-moment-* octoprint-the-moment.zip > checksums.txt
           cat checksums.txt
 
       - name: Extract version
@@ -377,6 +382,7 @@ jobs:
             the-moment-windows-amd64.exe
             the-moment-darwin-amd64
             the-moment-darwin-arm64
+            octoprint-the-moment.zip
             checksums.txt
           body: |
             # The Moment ${{ steps.get_version.outputs.VERSION }}

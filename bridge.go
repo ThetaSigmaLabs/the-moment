@@ -3305,11 +3305,14 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	b.rawResponsesMu.Unlock()
 
 	// Detect API shape changes (e.g. from firmware updates).
+	// The "job" sub-object in /api/v1/status is state-dependent: present during printing,
+	// absent when idle/finished. Strip it before shape comparison so a print completing
+	// doesn't trigger a false-positive "removed fields" alert.
 	for _, check := range []struct {
 		endpoint string
 		body     []byte
 	}{
-		{"status", statusRaw},
+		{"status", stripJSONKey(statusRaw, "job")},
 		{"job", jobRaw},
 	} {
 		if len(check.body) == 0 {
@@ -6316,6 +6319,21 @@ func (b *FilamentBridge) GetDashboardStats() (*DashboardStats, error) {
 		WHERE ph.status = 'completed' AND julianday(ph.print_finished) >= julianday('now', '-30 days')`).Scan(&s.TotalCost30d, &s.Currency)
 	b.db.QueryRow(`SELECT COALESCE(AVG(print_time_minutes), 0) FROM print_history WHERE status = 'completed' AND print_time_minutes > 0 AND julianday(print_finished) >= julianday('now', '-30 days')`).Scan(&s.AvgPrintTimeMin)
 	return s, nil
+}
+
+// stripJSONKey removes one top-level key from a JSON object body.
+// Returns the original body unchanged on any parse error.
+func stripJSONKey(body []byte, key string) []byte {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	delete(m, key)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // All The Moment location management functions have been removed - locations are now managed in Spoolman only

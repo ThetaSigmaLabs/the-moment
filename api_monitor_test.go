@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"testing"
 )
@@ -202,6 +203,50 @@ func TestAPIShapeMonitor_MuteAlsoClearsPending(t *testing.T) {
 	m.UnmuteOnPrint("p1")
 	if !m.ShouldAlert("p1") {
 		t.Error("after mute+unmute, ShouldAlert should be true")
+	}
+}
+
+// ─── stripJSONKey ─────────────────────────────────────────────────────────────
+
+func TestStripJSONKey_RemovesKey(t *testing.T) {
+	body := []byte(`{"job":{"id":1},"printer":{"state":"PRINTING"}}`)
+	out := stripJSONKey(body, "job")
+	var m map[string]interface{}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["job"]; ok {
+		t.Error("expected job key to be removed")
+	}
+	if _, ok := m["printer"]; !ok {
+		t.Error("expected printer key to remain")
+	}
+}
+
+func TestStripJSONKey_AbsentKey_Unchanged(t *testing.T) {
+	body := []byte(`{"printer":{"state":"IDLE"}}`)
+	out := stripJSONKey(body, "job")
+	var m map[string]interface{}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["printer"]; !ok {
+		t.Error("expected printer key to remain")
+	}
+}
+
+// TestAPIShapeMonitor_StatusJobSubkeyNoFalsePositive verifies that a PRINTING→FINISHED
+// state transition (where the "job" sub-key disappears from /api/v1/status) does NOT
+// trigger a shape-change alert when job is stripped before monitoring.
+func TestAPIShapeMonitor_StatusJobSubkeyNoFalsePositive(t *testing.T) {
+	printingBody := []byte(`{"job":{"id":62,"progress":8},"printer":{"state":"PRINTING","temp_nozzle":230}}`)
+	finishedBody := []byte(`{"printer":{"state":"FINISHED","temp_nozzle":26}}`)
+
+	m := NewAPIShapeMonitor()
+	m.Check("core-one", "status", stripJSONKey(printingBody, "job"))
+	_, _, changed := m.Check("core-one", "status", stripJSONKey(finishedBody, "job"))
+	if changed {
+		t.Error("job sub-key disappearing on print completion should not trigger shape change after stripping")
 	}
 }
 
