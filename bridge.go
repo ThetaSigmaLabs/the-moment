@@ -3312,7 +3312,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 		endpoint string
 		body     []byte
 	}{
-		{"status", stripJSONKey(statusRaw, "job")},
+		{"status", normalizePrusaLinkStatusForMonitor(statusRaw)},
 		{"job", jobRaw},
 	} {
 		if len(check.body) == 0 {
@@ -6329,6 +6329,32 @@ func stripJSONKey(body []byte, key string) []byte {
 		return body
 	}
 	delete(m, key)
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// normalizePrusaLinkStatusForMonitor removes fields that are conditionally
+// present depending on printer state so the shape monitor only fires on
+// genuine structural changes, not idle↔printing transitions.
+//
+// Stripped fields:
+//   - "job": absent when idle, present when printing
+//   - "storage": optional/variable across firmware versions
+//   - printer.axis_x, printer.axis_y: present when idle, absent during printing
+func normalizePrusaLinkStatusForMonitor(body []byte) []byte {
+	var m map[string]interface{}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	delete(m, "job")
+	delete(m, "storage")
+	if printer, ok := m["printer"].(map[string]interface{}); ok {
+		delete(printer, "axis_x")
+		delete(printer, "axis_y")
+	}
 	out, err := json.Marshal(m)
 	if err != nil {
 		return body
