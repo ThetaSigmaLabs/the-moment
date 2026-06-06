@@ -635,15 +635,34 @@
     </div>
 </div>
 
-<!-- Snapshot lightbox — clicking anywhere closes it -->
+<!-- Snapshot lightbox — click backdrop to close -->
 <div id="snapshotLightbox"
-     onclick="closeSnapshotLightbox()"
+     onclick="if(event.target===this)closeSnapshotLightbox()"
      style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
-            background:rgba(0,0,0,0.92);z-index:9999;cursor:zoom-out;
+            background:rgba(0,0,0,0.92);z-index:9999;
             align-items:center;justify-content:center;">
+    <div id="snapshotLightboxPos"
+         style="position:absolute;top:14px;left:16px;font-size:0.78em;
+                color:rgba(255,255,255,0.45);pointer-events:none;user-select:none;"></div>
+    <button onclick="closeSnapshotLightbox()"
+            style="position:absolute;top:8px;right:12px;background:none;border:none;
+                   color:rgba(255,255,255,0.5);font-size:1.5em;cursor:pointer;
+                   padding:4px 10px;line-height:1;">×</button>
+    <button id="snapshotLightboxPrev"
+            onclick="navigateSnapshotLightbox(-1)"
+            style="position:absolute;left:14px;top:50%;transform:translateY(-50%);
+                   background:rgba(255,255,255,0.1);border:none;color:#fff;font-size:2em;
+                   cursor:pointer;padding:10px 16px;border-radius:8px;line-height:1;
+                   visibility:hidden;">‹</button>
     <img id="snapshotLightboxImg" src="" alt="Snapshot"
-         style="max-width:92vw;max-height:92vh;object-fit:contain;border-radius:4px;
+         style="max-width:88vw;max-height:92vh;object-fit:contain;border-radius:4px;
                 box-shadow:0 4px 32px rgba(0,0,0,0.7);">
+    <button id="snapshotLightboxNext"
+            onclick="navigateSnapshotLightbox(1)"
+            style="position:absolute;right:14px;top:50%;transform:translateY(-50%);
+                   background:rgba(255,255,255,0.1);border:none;color:#fff;font-size:2em;
+                   cursor:pointer;padding:10px 16px;border-radius:8px;line-height:1;
+                   visibility:hidden;">›</button>
 </div>
 
 <!-- NFC QR Code Modal -->

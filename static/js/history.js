@@ -13,6 +13,8 @@ var _expandedSessions = {};   // session key → true when expanded
 var _selectedKeys     = {};   // session key → true when selected
 var _currentPage      = 1;
 var _perPage          = parseInt(localStorage.getItem('history_per_page') || '25', 10);
+var _snapshotList     = [];   // [{url, label}, ...] populated by _loadSnapshots / dashboard
+var _snapshotIndex    = -1;
 
 // ─── Load & Render ────────────────────────────────────────────────────────────
 
@@ -340,8 +342,11 @@ function _loadSnapshots(printID) {
                 listEl.innerHTML = '<span style="color:#555;font-size:0.875em;">No snapshots for this print</span>';
                 return;
             }
+            _snapshotList = snaps.map(function(a) {
+                return { url: '/api/history/attachments/' + a.id + '/download', label: a.label || '' };
+            });
             listEl.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
-                snaps.map(function(a) {
+                snaps.map(function(a, idx) {
                     var snapUrl = '/api/history/attachments/' + a.id + '/download';
                     var ts = a.stored_at ? a.stored_at.replace('T', ' ').replace('Z', '').substring(0, 19) : '';
                     var size = a.file_size > 1048576
@@ -353,7 +358,7 @@ function _loadSnapshots(printID) {
                         '<td style="padding:8px 8px 8px 0;width:72px;vertical-align:middle;">' +
                             '<img src="' + snapUrl + '" alt="snapshot" ' +
                                 'style="width:64px;height:64px;object-fit:cover;border-radius:4px;cursor:zoom-in;display:block;" ' +
-                                'onclick="openSnapshotLightbox(\'' + snapUrl + '\')">' +
+                                'onclick="openSnapshotLightbox(' + idx + ')">' +
                         '</td>' +
                         '<td style="padding:8px;vertical-align:middle;">' +
                             (a.label ? '<span style="background:#1e1e2e;border:1px solid #3a3a4a;border-radius:3px;padding:2px 7px;font-size:.75em;color:#a98eff;display:inline-block;margin-bottom:4px;">' + _esc(a.label) + '</span>' : '') +
@@ -375,17 +380,45 @@ function _loadSnapshots(printID) {
         });
 }
 
-function openSnapshotLightbox(url) {
-    var lb = document.getElementById('snapshotLightbox');
-    var img = document.getElementById('snapshotLightboxImg');
-    if (!lb || !img) return;
-    img.src = url;
+function openSnapshotLightbox(index) {
+    var lb   = document.getElementById('snapshotLightbox');
+    var img  = document.getElementById('snapshotLightboxImg');
+    var pos  = document.getElementById('snapshotLightboxPos');
+    var prev = document.getElementById('snapshotLightboxPrev');
+    var next = document.getElementById('snapshotLightboxNext');
+    if (!lb || !img || index < 0 || index >= _snapshotList.length) return;
+    _snapshotIndex = index;
+    var snap = _snapshotList[index];
+    img.src = snap.url;
+    var posText = (index + 1) + '/' + _snapshotList.length;
+    if (snap.label) posText += ' · ' + snap.label;
+    if (pos)  pos.textContent = posText;
+    if (prev) prev.style.visibility = index > 0 ? 'visible' : 'hidden';
+    if (next) next.style.visibility = index < _snapshotList.length - 1 ? 'visible' : 'hidden';
+    document.removeEventListener('keydown', _snapshotKeyHandler);
+    document.addEventListener('keydown', _snapshotKeyHandler);
     lb.style.display = 'flex';
 }
 
 function closeSnapshotLightbox() {
     var lb = document.getElementById('snapshotLightbox');
     if (lb) lb.style.display = 'none';
+    document.removeEventListener('keydown', _snapshotKeyHandler);
+}
+
+function navigateSnapshotLightbox(delta) {
+    var idx = _snapshotIndex + delta;
+    if (idx >= 0 && idx < _snapshotList.length) openSnapshotLightbox(idx);
+}
+
+function _snapshotKeyHandler(e) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        navigateSnapshotLightbox(-1); e.preventDefault();
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        navigateSnapshotLightbox(1); e.preventDefault();
+    } else if (e.key === 'Escape') {
+        closeSnapshotLightbox();
+    }
 }
 
 function copyDebugLog() {

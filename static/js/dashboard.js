@@ -361,14 +361,17 @@ function _apmPopulate(d) {
         if (snaps.length === 0) {
             snapList.innerHTML = '<span style="color:#555;">No snapshots yet.</span>';
         } else {
+            _snapshotList = snaps.map(function(s) {
+                return { url: s.url, label: s.label || s.filename || '' };
+            });
             snapList.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:10px;">' +
-                snaps.map(function(s) {
+                snaps.map(function(s, idx) {
                     const label = escapeHtml(s.label || s.filename);
                     const url = escapeHtml(s.url);
                     return '<div style="text-align:center;">' +
                         '<img src="' + url + '" alt="' + label + '" ' +
                         'style="width:90px;height:90px;object-fit:cover;border-radius:4px;cursor:zoom-in;display:block;" ' +
-                        'onclick="openSnapshotLightbox(\'' + url + '\')">' +
+                        'onclick="openSnapshotLightbox(' + idx + ')">' +
                         '<div style="font-size:0.72em;color:#777;margin-top:4px;word-break:break-all;">' + label + '</div>' +
                         '</div>';
                 }).join('') +
