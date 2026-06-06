@@ -226,6 +226,7 @@ func (ws *WebServer) setupRoutes() {
 
 		// Print history and sessions
 		api.GET("/sessions", ws.getSessionsHandler)
+		api.GET("/sessions/:session_id", ws.getSessionDetailHandler)
 		api.GET("/history", ws.getHistoryHandler)
 		api.GET("/history/:id", ws.getHistoryEntryHandler)
 		api.GET("/history/:id/debug-log", ws.getHistoryDebugLogHandler)
@@ -285,6 +286,7 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/history/:id/attachments", ws.uploadPrintAttachmentHandler)
 		api.GET("/history/:id/attachments", ws.getPrintAttachmentsHandler)
 		api.PATCH("/history/:id/name", ws.renamePrintHandler)
+		api.POST("/history/:id/reparse-gcode", ws.reparseGcodeHandler)
 		api.GET("/history/attachments/:attachment_id/download", ws.downloadPrintAttachmentHandler)
 		api.DELETE("/history/attachments/:attachment_id", ws.deletePrintAttachmentHandler)
 		api.PATCH("/history/attachments/:attachment_id/rename", ws.renameAttachmentHandler)
@@ -2069,6 +2071,18 @@ func (ws *WebServer) getSessionsHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"sessions": sessions, "count": len(sessions)})
+}
+
+// getSessionDetailHandler returns a merged PrintHistory for all toolheads in a session.
+// GET /api/sessions/:session_id
+func (ws *WebServer) getSessionDetailHandler(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	record, err := ws.bridge.GetPrintSessionDetail(sessionID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, record)
 }
 
 // getHistoryHandler returns all print history records (newest first).
@@ -3903,6 +3917,27 @@ func (ws *WebServer) renamePrintHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "renamed"})
+}
+
+// reparseGcodeHandler re-reads the stored gcode attachment for a print record, extracts
+// print time and thumbnail via ParseGcodeMetadata, and writes any new values to the DB.
+// POST /api/history/:id/reparse-gcode
+func (ws *WebServer) reparseGcodeHandler(c *gin.Context) {
+	var id int
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &id); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	printTimeSec, thumbnailB64, err := ws.bridge.ReparseGcodeMetadata(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"print_time_sec": printTimeSec,
+		"print_time_min": float64(printTimeSec) / 60.0,
+		"thumbnail_b64":  thumbnailB64,
+	})
 }
 
 // renameAttachmentHandler renames an attachment file and updates DB (and job_name for gcode).

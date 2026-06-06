@@ -51,6 +51,17 @@ func (p *PrinterCostSettings) effectiveDepreciationPerHr() float64 {
 	return 0
 }
 
+// FilamentCostLine is one spool's contribution to a print cost — used to render
+// per-spool rows in the Cost tab order-sheet.
+type FilamentCostLine struct {
+	ToolIndex    int     `json:"tool_index"`
+	ChangeNumber int     `json:"change_number"`
+	SpoolID      int     `json:"spool_id"`
+	Grams        float64 `json:"grams"`
+	PricePerKg   float64 `json:"price_per_kg"`
+	Cost         float64 `json:"cost"`
+}
+
 // CostBreakdown is the full calculated cost for one print job.
 type CostBreakdown struct {
 	// Inputs (echoed back for display)
@@ -67,6 +78,9 @@ type CostBreakdown struct {
 	SubTotal         float64 `json:"sub_total"`    // before margin
 	MarginAmount     float64 `json:"margin_amount"`
 	TotalCost        float64 `json:"total_cost"`
+
+	// Per-spool breakdown for the order-sheet Cost tab (one entry per filament segment).
+	FilamentLines []FilamentCostLine `json:"filament_lines,omitempty"`
 
 	// Diagnostic flags
 	PrintWattageUsed float64 `json:"print_wattage_used"` // effective W (inc. high-temp bump)
@@ -347,6 +361,13 @@ func (b *FilamentBridge) CalculatePrintCostForPrinter(filamentGrams, printTimeMi
 
 	filamentCost := (filamentGrams / 1000.0) * pricePerKg
 	bd := assembleCostBreakdown(settings, pc, filamentGrams, printTimeMin, filamentCost, pricePerKg, isHighTemp)
+	bd.FilamentLines = []FilamentCostLine{{
+		ToolIndex:  0,
+		SpoolID:    spoolID,
+		Grams:      filamentGrams,
+		PricePerKg: pricePerKg,
+		Cost:       math.Round(filamentCost*10000) / 10000,
+	}}
 
 	log.Printf("💰 Cost calc (%s): %.2fg + %.0fmin = %s %.4f%s",
 		printerName, filamentGrams, printTimeMin, settings.Currency, bd.TotalCost,
@@ -388,12 +409,23 @@ func (b *FilamentBridge) CalculatePrintCostMultiSpoolForPrinter(filament []OctoP
 
 	var totalGrams, filamentCost float64
 	var isHighTemp bool
+	var lines []FilamentCostLine
+	r4 := func(v float64) float64 { return math.Round(v*10000) / 10000 }
 	for _, f := range filament {
 		totalGrams += f.FilamentUsedG
-		filamentCost += (f.FilamentUsedG / 1000.0) * spoolPrices[f.SpoolID]
+		lineCost := (f.FilamentUsedG / 1000.0) * spoolPrices[f.SpoolID]
+		filamentCost += lineCost
 		if isHighTempMaterial(spoolMaterials[f.SpoolID]) {
 			isHighTemp = true
 		}
+		lines = append(lines, FilamentCostLine{
+			ToolIndex:    f.ToolIndex,
+			ChangeNumber: f.ChangeNumber,
+			SpoolID:      f.SpoolID,
+			Grams:        f.FilamentUsedG,
+			PricePerKg:   spoolPrices[f.SpoolID],
+			Cost:         r4(lineCost),
+		})
 	}
 
 	var effectivePricePerKg float64
@@ -401,6 +433,7 @@ func (b *FilamentBridge) CalculatePrintCostMultiSpoolForPrinter(filament []OctoP
 		effectivePricePerKg = filamentCost / (totalGrams / 1000.0)
 	}
 	bd := assembleCostBreakdown(settings, pc, totalGrams, printTimeMin, filamentCost, effectivePricePerKg, isHighTemp)
+	bd.FilamentLines = lines
 
 	htLabel := ""
 	if isHighTemp { htLabel = " [high-temp]" }

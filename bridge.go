@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,6 +182,10 @@ type PrintHistory struct {
 	// the retry succeeds.
 	HasPendingDownload bool `json:"has_pending_download,omitempty"`
 	PendingDownloadID  int  `json:"pending_download_id,omitempty"`
+
+	// SessionRecordIDs holds all print_history IDs that share this session (multi-toolhead).
+	// Present only on session-detail fetches; used by the UI to support session-level delete.
+	SessionRecordIDs []int `json:"session_record_ids,omitempty"`
 }
 
 // PrintFilamentUsage is per-tool filament data stored for a unified print record.
@@ -4426,6 +4431,17 @@ func (b *FilamentBridge) handlePrusaLinkPrintFinished(printerID string, config P
 	log.Printf("Successfully parsed G-code file for filament usage: %+v", filamentUsage)
 
 	printTimeSec, thumbnailB64 := ParseGcodeMetadata(gcodeContent)
+
+	// Fallback: use the accumulated TimePrinting from PrusaLink status polls when gcode
+	// gives 0 (e.g. binary bgcode without a parseable time comment, or missing metadata).
+	if printTimeSec == 0 && jobID != 0 {
+		if session, serr := b.GetActivePrintSession(printerID, jobID); serr == nil && session != nil && session.LastSeenTimePrinting > 0 {
+			printTimeSec = session.LastSeenTimePrinting
+			log.Printf("[PRUSALINK] printer=%s job=%d: gcode gave 0 print time, using PrusaLink TimePrinting=%ds (%.1fmin)",
+				printerID, jobID, printTimeSec, float64(printTimeSec)/60.0)
+		}
+	}
+
 	printTimeMin := float64(printTimeSec) / 60.0
 
 	if config.DebugLog && jobID != 0 {
@@ -5599,6 +5615,151 @@ func (b *FilamentBridge) GetPrintHistoryEntry(id int) (*PrintHistory, error) {
 	return &r, nil
 }
 
+// GetPrintSessionDetail returns a merged PrintHistory for all toolheads in a session.
+// T0 (lowest toolhead_id) is used as the base record; FilamentUsages from every
+// toolhead are combined and enriched with Spoolman prices.  SessionRecordIDs lists
+// every print_history.id in the session so the UI can offer session-level delete.
+func (b *FilamentBridge) GetPrintSessionDetail(sessionID string) (*PrintHistory, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id required")
+	}
+
+	rows, err := b.db.Query(`
+		SELECT
+			ph.id, ph.printer_name, ph.toolhead_id, ph.spool_id, ph.filament_used,
+			ph.print_started, ph.print_finished, ph.job_name,
+			COALESCE(ph.notes, ''), COALESCE(ph.status, 'completed'),
+			COALESCE(ph.print_time_minutes, 0),
+			COALESCE(ph.thumbnail_path, ''),
+			COALESCE(pc.total_cost, 0), COALESCE(pc.currency, ''),
+			COALESCE(ph.source, 'prusalink'),
+			COALESCE(ph.total_duration_sec, ph.print_time_minutes * 60),
+			COALESCE(ph.print_duration_sec, ph.print_time_minutes * 60),
+			COALESCE(ph.pause_duration_sec, 0),
+			COALESCE(ph.pause_count, 0),
+			COALESCE(ph.cancel_reason, ''),
+			COALESCE(ph.time_precision, 'approximate'),
+			COALESCE(ph.filament_precision, 'estimated'),
+			COALESCE(ph.session_id, '')
+		FROM print_history ph
+		LEFT JOIN print_costs pc ON pc.print_history_id = ph.id
+		WHERE ph.session_id = ?
+		ORDER BY ph.toolhead_id ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("query session %s: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	var records []PrintHistory
+	var totalCost float64
+	for rows.Next() {
+		var r PrintHistory
+		if err := rows.Scan(
+			&r.ID, &r.PrinterName, &r.ToolheadID, &r.SpoolID, &r.FilamentUsed,
+			&r.PrintStarted, &r.PrintFinished, &r.JobName,
+			&r.Notes, &r.Status, &r.PrintTimeMinutes,
+			&r.ThumbnailBase64, &r.TotalCost, &r.Currency,
+			&r.Source, &r.TotalDurationSec, &r.PrintDurationSec,
+			&r.PauseDurationSec, &r.PauseCount, &r.CancelReason,
+			&r.TimePrecision, &r.FilamentPrecision, &r.SessionID,
+		); err != nil {
+			continue
+		}
+		totalCost += r.TotalCost
+		records = append(records, r)
+	}
+	rows.Close()
+
+	if len(records) == 0 {
+		return nil, fmt.Errorf("session %s not found", sessionID)
+	}
+
+	// Use T0 as the base record; pick the best time and thumbnail across all records.
+	base := records[0]
+	base.TotalCost = totalCost
+	for _, r := range records[1:] {
+		if r.ThumbnailBase64 != "" && base.ThumbnailBase64 == "" {
+			base.ThumbnailBase64 = r.ThumbnailBase64
+		}
+		// PrusaLink may record print_time_minutes on any toolhead; take the max.
+		if r.PrintTimeMinutes > base.PrintTimeMinutes {
+			base.PrintTimeMinutes = r.PrintTimeMinutes
+			base.TotalDurationSec = r.TotalDurationSec
+			base.PrintDurationSec = r.PrintDurationSec
+			base.PauseDurationSec = r.PauseDurationSec
+			base.PauseCount = r.PauseCount
+		}
+	}
+
+	ids := make([]int, len(records))
+	for i, r := range records {
+		ids[i] = r.ID
+	}
+	base.SessionRecordIDs = ids
+
+	// Load filament usages for ALL records in the session in one query.
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	fuRows, err := b.db.Query(
+		`SELECT id, print_id, tool_index, COALESCE(change_number, 0), COALESCE(spool_id, 0),
+		        filament_used_mm, filament_used_grams
+		 FROM print_filament_usage
+		 WHERE print_id IN (`+placeholders+`)
+		 ORDER BY tool_index, change_number`, args...)
+	if err == nil {
+		defer fuRows.Close()
+		for fuRows.Next() {
+			var fu PrintFilamentUsage
+			if fuRows.Scan(&fu.ID, &fu.PrintID, &fu.ToolIndex, &fu.ChangeNumber, &fu.SpoolID,
+				&fu.FilamentUsedMM, &fu.FilamentUsedG) == nil {
+				base.FilamentUsages = append(base.FilamentUsages, fu)
+			}
+		}
+	}
+
+	// Enrich filament usages with Spoolman price-per-kg.
+	spoolPriceCache := map[int]*float64{}
+	for i := range base.FilamentUsages {
+		sid := base.FilamentUsages[i].SpoolID
+		if sid <= 0 {
+			continue
+		}
+		if _, seen := spoolPriceCache[sid]; !seen {
+			if spool, serr := b.spoolman.GetSpoolByID(sid); serr == nil && spool != nil {
+				p := spool.PricePerKg()
+				spoolPriceCache[sid] = &p
+			} else {
+				spoolPriceCache[sid] = nil
+			}
+		}
+		base.FilamentUsages[i].PricePerKg = spoolPriceCache[sid]
+	}
+
+	// Pauses, tags, attachments, debug log from the primary (T0) record.
+	pRows, err := b.db.Query(`
+		SELECT id, print_id, paused_at, resumed_at, duration_sec, reason
+		FROM print_pauses WHERE print_id = ? ORDER BY paused_at`, base.ID)
+	if err == nil {
+		defer pRows.Close()
+		for pRows.Next() {
+			var p PrintPause
+			if pRows.Scan(&p.ID, &p.PrintID, &p.PausedAt, &p.ResumedAt,
+				&p.DurationSec, &p.Reason) == nil {
+				base.Pauses = append(base.Pauses, p)
+			}
+		}
+	}
+	base.Tags, _ = b.GetPrintQualityTags(int64(base.ID))
+	base.Attachments, _ = b.GetPrintAttachments(base.ID)
+	base.HasDebugLog = b.HasPrintDebugLog(base.ID)
+
+	return &base, nil
+}
+
 // GetPrintSessions returns print jobs grouped by session_id, newest first.
 // Records with an empty session_id each form their own implicit session.
 func (b *FilamentBridge) GetPrintSessions(limit int) ([]PrintSession, error) {
@@ -5773,7 +5934,8 @@ func (b *FilamentBridge) DeletePrintHistoryEntry(id int) error {
 }
 
 // ParseGcodeMetadata extracts print time (seconds) and embedded thumbnail from raw gcode bytes.
-// Returns printTimeSec=0 and thumbnailBase64="" if not found — both are optional.
+// Handles both ASCII gcode (PrusaSlicer, OrcaSlicer, Cura comment format) and binary bgcode
+// (PrusaSlicer 2.7+ .bgcode/.BGC format). Returns 0/"" if not found — both are optional.
 func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 string) {
 	text := string(content)
 
@@ -5783,19 +5945,21 @@ func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 strin
 		fmt.Sscanf(m[1], "%d", &printTimeSec)
 	}
 
-	// PrusaSlicer: "; estimated printing time (normal mode) = 3h 45m 4s"
+	// PrusaSlicer ASCII and bgcode: "estimated printing time (normal mode) = 1d 6h 37m 3s"
+	// bgcode embeds metadata as plain text (no ';' prefix); days component is present for long prints.
 	if printTimeSec == 0 {
-		prusaRe := regexp.MustCompile(`estimated printing time.*?=\s*(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?`)
+		prusaRe := regexp.MustCompile(`estimated printing time.*?=\s*(?:(\d+)d\s*)?(?:(\d+)h\s*)?(?:(\d+)m\s*)?(?:(\d+)s)?`)
 		if m := prusaRe.FindStringSubmatch(text); m != nil {
-			var h, min, sec int
-			fmt.Sscanf(m[1], "%d", &h)
-			fmt.Sscanf(m[2], "%d", &min)
-			fmt.Sscanf(m[3], "%d", &sec)
-			printTimeSec = h*3600 + min*60 + sec
+			var days, h, min, sec int
+			fmt.Sscanf(m[1], "%d", &days)
+			fmt.Sscanf(m[2], "%d", &h)
+			fmt.Sscanf(m[3], "%d", &min)
+			fmt.Sscanf(m[4], "%d", &sec)
+			printTimeSec = days*86400 + h*3600 + min*60 + sec
 		}
 	}
 
-	// Thumbnail: PrusaSlicer / OrcaSlicer embed image data as base64 in comment lines.
+	// Thumbnail: ASCII gcode (PrusaSlicer / OrcaSlicer) embeds image as base64 comment blocks.
 	// Supported formats (in preference order):
 	//   "; thumbnail_JPG begin 96x96 3656"  ...lines...  "; thumbnail_JPG end"  (JPEG)
 	//   "; thumbnail_PNG begin 96x96 3656"  ...lines...  "; thumbnail_PNG end"  (PNG)
@@ -5832,7 +5996,89 @@ func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 strin
 			break
 		}
 	}
+
+	// bgcode (binary gcode, PrusaSlicer 2.7+): thumbnails are raw PNG/JPEG bytes embedded in
+	// binary blocks — not base64 comment text. Detect by GCDE magic and scan for image data.
+	if thumbnailBase64 == "" && len(content) >= 4 &&
+		content[0] == 'G' && content[1] == 'C' && content[2] == 'D' && content[3] == 'E' {
+		thumbnailBase64 = parseBgcodeThumbnail(content)
+	}
+
 	return
+}
+
+// parseBgcodeThumbnail scans the first 500KB of a binary bgcode file for an embedded PNG
+// thumbnail. bgcode stores images as raw binary data inside binary blocks. We skip tiny
+// thumbnails (< 5KB) used for printer display icons and return the first usable image.
+func parseBgcodeThumbnail(content []byte) string {
+	const scanLimit = 500 * 1024
+	const minSize = 5000
+	limit := len(content)
+	if limit > scanLimit {
+		limit = scanLimit
+	}
+
+	pngMagic := []byte{0x89, 0x50, 0x4E, 0x47}
+	iend := []byte{0x49, 0x45, 0x4E, 0x44}
+
+	for i := 0; i < limit-8; i++ {
+		if !bytes.Equal(content[i:i+4], pngMagic) {
+			continue
+		}
+		endRel := bytes.Index(content[i+8:], iend)
+		if endRel < 0 {
+			continue
+		}
+		pngEnd := i + 8 + endRel + 8 // skip "IEND" (4) + CRC32 (4)
+		if pngEnd > len(content) {
+			continue
+		}
+		if pngEnd-i < minSize {
+			i += 7 // skip past this tiny thumbnail
+			continue
+		}
+		return "data:image/png;base64," + base64.StdEncoding.EncodeToString(content[i:pngEnd])
+	}
+	return ""
+}
+
+// ReparseGcodeMetadata re-reads the stored gcode attachment for the given print_history ID,
+// extracts print time and thumbnail via ParseGcodeMetadata, and writes any new values back to
+// the DB. Only updates fields that are currently zero/empty — does not overwrite existing data.
+// Returns the parsed time (seconds) and thumbnail (data URI), which may be 0/"" if the
+// attachment has no parseable metadata or no attachment exists.
+func (b *FilamentBridge) ReparseGcodeMetadata(printID int) (printTimeSec int, thumbnailB64 string, err error) {
+	var relPath string
+	if err = b.db.QueryRow(
+		`SELECT file_path FROM print_attachments WHERE print_history_id = ? AND file_type = 'gcode' LIMIT 1`,
+		printID,
+	).Scan(&relPath); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, "", nil
+		}
+		return 0, "", fmt.Errorf("reparse: attachment lookup: %w", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(b.gcodePath(), relPath))
+	if err != nil {
+		return 0, "", fmt.Errorf("reparse: read file: %w", err)
+	}
+
+	printTimeSec, thumbnailB64 = ParseGcodeMetadata(content)
+
+	if printTimeSec > 0 {
+		b.db.Exec(
+			`UPDATE print_history SET print_time_minutes = ? WHERE id = ? AND (print_time_minutes IS NULL OR print_time_minutes = 0)`,
+			float64(printTimeSec)/60.0, printID,
+		)
+	}
+	if thumbnailB64 != "" {
+		b.db.Exec(
+			`UPDATE print_history SET thumbnail_path = ? WHERE id = ? AND (thumbnail_path IS NULL OR thumbnail_path = '')`,
+			thumbnailB64, printID,
+		)
+	}
+	return printTimeSec, thumbnailB64, nil
 }
 
 // GetOrphanedMappings returns toolhead_mappings rows where the printer_name
