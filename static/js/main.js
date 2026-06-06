@@ -4,7 +4,7 @@
 
 // The Moment Dashboard - Main JavaScript Functions
 
-const VALID_TABS = ['dashboard', 'history', 'printers', 'spools', 'settings'];
+const VALID_TABS = ['dashboard', 'history', 'printers', 'filament', 'spools', 'settings'];
 
 // Tab switching functionality
 function switchTab(tabName) {
@@ -27,6 +27,10 @@ function switchTab(tabName) {
     if (tabName === 'spools') {
         fetch('/api/nfc/sync-locations-now', { method: 'POST' }).catch(() => {});
         loadSpoolTags();
+    }
+
+    if (tabName === 'filament') {
+        loadFilaments();
     }
 
     if (tabName === 'printers') {

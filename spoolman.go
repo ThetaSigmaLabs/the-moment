@@ -807,6 +807,7 @@ func (c *SpoolmanClient) UpdateFilament(filamentID int, data map[string]interfac
 }
 
 // SetFilamentExtraField writes a custom field value to a filament via Spoolman PATCH.
+// Deprecated: use MergeFilamentExtraField which preserves other extra keys.
 func (c *SpoolmanClient) SetFilamentExtraField(filamentID int, fieldKey string, value string) error {
 	extraValue, err := json.Marshal(value)
 	if err != nil {
@@ -817,6 +818,40 @@ func (c *SpoolmanClient) SetFilamentExtraField(filamentID int, fieldKey string, 
 			fieldKey: string(extraValue),
 		},
 	})
+}
+
+// MergeFilamentExtraField updates a single key in a filament's extra map without
+// clobbering other keys. Spoolman replaces the entire extra map on each PATCH, so
+// this function GETs the current extra, merges in the new key/value, then PATCHes
+// the complete merged map.
+func (c *SpoolmanClient) MergeFilamentExtraField(filamentID int, fieldKey string, encodedValue string) error {
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/api/v1/filament/%d", c.baseURL, filamentID))
+	if err != nil {
+		return fmt.Errorf("fetching filament %d for extra merge: %w", filamentID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.handleAPIError(resp)
+	}
+	var f SpoolmanFilament
+	if err := json.NewDecoder(resp.Body).Decode(&f); err != nil {
+		return fmt.Errorf("decoding filament %d: %w", filamentID, err)
+	}
+
+	merged := make(map[string]string)
+	for k, v := range f.Extra {
+		switch s := v.(type) {
+		case string:
+			merged[k] = s
+		default:
+			if b, err := json.Marshal(v); err == nil {
+				merged[k] = string(b)
+			}
+		}
+	}
+	merged[fieldKey] = encodedValue
+
+	return c.UpdateFilament(filamentID, map[string]interface{}{"extra": merged})
 }
 
 // SpoolmanFieldCreate is the request body for creating a Spoolman custom field.
@@ -832,7 +867,7 @@ type SpoolmanFieldStatus struct {
 	Entity string // "spool" or "filament"
 }
 
-// requiredSpoolmanFields lists all NFC custom fields the app needs in Spoolman.
+// requiredSpoolmanFields lists all custom fields the app needs in Spoolman.
 var requiredSpoolmanFields = []struct {
 	Key          string
 	Name         string
@@ -853,6 +888,12 @@ var requiredSpoolmanFields = []struct {
 	{"nfc_actual_weight", "NFC Actual Weight", "float", "0.0", "spool"},
 	{"nfc_manufacturing_date", "NFC Manufacturing Date", "text", `""`, "spool"},
 	{"nfc_expiration_date", "NFC Expiration Date", "text", `""`, "spool"},
+	// Slicer calibration fields — stored on filament entity
+	{"cal_max_flow_rate", "Cal Max Flow Rate", "float", "0.0", "filament"},
+	{"cal_pressure_advance", "Cal Pressure Advance", "float", "0.0", "filament"},
+	{"cal_flow_ratio", "Cal Flow Ratio", "float", "0.0", "filament"},
+	{"cal_retraction_length", "Cal Retraction Length", "float", "0.0", "filament"},
+	{"cal_retraction_speed", "Cal Retraction Speed", "float", "0.0", "filament"},
 }
 
 // EnsureSpoolmanFields checks and creates all required NFC custom fields in Spoolman.
@@ -934,6 +975,84 @@ func (c *SpoolmanClient) GetSpoolmanSetupStatus() (ok bool, missing []SpoolmanFi
 		}
 	}
 	return len(missing) == 0, missing
+}
+
+// CloneFilament creates a copy of an existing filament in Spoolman.
+// The clone inherits all fields except id, registered, and extra.
+func (c *SpoolmanClient) CloneFilament(filamentID int) (*SpoolmanFilament, error) {
+	resp, err := c.httpClient.Get(fmt.Sprintf("%s/api/v1/filament/%d", c.baseURL, filamentID))
+	if err != nil {
+		return nil, fmt.Errorf("fetching filament %d for clone: %w", filamentID, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+	var src SpoolmanFilament
+	if err := json.NewDecoder(resp.Body).Decode(&src); err != nil {
+		return nil, fmt.Errorf("decoding filament %d: %w", filamentID, err)
+	}
+
+	newData := map[string]interface{}{
+		"name":                   src.Name + " (copy)",
+		"material":               src.Material,
+		"density":                src.Density,
+		"diameter":               src.Diameter,
+		"weight":                 src.Weight,
+		"spool_weight":           src.SpoolWeight,
+		"settings_extruder_temp": src.SettingsExtruderTemp,
+		"settings_bed_temp":      src.SettingsBedTemp,
+		"color_hex":              src.ColorHex,
+	}
+	if src.Vendor != nil {
+		newData["vendor_id"] = src.Vendor.ID
+	}
+	if src.Price != nil {
+		newData["price"] = *src.Price
+	}
+
+	body, err := json.Marshal(newData)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling cloned filament: %w", err)
+	}
+	req, err := http.NewRequest("POST", c.baseURL+"/api/v1/filament", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating clone request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	postResp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("posting cloned filament: %w", err)
+	}
+	defer postResp.Body.Close()
+	if postResp.StatusCode != http.StatusCreated {
+		return nil, c.handleAPIError(postResp)
+	}
+	var cloned SpoolmanFilament
+	if err := json.NewDecoder(postResp.Body).Decode(&cloned); err != nil {
+		return nil, fmt.Errorf("decoding cloned filament: %w", err)
+	}
+	return &cloned, nil
+}
+
+// GetFilamentExtraFloat reads a calibration float from a filament's Extra map.
+// Returns 0 if the field is absent or cannot be parsed.
+func GetFilamentExtraFloat(f SpoolmanFilament, key string) float64 {
+	if f.Extra == nil {
+		return 0
+	}
+	v, ok := f.Extra[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return n
+	case json.Number:
+		f64, _ := n.Float64()
+		return f64
+	}
+	return 0
 }
 
 // SubtractSpoolUsage reduces a spool's used_weight by the given amount.
