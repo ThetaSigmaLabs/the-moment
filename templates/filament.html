@@ -1,0 +1,44 @@
+<!-- Filament Calibration Tab -->
+<div id="filament-tab" class="tab-content">
+    <div style="padding: 16px 0 8px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <input type="search" id="filament-search" placeholder="Filter filaments…"
+               oninput="filterFilamentTable(this.value)"
+               style="flex: 1; min-width: 180px; max-width: 320px; padding: 7px 12px;
+                      background: var(--surface-2); border: 1px solid var(--surface-border);
+                      border-radius: 6px; color: var(--text-primary); font-size: 0.9em;">
+        <button class="btn btn-secondary" onclick="expandAllFilaments()" title="Expand all groups"
+                style="padding: 7px 12px;">⊞ Expand All</button>
+        <button class="btn btn-secondary" onclick="collapseAllFilaments()" title="Collapse all groups"
+                style="padding: 7px 12px;">⊟ Collapse All</button>
+        <button class="btn btn-secondary" onclick="loadFilaments()" title="Refresh filament list"
+                style="padding: 7px 12px;">↺ Refresh</button>
+    </div>
+
+    <div style="overflow-x: auto;">
+        <table id="filament-table" class="toolhead-table" style="min-width: 900px;">
+            <thead>
+                <tr>
+                    <th style="width: 28px;"></th><!-- color swatch -->
+                    <th>Filament</th>
+                    <th title="Filament diameter (mm)">⌀ mm</th>
+                    <th title="Bed temperature °C">Bed °C</th>
+                    <th title="Nozzle temperature °C">Nozzle °C</th>
+                    <th title="Max volumetric flow rate mm³/s">Flow mm³/s</th>
+                    <th title="Pressure advance / linear advance">Press. Adv.</th>
+                    <th title="Flow ratio / flow multiplier">Flow Ratio</th>
+                    <th title="Retraction length mm">Ret. mm</th>
+                    <th title="Retraction speed mm/s">Ret. mm/s</th>
+                    <th style="width: 60px;"></th><!-- actions -->
+                </tr>
+            </thead>
+            <tbody id="filament-tbody">
+                <tr id="filament-loading-row">
+                    <td colspan="11" style="text-align: center; color: var(--text-muted); padding: 24px;">
+                        Loading filaments…
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+

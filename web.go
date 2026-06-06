@@ -164,6 +164,8 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/status", ws.statusHandler)
 		api.GET("/spools", ws.spoolsHandler)
 		api.GET("/filaments", ws.filamentsHandler)
+		api.PATCH("/filaments/:id", ws.updateFilamentHandler)
+		api.POST("/filaments/:id/clone", ws.cloneFilamentHandler)
 		api.POST("/map_toolhead", ws.mapToolheadHandler)
 		api.GET("/available_spools", ws.availableSpoolsHandler)
 		api.GET("/spoolman/test", ws.testSpoolmanConnectionHandler)
@@ -565,6 +567,74 @@ func (ws *WebServer) filamentsHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, filaments)
+}
+
+// updateFilamentHandler updates a single field on a filament. Used by the
+// Filament tab's blur-to-save inline editor.
+// Body: {"field": "cal_pressure_advance", "value": 0.04}
+func (ws *WebServer) updateFilamentHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	filamentID, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid filament id"})
+		return
+	}
+
+	var body struct {
+		Field string      `json:"field" binding:"required"`
+		Value interface{} `json:"value"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Allowlist of native filament fields that can be patched directly.
+	nativeFields := map[string]bool{
+		"diameter":               true,
+		"settings_extruder_temp": true,
+		"settings_bed_temp":      true,
+	}
+
+	if nativeFields[body.Field] {
+		if err := ws.bridge.spoolman.UpdateFilament(filamentID, map[string]interface{}{body.Field: body.Value}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else if strings.HasPrefix(body.Field, "cal_") {
+		// Calibration custom fields: merge into extra map — Spoolman replaces the
+		// entire extra map on PATCH, so we GET first, merge, then PATCH.
+		encoded, err := json.Marshal(body.Value)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encoding value"})
+			return
+		}
+		if err := ws.bridge.spoolman.MergeFilamentExtraField(filamentID, body.Field, string(encoded)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "field not allowed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// cloneFilamentHandler creates a copy of an existing filament.
+func (ws *WebServer) cloneFilamentHandler(c *gin.Context) {
+	idStr := c.Param("id")
+	filamentID, err := strconv.Atoi(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid filament id"})
+		return
+	}
+	cloned, err := ws.bridge.spoolman.CloneFilament(filamentID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, cloned)
 }
 
 // validatePrinterConfig validates printer configuration input
