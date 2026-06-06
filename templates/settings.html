@@ -364,17 +364,17 @@
             </div>
 
             <!-- Restore confirm modal -->
-            <div id="restoreModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
-                <div style="background:var(--surface-bg,#fff); border-radius:8px; padding:28px 32px; max-width:520px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.25);">
-                    <h3 style="margin:0 0 16px;">Confirm Restore</h3>
-                    <div id="restorePreflightInfo" style="margin-bottom:16px; font-size:0.9em; line-height:1.6;"></div>
-                    <div style="margin-bottom:16px;">
-                        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:0.9em;">
-                            <input type="checkbox" id="restoreConfirmCheck">
+            <div id="restoreModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;">
+                <div style="background:var(--surface-2); border:1px solid var(--surface-border); border-radius:12px; padding:28px 32px; max-width:520px; width:90%; box-shadow:0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px var(--surface-border); color:var(--text-primary);">
+                    <h3 style="margin:0 0 14px 0; padding-bottom:14px; border-bottom:1px solid var(--surface-border); color:var(--brand-light); font-weight:600;">Confirm Restore</h3>
+                    <div id="restorePreflightInfo" style="margin-bottom:16px; font-size:0.9em; line-height:1.6; color:var(--text-secondary);"></div>
+                    <div style="margin-bottom:20px; padding:12px; background:var(--surface-3); border-radius:8px; border:1px solid var(--surface-border);">
+                        <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; font-size:0.9em; color:var(--warning-text); line-height:1.5;">
+                            <input type="checkbox" id="restoreConfirmCheck" style="margin-top:2px; flex-shrink:0;">
                             I understand that the selected data will be permanently overwritten and the service must be restarted afterward.
                         </label>
                     </div>
-                    <div style="display:flex; gap:10px; justify-content:flex-end;">
+                    <div style="display:flex; gap:10px; justify-content:flex-end; padding-top:14px; border-top:1px solid var(--surface-border);">
                         <button class="btn btn-secondary" onclick="closeRestoreModal()">Cancel</button>
                         <button class="btn btn-danger" id="restoreConfirmBtn" onclick="confirmRestore()" disabled>Restore</button>
                     </div>

@@ -556,15 +556,19 @@ function openRestoreModal(filename) {
                 return;
             }
             const spaceStatus = result.space_ok
-                ? '<span style="color:var(--success-color,#27ae60);">✓ Sufficient disk space</span>'
-                : '<span style="color:var(--error-color,#e74c3c);">✗ ' + result.message + '</span>';
-            const replacing = (result.will_replace || []).map(s => '<li>' + s + '</li>').join('');
+                ? '<span style="color:var(--success);">✓ Sufficient disk space</span>'
+                : '<span style="color:var(--error);">✗ ' + result.message + '</span>';
+            const replacing = (result.will_replace || []).map(s => '<li style="color:var(--text-primary);">' + s + '</li>').join('');
             info.innerHTML = `
-                <strong>Archive:</strong> ${filename}<br>
-                <strong>Scope:</strong> ${result.scope}<br>
-                <strong>Uncompressed size:</strong> ${formatBackupBytes(result.uncompressed_bytes)}<br>
-                <strong>Disk space:</strong> ${spaceStatus}<br>
-                <strong>Will overwrite (clean replace — no zombie files):</strong><ul style="margin:4px 0 0 18px;">${replacing}</ul>`;
+                <span style="color:var(--text-muted); font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em;">Archive</span><br>
+                <span style="color:var(--text-primary);">${filename}</span><br><br>
+                <span style="color:var(--text-muted); font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em;">Scope</span> &nbsp;
+                <span style="color:var(--text-primary);">${result.scope}</span> &nbsp;&nbsp;
+                <span style="color:var(--text-muted); font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em;">Size</span> &nbsp;
+                <span style="color:var(--text-primary);">${formatBackupBytes(result.uncompressed_bytes)} uncompressed</span><br><br>
+                <span style="color:var(--text-muted); font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em;">Disk space</span><br>
+                ${spaceStatus}<br><br>
+                <span style="color:var(--text-muted); font-size:0.8em; text-transform:uppercase; letter-spacing:0.05em;">Will overwrite (clean replace — no zombie files)</span><ul style="margin:6px 0 0 18px; padding:0;">${replacing}</ul>`;
             if (result.space_ok) {
                 check.disabled = false;
                 check.onchange = () => { btn.disabled = !check.checked; };

@@ -243,6 +243,25 @@ func PreflightRestore(filename string) (PreflightResult, error) {
 	}, nil
 }
 
+// clearDirContents removes all entries inside dir without removing dir itself.
+// This is required for Docker bind-mount points: os.RemoveAll on the mount point
+// returns EBUSY on Linux even though deleting its contents succeeds.
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.MkdirAll(dir, 0755)
+		}
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RestoreBackup performs a files-only restore: wipes each target directory and extracts the archive.
 // The running process continues on pre-restore data until restarted. After this call returns,
 // restart the service (Docker: make down && make up; native: stop and restart the binary).
@@ -260,30 +279,22 @@ func (b *FilamentBridge) RestoreBackup(filename string) error {
 
 	scope := parseScopeFromFilename(filename)
 
-	// Wipe target directories before extraction to avoid zombie files
+	// Wipe target directory contents before extraction to avoid zombie files.
+	// clearDirContents is used instead of RemoveAll because these paths are Docker
+	// bind-mount points; removing the mount point directory itself returns EBUSY on Linux.
 	if scope == BackupScopeAll || scope == BackupScopeDB {
-		dir := filepath.Dir(getDBFilePath())
-		if err := os.RemoveAll(dir); err != nil {
+		if err := clearDirContents(filepath.Dir(getDBFilePath())); err != nil {
 			return fmt.Errorf("failed to clear DB directory: %w", err)
-		}
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to recreate DB directory: %w", err)
 		}
 	}
 	if scope == BackupScopeAll || scope == BackupScopeGcode {
-		if err := os.RemoveAll(getGcodePath()); err != nil {
+		if err := clearDirContents(getGcodePath()); err != nil {
 			return fmt.Errorf("failed to clear gcode directory: %w", err)
-		}
-		if err := os.MkdirAll(getGcodePath(), 0755); err != nil {
-			return fmt.Errorf("failed to recreate gcode directory: %w", err)
 		}
 	}
 	if scope == BackupScopeAll || scope == BackupScopeUploads {
-		if err := os.RemoveAll(getUploadsPath()); err != nil {
+		if err := clearDirContents(getUploadsPath()); err != nil {
 			return fmt.Errorf("failed to clear uploads directory: %w", err)
-		}
-		if err := os.MkdirAll(getUploadsPath(), 0755); err != nil {
-			return fmt.Errorf("failed to recreate uploads directory: %w", err)
 		}
 	}
 

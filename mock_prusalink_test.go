@@ -39,15 +39,24 @@ type MockPrinterState struct {
 	// When true, G-code download requests return 503 (simulates USB busy / file gone)
 	GcodeUnavailable bool
 
+	// FileInfoFilament is the per-toolhead filament data returned by GET /api/v1/files/local/...
+	// When nil, the endpoint returns 404 (metadata unavailable — triggers G-code fallback).
+	FileInfoFilament []struct {
+		ToolheadID int     `json:"toolhead_id"`
+		Weight     float64 `json:"weight"`
+		Length     float64 `json:"length"`
+	}
+
 	// Camera snapshot returned by GET /api/v1/cameras/{id}/snap
 	// nil means no camera (GET /api/v1/cameras returns 404)
 	CameraSnapshot []byte
 
 	// Track how many times each endpoint was called
-	StatusCalls   int
-	JobCalls      int
-	FileCalls     int
-	SnapshotCalls int
+	StatusCalls    int
+	JobCalls       int
+	FileCalls      int
+	FileInfoCalls  int
+	SnapshotCalls  int
 }
 
 // MockPrusaLink is a fake PrusaLink-compatible printer server.
@@ -149,6 +158,26 @@ func NewMockPrusaLink(t *testing.T) *MockPrusaLink {
 			"mmu": false,
 			"min_extrusion_temp": 170
 		}`)
+	})
+
+	// GET /api/v1/files/local/... — file metadata (404 when FileInfoFilament is nil)
+	mux.HandleFunc("/api/v1/files/local/", func(w http.ResponseWriter, r *http.Request) {
+		state.mu.Lock()
+		filament := state.FileInfoFilament
+		state.FileInfoCalls++
+		state.mu.Unlock()
+
+		if filament == nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		resp := map[string]interface{}{
+			"name":     state.JobFileName,
+			"filament": filament,
+		}
+		json.NewEncoder(w).Encode(resp)
 	})
 
 	// GET /api/v1/cameras — list cameras (404 when CameraSnapshot is nil)
@@ -257,6 +286,31 @@ func (m *MockPrusaLink) SnapshotCallCount() int {
 	m.State.mu.RLock()
 	defer m.State.mu.RUnlock()
 	return m.State.SnapshotCalls
+}
+
+// SetFileInfoFilament sets the per-toolhead filament data returned by the /api/v1/files/local/ endpoint.
+// Pass nil to simulate firmware that does not support file metadata (triggers G-code fallback).
+func (m *MockPrusaLink) SetFileInfoFilament(weights map[int]float64) {
+	m.State.mu.Lock()
+	defer m.State.mu.Unlock()
+	if weights == nil {
+		m.State.FileInfoFilament = nil
+		return
+	}
+	type entry struct {
+		ToolheadID int     `json:"toolhead_id"`
+		Weight     float64 `json:"weight"`
+		Length     float64 `json:"length"`
+	}
+	var filament []struct {
+		ToolheadID int     `json:"toolhead_id"`
+		Weight     float64 `json:"weight"`
+		Length     float64 `json:"length"`
+	}
+	for idx, w := range weights {
+		filament = append(filament, entry{ToolheadID: idx, Weight: w})
+	}
+	m.State.FileInfoFilament = filament
 }
 
 // SetGcodeUsage sets the filament usage metadata in the fake G-code.

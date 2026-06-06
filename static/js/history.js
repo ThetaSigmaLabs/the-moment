@@ -13,6 +13,8 @@ var _expandedSessions = {};   // session key → true when expanded
 var _selectedKeys     = {};   // session key → true when selected
 var _currentPage      = 1;
 var _perPage          = parseInt(localStorage.getItem('history_per_page') || '25', 10);
+var _snapshotList     = [];   // [{url, label}, ...] populated by _loadSnapshots / dashboard
+var _snapshotIndex    = -1;
 
 // ─── Load & Render ────────────────────────────────────────────────────────────
 
@@ -121,14 +123,10 @@ function renderTable() {
 
     var html = '';
     _filteredSessions.slice(start, end).forEach(function(s, i) {
-        var globalI  = start + i;
-        var key      = _sessionKey(s, globalI);
-        var multi    = s.tool_count > 1;
-        var expanded = !!_expandedSessions[key];
-        html += buildSessionRow(s, globalI, key, multi, expanded);
-        if (multi && expanded) {
-            (s.records || []).forEach(function(r) { html += buildSubRow(r); });
-        }
+        var globalI = start + i;
+        var key     = _sessionKey(s, globalI);
+        var multi   = s.tool_count > 1;
+        html += buildSessionRow(s, globalI, key, multi);
     });
     tbody.innerHTML = html;
     _syncSelection();
@@ -170,7 +168,7 @@ function setPerPage(val) {
 
 // ─── Row builders ─────────────────────────────────────────────────────────────
 
-function buildSessionRow(s, i, key, multi, expanded) {
+function buildSessionRow(s, i, key, multi) {
     var date   = _fmtDate(s.print_finished);
     var usage  = s.total_filament_grams > 0 ? s.total_filament_grams.toFixed(1) + ' g' : '—';
     var time   = _timeFromSession(s);
@@ -198,13 +196,9 @@ function buildSessionRow(s, i, key, multi, expanded) {
         ? '<img src="' + _esc(thumbSrc) + '" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid rgba(124,92,252,0.45);box-shadow:0 0 6px rgba(124,92,252,0.25);background:#e0e0e0;display:block;margin:auto;">'
         : '<span style="color:#444;font-size:1.2em;">·</span>';
 
-    // File cell: expand arrow for multi-toolhead, source badge, file name
-    var expandIcon = '';
-    var toolBadge  = '';
+    // File cell: tool badge for multi-toolhead (no expand arrow — click opens unified modal)
+    var toolBadge = '';
     if (multi) {
-        expandIcon = '<span style="display:inline-block;width:16px;color:#888;font-size:0.75em;transition:transform 0.15s;' +
-            (expanded ? 'transform:rotate(90deg);' : '') + '">' +
-            (expanded ? '▼' : '▶') + '</span> ';
         toolBadge = '<span style="margin-left:6px;background:#1a3a5c;color:#7ab8f5;padding:1px 6px;' +
             'border-radius:8px;font-size:0.72em;white-space:nowrap;">' + s.tool_count + ' tools</span>';
     }
@@ -221,7 +215,7 @@ function buildSessionRow(s, i, key, multi, expanded) {
         ? ' <button onclick="event.stopPropagation();_renameFromTable(' + firstRecID + ',this)" ' +
           'title="Rename" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.78em;padding:0 3px;vertical-align:middle;">✏</button>'
         : '';
-    var fileCell = expandIcon + _esc(file) + toolBadge + renameBtn + pendingBadge;
+    var fileCell = _esc(file) + toolBadge + renameBtn + pendingBadge;
 
     // Note: aggregate — show first record's note if any
     var note = '';
@@ -231,7 +225,7 @@ function buildSessionRow(s, i, key, multi, expanded) {
     }
 
     var onclick = multi
-        ? 'toggleSession(\'' + _esc(key) + '\')'
+        ? 'openSessionModal(\'' + _esc(s.session_id) + '\')'
         : (s.records && s.records[0] ? 'openHistoryModal(' + s.records[0].id + ')' : '');
 
     var rowStyle = 'border-bottom:1px solid #2a2a2a;cursor:pointer;transition:background 0.15s;' +
@@ -291,6 +285,7 @@ function toggleSession(key) {
 // ─── History Detail Modal ─────────────────────────────────────────────────────
 
 var _activeModalTab = 'details';
+var _costsAutoCalced = false;
 
 function switchModalTab(tab) {
     _activeModalTab = tab;
@@ -306,6 +301,14 @@ function switchModalTab(tab) {
     }
     if (tab === 'snapshots' && _activeEntry) {
         _loadSnapshots(_activeEntry.id);
+    }
+    if (tab === 'costs' && _activeEntry && !_costsAutoCalced) {
+        var hasFilament = _activeEntry.filament_used > 0 ||
+            (_activeEntry.filament_usages && _activeEntry.filament_usages.length > 0);
+        if (hasFilament) {
+            _costsAutoCalced = true;
+            recalcHistoryCost();
+        }
     }
 }
 
@@ -339,8 +342,11 @@ function _loadSnapshots(printID) {
                 listEl.innerHTML = '<span style="color:#555;font-size:0.875em;">No snapshots for this print</span>';
                 return;
             }
+            _snapshotList = snaps.map(function(a) {
+                return { url: '/api/history/attachments/' + a.id + '/download', label: a.label || '' };
+            });
             listEl.innerHTML = '<table style="width:100%;border-collapse:collapse;">' +
-                snaps.map(function(a) {
+                snaps.map(function(a, idx) {
                     var snapUrl = '/api/history/attachments/' + a.id + '/download';
                     var ts = a.stored_at ? a.stored_at.replace('T', ' ').replace('Z', '').substring(0, 19) : '';
                     var size = a.file_size > 1048576
@@ -352,7 +358,7 @@ function _loadSnapshots(printID) {
                         '<td style="padding:8px 8px 8px 0;width:72px;vertical-align:middle;">' +
                             '<img src="' + snapUrl + '" alt="snapshot" ' +
                                 'style="width:64px;height:64px;object-fit:cover;border-radius:4px;cursor:zoom-in;display:block;" ' +
-                                'onclick="openSnapshotLightbox(\'' + snapUrl + '\')">' +
+                                'onclick="openSnapshotLightbox(' + idx + ')">' +
                         '</td>' +
                         '<td style="padding:8px;vertical-align:middle;">' +
                             (a.label ? '<span style="background:#1e1e2e;border:1px solid #3a3a4a;border-radius:3px;padding:2px 7px;font-size:.75em;color:#a98eff;display:inline-block;margin-bottom:4px;">' + _esc(a.label) + '</span>' : '') +
@@ -374,17 +380,45 @@ function _loadSnapshots(printID) {
         });
 }
 
-function openSnapshotLightbox(url) {
-    var lb = document.getElementById('snapshotLightbox');
-    var img = document.getElementById('snapshotLightboxImg');
-    if (!lb || !img) return;
-    img.src = url;
+function openSnapshotLightbox(index) {
+    var lb   = document.getElementById('snapshotLightbox');
+    var img  = document.getElementById('snapshotLightboxImg');
+    var pos  = document.getElementById('snapshotLightboxPos');
+    var prev = document.getElementById('snapshotLightboxPrev');
+    var next = document.getElementById('snapshotLightboxNext');
+    if (!lb || !img || index < 0 || index >= _snapshotList.length) return;
+    _snapshotIndex = index;
+    var snap = _snapshotList[index];
+    img.src = snap.url;
+    var posText = (index + 1) + '/' + _snapshotList.length;
+    if (snap.label) posText += ' · ' + snap.label;
+    if (pos)  pos.textContent = posText;
+    if (prev) prev.style.visibility = index > 0 ? 'visible' : 'hidden';
+    if (next) next.style.visibility = index < _snapshotList.length - 1 ? 'visible' : 'hidden';
+    document.removeEventListener('keydown', _snapshotKeyHandler);
+    document.addEventListener('keydown', _snapshotKeyHandler);
     lb.style.display = 'flex';
 }
 
 function closeSnapshotLightbox() {
     var lb = document.getElementById('snapshotLightbox');
     if (lb) lb.style.display = 'none';
+    document.removeEventListener('keydown', _snapshotKeyHandler);
+}
+
+function navigateSnapshotLightbox(delta) {
+    var idx = _snapshotIndex + delta;
+    if (idx >= 0 && idx < _snapshotList.length) openSnapshotLightbox(idx);
+}
+
+function _snapshotKeyHandler(e) {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+        navigateSnapshotLightbox(-1); e.preventDefault();
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+        navigateSnapshotLightbox(1); e.preventDefault();
+    } else if (e.key === 'Escape') {
+        closeSnapshotLightbox();
+    }
 }
 
 function copyDebugLog() {
@@ -427,7 +461,29 @@ function openHistoryModal(id) {
     });
 }
 
+function openSessionModal(sessionID) {
+    Promise.all([
+        fetch('/api/sessions/' + encodeURIComponent(sessionID)).then(function(r) { return r.json(); }),
+        fetch('/api/spools').then(function(r) { return r.json(); })
+    ])
+    .then(function(results) {
+        var record = results[0];
+        var spoolsData = results[1];
+        _spoolMap = {};
+        var spools = spoolsData.spools || spoolsData || [];
+        spools.forEach(function(s) { _spoolMap[s.id] = s; });
+        _activeEntry = record;
+        populateModal(record);
+        document.getElementById('historyDetailModal').style.display = 'block';
+    })
+    .catch(function(err) {
+        showToast('Failed to load session: ' + err.message);
+    });
+}
+
 function populateModal(r) {
+    _costsAutoCalced = false;
+
     // Show/hide Debug Log tab and reset its content
     var dlBtn = document.getElementById('hmTab-debuglog-btn');
     if (dlBtn) dlBtn.style.display = r.has_debug_log ? '' : 'none';
@@ -452,17 +508,31 @@ function populateModal(r) {
     } else {
         thumbEl.innerHTML = '<span style="color:#444;font-size:2.5em;">🖼</span>';
     }
+    var reparseBtn = document.getElementById('historyReparseBtn');
+    if (reparseBtn) {
+        reparseBtn.disabled = false;
+        reparseBtn.textContent = '↻ Re-parse';
+        reparseBtn.style.display = (!r.thumbnail_base64 || !r.print_time_minutes) ? '' : 'none';
+    }
 
+    var isMultiTool = r.session_record_ids && r.session_record_ids.length > 1;
+    // For multi-tool sessions, compute total filament from all usages
+    var totalFilamentG = r.filament_used;
+    if (isMultiTool && r.filament_usages && r.filament_usages.length > 0) {
+        totalFilamentG = r.filament_usages.reduce(function(sum, fu) { return sum + fu.filament_used_grams; }, 0);
+    }
     var rows = [
         ['Printer',    r.printer_name],
         ['Source',     _sourceLabel(r.source)],
-        ['Toolhead',   'T' + r.toolhead_id],
-        ['Spool ID',   r.spool_id > 0 ? '#' + r.spool_id : '—'],
-        ['Filament',   r.filament_used > 0 ? r.filament_used.toFixed(2) + ' g' : '—'],
-        ['Print time', r.print_time_minutes > 0 ? _fmtMin(r.print_time_minutes) : '—'],
-        ['Finished',   _fmtDateFull(r.print_finished)],
-        ['Status',     _statusBadge(r.status)],
     ];
+    if (!isMultiTool) {
+        rows.push(['Toolhead', 'T' + r.toolhead_id]);
+        rows.push(['Spool ID', r.spool_id > 0 ? '#' + r.spool_id : '—']);
+    }
+    rows.push(['Filament',   totalFilamentG > 0 ? totalFilamentG.toFixed(2) + ' g' : '—']);
+    rows.push(['Print time', r.print_time_minutes > 0 ? _fmtMin(r.print_time_minutes) : '—']);
+    rows.push(['Finished',   _fmtDateFull(r.print_finished)]);
+    rows.push(['Status',     _statusBadge(r.status)]);
     if (r.session_id) {
         rows.push(['Session', '<span style="font-size:0.75em;color:#666;word-break:break-all;">' + _esc(r.session_id) + '</span>']);
     }
@@ -471,7 +541,7 @@ function populateModal(r) {
     }
 
     // PrusaLink virtual segment — toolhead_id > 0 means this was split from an attention event.
-    if (r.source === 'prusalink' && r.toolhead_id > 0) {
+    if (!isMultiTool && r.source === 'prusalink' && r.toolhead_id > 0) {
         rows.push(['Note', '<span style="color:#ffc107;font-size:0.85em;">Attention-event segment. If a different spool was loaded, reassign it below.</span>']);
     }
 
@@ -534,7 +604,7 @@ function populateModal(r) {
                     estCostCell +
                     '<td style="padding:6px 8px;">' +
                         '<button class="btn btn-small btn-secondary" style="padding:2px 7px;font-size:0.78em;" ' +
-                        'onclick="openReassignPicker(' + fu.id + ',' + r.id + ',' + fu.filament_used_grams + ')">↔ Reassign</button>' +
+                        'onclick="openReassignPicker(' + fu.id + ',' + fu.print_id + ',' + fu.filament_used_grams + ')">↔ Reassign</button>' +
                     '</td>' +
                     '</tr>';
             });
@@ -574,9 +644,19 @@ function populateModal(r) {
     if (r.total_cost > 0) {
         if (costSection) costSection.style.display = 'block';
         if (costEmpty)   costEmpty.style.display   = 'none';
+        // Build per-spool lines from stored filament_usages (current Spoolman prices)
+        var storedLines = (r.filament_usages || []).map(function(fu) {
+            var ppkg = (fu.price_per_kg != null) ? fu.price_per_kg : 0;
+            return {
+                tool_index: fu.tool_index, change_number: fu.change_number,
+                spool_id: fu.spool_id, grams: fu.filament_used_grams,
+                price_per_kg: ppkg, cost: (fu.filament_used_grams / 1000) * ppkg
+            };
+        });
+        var storedDisplay = { filament_lines: storedLines.length > 0 ? storedLines : null,
+                              total_cost: r.total_cost, currency: r.currency };
         document.getElementById('historyDetailCostRows').innerHTML =
-            '<p style="color:#aaa;font-size:0.85em;margin:0 0 4px;">Stored total: <strong style="color:#c8b8ff;">' + _fmtCost(r.total_cost, r.currency) + '</strong></p>' +
-            '<p style="color:#555;font-size:0.8em;margin:0;">Click Recalculate to recompute from current rates.</p>';
+            _renderStoredCost(storedDisplay, r.currency);
         if (recalcBtn) recalcBtn.style.display = '';
     } else {
         if (costSection) costSection.style.display = 'none';
@@ -670,6 +750,7 @@ function uploadHistoryAttachment() {
 function closeHistoryModal() {
     document.getElementById('historyDetailModal').style.display = 'none';
     _activeEntry = null;
+    _costsAutoCalced = false;
 }
 
 function saveHistoryNote() {
@@ -696,16 +777,82 @@ function saveHistoryNote() {
         .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
+// Renders stored-cost display: per-spool filament table (if available) + stored total.
+function _renderStoredCost(d, currency) {
+    var fmt = function(n) {
+        return new Intl.NumberFormat('en-US', {
+            style: 'currency', currency: currency || 'USD', minimumFractionDigits: 2
+        }).format(n || 0);
+    };
+    var html = '';
+    if (d.filament_lines && d.filament_lines.length > 0) {
+        var hasSwaps = d.filament_lines.some(function(l) { return l.change_number > 0; });
+        var totalFilamentCost = 0;
+        html += '<div style="margin-bottom:12px;">' +
+            '<div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Filament</div>' +
+            '<table style="width:100%;font-size:0.875em;border-collapse:collapse;">' +
+            '<tr style="color:#888;font-size:0.78em;border-bottom:1px solid #333;">' +
+            '<th style="text-align:left;padding:4px 8px 4px 0;font-weight:500;">Tool</th>' +
+            '<th style="text-align:left;padding:4px 8px;font-weight:500;">Spool</th>' +
+            '<th style="text-align:right;padding:4px 0 4px 8px;font-weight:500;">Grams</th>' +
+            '<th style="text-align:right;padding:4px 0 4px 8px;font-weight:500;">$/kg</th>' +
+            '<th style="text-align:right;padding:4px 0 4px 8px;font-weight:500;">Cost</th>' +
+            '</tr>';
+        d.filament_lines.forEach(function(l) {
+            totalFilamentCost += l.cost;
+            var toolLabel = 'T' + l.tool_index + (hasSwaps && l.change_number > 0 ? ' · swap #' + l.change_number : '');
+            html += '<tr style="border-top:1px solid #2a2a2a;">' +
+                '<td style="padding:5px 8px 5px 0;color:#ccc;white-space:nowrap;">' + _esc(toolLabel) + '</td>' +
+                '<td style="padding:5px 8px;color:#aaa;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + _esc(_formatSpoolLabel(l.spool_id)) + '</td>' +
+                '<td style="padding:5px 0 5px 8px;text-align:right;color:#c8b8ff;">' + l.grams.toFixed(2) + ' g</td>' +
+                '<td style="padding:5px 0 5px 8px;text-align:right;color:#aaa;">' + (l.price_per_kg > 0 ? fmt(l.price_per_kg) + '/kg' : '—') + '</td>' +
+                '<td style="padding:5px 0 5px 8px;text-align:right;color:#c8b8ff;">' + (l.price_per_kg > 0 ? fmt(l.cost) : '—') + '</td>' +
+                '</tr>';
+        });
+        if (d.filament_lines.length > 1) {
+            html += '<tr style="border-top:1px solid #444;">' +
+                '<td colspan="4" style="padding:5px 8px 5px 0;text-align:right;color:#888;font-size:0.9em;">Filament total</td>' +
+                '<td style="padding:5px 0 5px 8px;text-align:right;font-weight:600;color:#c8b8ff;">' + fmt(totalFilamentCost) + '</td>' +
+                '</tr>';
+        }
+        html += '</table></div>';
+    }
+    html += '<div style="display:flex;justify-content:space-between;padding:8px 0;border-top:2px solid #444;font-weight:700;font-size:1.05em;">' +
+        '<span style="color:#d0d0d0;">Stored total</span><span style="color:#c8b8ff;">' + fmt(d.total_cost) + '</span></div>' +
+        '<p style="color:#555;font-size:0.8em;margin:4px 0 0;">Click Recalculate to recompute from current rates.</p>';
+    return html;
+}
+
 function deleteHistoryEntry() {
     if (!_activeEntry) return;
+
+    var ids = _activeEntry.session_record_ids;
+    if (ids && ids.length > 1) {
+        // Multi-tool session: ask scope of delete
+        var choice = window.confirm(
+            'This is a ' + ids.length + '-toolhead print job.\n\n' +
+            'OK = Delete entire print job (all ' + ids.length + ' toolheads)\n' +
+            'Cancel = Delete only this toolhead record (T0)');
+        if (choice === null) return; // user dismissed
+        if (choice) {
+            _deleteSessionRecords(ids);
+        } else {
+            _deleteSingleRecord(_activeEntry.id);
+        }
+        return;
+    }
+
     if (!confirm('Delete this print history record?\nThis cannot be undone.')) return;
-    fetch('/api/history/' + _activeEntry.id, { method: 'DELETE' })
+    _deleteSingleRecord(_activeEntry.id);
+}
+
+function _deleteSingleRecord(id) {
+    fetch('/api/history/' + id, { method: 'DELETE' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.error) { showToast('Error: ' + data.error); return; }
-            // Remove the record from its session; remove the session if empty
             _allSessions = _allSessions.reduce(function(acc, s) {
-                s.records = (s.records || []).filter(function(r) { return r.id !== _activeEntry.id; });
+                s.records = (s.records || []).filter(function(r) { return r.id !== id; });
                 if (s.records.length > 0) {
                     s.tool_count = s.records.length;
                     acc.push(s);
@@ -718,61 +865,148 @@ function deleteHistoryEntry() {
         .catch(function(err) { showToast('Error: ' + err.message); });
 }
 
+function _deleteSessionRecords(ids) {
+    // Delete all records for a multi-tool session sequentially.
+    var remaining = ids.slice();
+    function deleteNext() {
+        if (remaining.length === 0) {
+            _allSessions = _allSessions.filter(function(s) {
+                s.records = (s.records || []).filter(function(r) { return ids.indexOf(r.id) === -1; });
+                return s.records.length > 0;
+            });
+            filterHistory();
+            closeHistoryModal();
+            return;
+        }
+        var nextId = remaining.shift();
+        fetch('/api/history/' + nextId, { method: 'DELETE' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.error) showToast('Error deleting #' + nextId + ': ' + data.error);
+                deleteNext();
+            })
+            .catch(function(err) { showToast('Error: ' + err.message); deleteNext(); });
+    }
+    deleteNext();
+}
+
 function recalcHistoryCost() {
     if (!_activeEntry) return;
-    var body;
-    if (_activeEntry.filament_usages && _activeEntry.filament_usages.length > 0) {
-        body = {
-            filament:       _activeEntry.filament_usages.map(function(fu) {
-                return {
-                    tool_index:          fu.tool_index,
-                    change_number:       fu.change_number,
-                    spool_id:            fu.spool_id,
-                    filament_used_mm:    fu.filament_used_mm,
-                    filament_used_grams: fu.filament_used_grams
-                };
-            }),
-            print_time_min: _activeEntry.print_time_minutes,
-            printer_name:   _activeEntry.printer_name
-        };
-    } else {
-        body = {
-            filament_grams: _activeEntry.filament_used,
-            print_time_min: _activeEntry.print_time_minutes,
-            spool_id:       _activeEntry.spool_id,
-            printer_name:   _activeEntry.printer_name
-        };
-    }
-    fetch('/api/cost/calculate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-    })
-        .then(function(r) { return r.json(); })
-        .then(function(bd) {
-            if (bd.error) { showToast('Error: ' + bd.error); return; }
-            var costSection = document.getElementById('historyDetailCost');
-            var costEmpty   = document.getElementById('hmCostEmpty');
-            if (costSection) costSection.style.display = 'block';
-            if (costEmpty)   costEmpty.style.display   = 'none';
-            if (typeof _renderCostRows === 'function') {
-                document.getElementById('historyDetailCostRows').innerHTML = _renderCostRows(bd, bd.currency);
-            } else {
-                document.getElementById('historyDetailCostRows').innerHTML =
-                    '<p>Total: ' + _fmtCost(bd.total_cost, bd.currency) + '</p>';
-            }
-            _activeEntry.total_cost = bd.total_cost;
-            _activeEntry.currency   = bd.currency;
-            _allSessions.forEach(function(s) {
-                (s.records || []).forEach(function(r) {
-                    if (r.id === _activeEntry.id) { r.total_cost = bd.total_cost; }
+
+    function _doCalc() {
+        var body;
+        if (_activeEntry.filament_usages && _activeEntry.filament_usages.length > 0) {
+            body = {
+                filament:       _activeEntry.filament_usages.map(function(fu) {
+                    return {
+                        tool_index:          fu.tool_index,
+                        change_number:       fu.change_number,
+                        spool_id:            fu.spool_id,
+                        filament_used_mm:    fu.filament_used_mm,
+                        filament_used_grams: fu.filament_used_grams
+                    };
+                }),
+                print_time_min: _activeEntry.print_time_minutes,
+                printer_name:   _activeEntry.printer_name
+            };
+        } else {
+            body = {
+                filament_grams: _activeEntry.filament_used,
+                print_time_min: _activeEntry.print_time_minutes,
+                spool_id:       _activeEntry.spool_id,
+                printer_name:   _activeEntry.printer_name
+            };
+        }
+        fetch('/api/cost/calculate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+            .then(function(r) { return r.json(); })
+            .then(function(bd) {
+                if (bd.error) { showToast('Error: ' + bd.error); return; }
+                var costSection = document.getElementById('historyDetailCost');
+                var costEmpty   = document.getElementById('hmCostEmpty');
+                if (costSection) costSection.style.display = 'block';
+                if (costEmpty)   costEmpty.style.display   = 'none';
+                if (typeof _renderCostRows === 'function') {
+                    document.getElementById('historyDetailCostRows').innerHTML = _renderCostRows(bd, bd.currency);
+                } else {
+                    document.getElementById('historyDetailCostRows').innerHTML =
+                        '<p>Total: ' + _fmtCost(bd.total_cost, bd.currency) + '</p>';
+                }
+                _activeEntry.total_cost = bd.total_cost;
+                _activeEntry.currency   = bd.currency;
+                _allSessions.forEach(function(s) {
+                    (s.records || []).forEach(function(r) {
+                        if (r.id === _activeEntry.id) { r.total_cost = bd.total_cost; }
+                    });
+                    s.total_cost = (s.records || []).reduce(function(sum, r) { return sum + (r.total_cost || 0); }, 0);
                 });
-                // Resum session total
-                s.total_cost = (s.records || []).reduce(function(sum, r) { return sum + (r.total_cost || 0); }, 0);
-            });
+                renderTable();
+            })
+            .catch(function(err) { showToast('Error: ' + err.message); });
+    }
+
+    // If print time or thumbnail is missing, re-parse the stored gcode attachment.
+    if (((!_activeEntry.print_time_minutes || _activeEntry.print_time_minutes === 0) || !_activeEntry.thumbnail_base64) && _activeEntry.id) {
+        fetch('/api/history/' + _activeEntry.id + '/reparse-gcode', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.print_time_min > 0) {
+                    _activeEntry.print_time_minutes = data.print_time_min;
+                }
+                if (data.thumbnail_b64) {
+                    _activeEntry.thumbnail_base64 = data.thumbnail_b64;
+                    // Propagate to _allSessions so renderTable() in _doCalc picks it up.
+                    _allSessions.forEach(function(s) {
+                        (s.records || []).forEach(function(r) {
+                            if (r.id === _activeEntry.id && !r.thumbnail_base64) {
+                                r.thumbnail_base64 = data.thumbnail_b64;
+                            }
+                        });
+                    });
+                    var thumbEl = document.getElementById('historyThumb');
+                    if (thumbEl) {
+                        thumbEl.innerHTML = '<img src="' + data.thumbnail_b64 + '" style="width:120px;height:120px;object-fit:cover;border-radius:8px;">';
+                    }
+                }
+                _doCalc();
+            })
+            .catch(function() { _doCalc(); });
+    } else {
+        _doCalc();
+    }
+}
+
+function reparseGcodeMetadata() {
+    if (!_activeEntry || !_activeEntry.id) return;
+    var btn = document.getElementById('historyReparseBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+
+    fetch('/api/history/' + _activeEntry.id + '/reparse-gcode', { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.print_time_min > 0) {
+                _activeEntry.print_time_minutes = data.print_time_min;
+            }
+            if (data.thumbnail_b64) {
+                _activeEntry.thumbnail_base64 = data.thumbnail_b64;
+                _allSessions.forEach(function(s) {
+                    (s.records || []).forEach(function(r) {
+                        if (r.id === _activeEntry.id && !r.thumbnail_base64) {
+                            r.thumbnail_base64 = data.thumbnail_b64;
+                        }
+                    });
+                });
+            }
+            populateModal(_activeEntry);
             renderTable();
         })
-        .catch(function(err) { showToast('Error: ' + err.message); });
+        .catch(function(err) {
+            showToast('Re-parse failed: ' + err.message);
+            if (btn) { btn.disabled = false; btn.textContent = '↻ Re-parse'; }
+        });
 }
 
 // ─── Bulk Selection & Delete ──────────────────────────────────────────────────

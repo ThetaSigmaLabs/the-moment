@@ -191,17 +191,59 @@ function _renderCostRows(d, currency) {
     };
 
     var html = '';
-    if (d.filament_grams !== undefined) {
-        html += row('Filament used', d.filament_grams.toFixed(2) + ' g');
-    }
-    if (d.filament_price_per_kg !== undefined && d.filament_price_per_kg > 0) {
-        html += row('Filament cost', fmt(d.filament_cost),
-                    '(' + fmt(d.filament_price_per_kg) + '/kg)');
+
+    // ── Filament section: per-spool order-sheet rows (if available) ──────────────
+    if (d.filament_lines && d.filament_lines.length > 0) {
+        var hasSwaps = d.filament_lines.some(function(l) { return l.change_number > 0; });
+        var noPriceAny = false;
+        html += '<div style="margin-bottom:10px;">' +
+            '<div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:6px;">Filament</div>' +
+            '<table style="width:100%;font-size:0.875em;border-collapse:collapse;">' +
+            '<tr style="color:#888;font-size:0.78em;border-bottom:1px solid #333;">' +
+            '<th style="text-align:left;padding:4px 8px 4px 0;font-weight:500;">Tool</th>' +
+            '<th style="text-align:right;padding:4px 8px;font-weight:500;">Grams</th>' +
+            '<th style="text-align:right;padding:4px 0 4px 8px;font-weight:500;">$/kg</th>' +
+            '<th style="text-align:right;padding:4px 0 4px 8px;font-weight:500;">Cost</th>' +
+            '</tr>';
+        d.filament_lines.forEach(function(l) {
+            var toolLabel = 'T' + l.tool_index + (hasSwaps && l.change_number > 0 ? ' · swap #' + l.change_number : '');
+            var noPrice = !l.price_per_kg || l.price_per_kg === 0;
+            if (noPrice) noPriceAny = true;
+            html += '<tr style="border-top:1px solid #2a2a2a;">' +
+                '<td style="padding:5px 8px 5px 0;color:#ccc;white-space:nowrap;">' + toolLabel + '</td>' +
+                '<td style="padding:5px 8px;text-align:right;color:#c8b8ff;">' + (l.grams || 0).toFixed(2) + ' g</td>' +
+                '<td style="padding:5px 0 5px 8px;text-align:right;color:#aaa;">' +
+                    (noPrice ? '<span style="color:#555;">—</span>' : fmt(l.price_per_kg) + '/kg') + '</td>' +
+                '<td style="padding:5px 0 5px 8px;text-align:right;color:#c8b8ff;">' +
+                    (noPrice ? '<span style="color:#555;">—</span>' : fmt(l.cost)) + '</td>' +
+                '</tr>';
+        });
+        if (d.filament_lines.length > 1) {
+            html += '<tr style="border-top:1px solid #444;">' +
+                '<td colspan="3" style="padding:5px 8px 5px 0;text-align:right;color:#888;font-size:0.9em;">Filament total</td>' +
+                '<td style="padding:5px 0 5px 8px;text-align:right;font-weight:600;color:#c8b8ff;">' + fmt(d.filament_cost) + '</td>' +
+                '</tr>';
+        }
+        html += '</table></div>';
+        if (noPriceAny) {
+            html += '<p style="color:#ffb74d;font-size:0.8em;margin:0 0 8px;">' +
+                    '⚠️ One or more spools have no price set in Spoolman.</p>';
+        }
     } else {
-        html += row('Filament cost', fmt(d.filament_cost),
-                    '(no price in Spoolman)');
+        // Fallback: single aggregate filament row (legacy / no per-spool data)
+        if (d.filament_grams !== undefined) {
+            html += row('Filament used', (d.filament_grams || 0).toFixed(2) + ' g');
+        }
+        if (d.filament_price_per_kg !== undefined && d.filament_price_per_kg > 0) {
+            html += row('Filament cost', fmt(d.filament_cost),
+                        '(' + fmt(d.filament_price_per_kg) + '/kg)');
+        } else {
+            html += row('Filament cost', fmt(d.filament_cost), '(no price in Spoolman)');
+        }
     }
-    if (d.print_time_min !== undefined && d.print_time_min > 0) {
+
+    // ── Print costs ──────────────────────────────────────────────────────────────
+    if (d.print_time_min !== undefined) {
         html += row('Print time', _fmtMin(d.print_time_min));
     }
     if (d.preheat_cost !== undefined && d.preheat_cost > 0) {
@@ -211,7 +253,7 @@ function _renderCostRows(d, currency) {
     if (d.high_temp_applied) elecLabel += ' ⚡ high-temp';
     html += row(elecLabel, fmt(d.electricity_cost));
     html += row('Maintenance', fmt(d.maintenance_cost));
-    if (d.depreciation_cost !== undefined && d.depreciation_cost > 0) {
+    if (d.depreciation_cost !== undefined) {
         html += row('Depreciation', fmt(d.depreciation_cost));
     }
     html += row('Subtotal', fmt(d.sub_total));
@@ -224,11 +266,6 @@ function _renderCostRows(d, currency) {
             'border-top:2px solid #444;margin-top:4px;font-weight:700;font-size:1.05em;">' +
             '<span style="color:#d0d0d0;">Total</span><span style="color:#c8b8ff;">' + fmt(d.total_cost) + '</span></div>';
 
-    if (!d.filament_price_per_kg || d.filament_price_per_kg === 0) {
-        html += '<p style="color:#ffb74d;font-size:0.8em;margin-top:8px;">' +
-                '⚠️ No price set for this spool in Spoolman. ' +
-                'Add a price in Spoolman or use the override field above.</p>';
-    }
     return html;
 }
 

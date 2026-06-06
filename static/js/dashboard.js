@@ -77,6 +77,10 @@ function renderDashboardPrinters(printers, mappings) {
             ? `<button class="btn btn-small btn-secondary dashboard-view-print-btn" style="margin-top:8px;align-self:flex-start;" onclick="openActivePrintModal('${escapeHtml(id)}')">View Print →</button>`
             : '';
 
+        const filamentWarnings = (p.filament_warnings || [])
+            .map(w => `<div class="dashboard-printer-warning">⚠ ${escapeHtml(w.message)}</div>`)
+            .join('');
+
         return `
             <div class="dashboard-printer-card" data-dashboard-printer-id="${escapeHtml(id)}">
                 <div class="dashboard-printer-header">
@@ -86,6 +90,7 @@ function renderDashboardPrinters(printers, mappings) {
                 ${jobLine}
                 <div class="dashboard-printer-progress-wrap">${buildProgressHTML(p)}</div>
                 ${spools ? `<div class="dashboard-printer-spools">${spools}</div>` : ''}
+                ${filamentWarnings ? `<div class="dashboard-printer-warnings">${filamentWarnings}</div>` : ''}
                 <div class="dashboard-printer-snapshot-badge" style="display:none;margin-top:6px;"></div>
                 ${viewPrintBtn}
                 <button class="btn btn-small btn-secondary" style="margin-top:8px;align-self:flex-start;" onclick="switchToSpoolsForPrinter('${escapeHtml(id)}')">Assign Spool →</button>
@@ -214,6 +219,24 @@ function updateDashboardPrinterStatus(printerId, printerData) {
         delete _snapshotLastFetch[printerId];
     }
 
+    // Refresh filament sufficiency warnings.
+    const warningsEl = card.querySelector('.dashboard-printer-warnings');
+    const warnings = printerData.filament_warnings || [];
+    if (warnings.length > 0) {
+        const html = warnings.map(w => `<div class="dashboard-printer-warning">⚠ ${escapeHtml(w.message)}</div>`).join('');
+        if (warningsEl) {
+            warningsEl.innerHTML = html;
+        } else {
+            const newEl = document.createElement('div');
+            newEl.className = 'dashboard-printer-warnings';
+            newEl.innerHTML = html;
+            const snapshotBadge = card.querySelector('.dashboard-printer-snapshot-badge');
+            if (snapshotBadge) card.insertBefore(newEl, snapshotBadge);
+        }
+    } else if (warningsEl) {
+        warningsEl.remove();
+    }
+
     // Show/hide "View Print" button reactively as printer state changes.
     const isActive = ['PRINTING', 'PAUSED', 'ATTENTION'].includes(state);
     const viewBtn = card.querySelector('.dashboard-view-print-btn');
@@ -338,14 +361,17 @@ function _apmPopulate(d) {
         if (snaps.length === 0) {
             snapList.innerHTML = '<span style="color:#555;">No snapshots yet.</span>';
         } else {
+            _snapshotList = snaps.map(function(s) {
+                return { url: s.url, label: s.label || s.filename || '' };
+            });
             snapList.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:10px;">' +
-                snaps.map(function(s) {
+                snaps.map(function(s, idx) {
                     const label = escapeHtml(s.label || s.filename);
                     const url = escapeHtml(s.url);
                     return '<div style="text-align:center;">' +
                         '<img src="' + url + '" alt="' + label + '" ' +
                         'style="width:90px;height:90px;object-fit:cover;border-radius:4px;cursor:zoom-in;display:block;" ' +
-                        'onclick="openSnapshotLightbox(\'' + url + '\')">' +
+                        'onclick="openSnapshotLightbox(' + idx + ')">' +
                         '<div style="font-size:0.72em;color:#777;margin-top:4px;word-break:break-all;">' + label + '</div>' +
                         '</div>';
                 }).join('') +

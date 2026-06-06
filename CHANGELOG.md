@@ -5,6 +5,12 @@ All notable changes to The Moment will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Snapshot lightbox navigation** — prev/next arrows (‹ ›) let users step through the snapshot timeline without dismissing; position indicator shows `3/12 · 25%` (index and print-progress percentage); keyboard arrow keys navigate, ESC closes; works in both print history and active print modal
+
 ## [v1.0.0] - 2026-06-05
 
 First public alpha release. Feature-complete and running in production on real hardware.
