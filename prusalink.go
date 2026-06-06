@@ -78,6 +78,66 @@ type PrusaLinkJob struct {
 	} `json:"filament,omitempty"`
 }
 
+// PrusaLinkFileInfo represents the metadata response from /api/v1/files/{storage}/{path}.
+// Filament is populated by PrusaSlicer-sliced files; may be absent on older firmware or
+// files sliced without per-tool weight comments.
+type PrusaLinkFileInfo struct {
+	Name     string `json:"name"`
+	Filament []struct {
+		ToolheadID int     `json:"toolhead_id"`
+		Weight     float64 `json:"weight"` // grams, slicer estimate
+		Length     float64 `json:"length"` // mm
+	} `json:"filament,omitempty"`
+}
+
+// GetFileInfo fetches lightweight file metadata from PrusaLink without downloading the file.
+// Returns nil (no error) when the endpoint is unavailable or the file has no filament data,
+// so callers can fall back to a full G-code download.
+func (c *PrusaLinkClient) GetFileInfo(filePath string) (*PrusaLinkFileInfo, error) {
+	// Strip a leading slash if present; PrusaLink expects the path without it.
+	trimmed := strings.TrimPrefix(filePath, "/")
+	url := c.baseURL + "/api/v1/files/local/" + trimmed
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create file info request: %w", err)
+	}
+	c.addAPIKey(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file info from PrusaLink: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// 404 means file not found or endpoint not supported on this firmware — treat as unavailable.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("PrusaLink file info API error: %d - %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file info response: %w", err)
+	}
+
+	var info PrusaLinkFileInfo
+	if err := json.Unmarshal(body, &info); err != nil {
+		return nil, fmt.Errorf("failed to decode file info response: %w", err)
+	}
+
+	// Return nil when the response carries no filament data — caller falls back to G-code download.
+	if len(info.Filament) == 0 {
+		return nil, nil
+	}
+
+	log.Printf("📋 [PrusaLink] File metadata for %s: %d toolhead(s) with filament data", filePath, len(info.Filament))
+	return &info, nil
+}
+
 // PrusaLinkInfo represents the printer info response from /api/v1/info
 type PrusaLinkInfo struct {
 	Hostname         string  `json:"hostname"`

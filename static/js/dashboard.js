@@ -77,6 +77,10 @@ function renderDashboardPrinters(printers, mappings) {
             ? `<button class="btn btn-small btn-secondary dashboard-view-print-btn" style="margin-top:8px;align-self:flex-start;" onclick="openActivePrintModal('${escapeHtml(id)}')">View Print →</button>`
             : '';
 
+        const filamentWarnings = (p.filament_warnings || [])
+            .map(w => `<div class="dashboard-printer-warning">⚠ ${escapeHtml(w.message)}</div>`)
+            .join('');
+
         return `
             <div class="dashboard-printer-card" data-dashboard-printer-id="${escapeHtml(id)}">
                 <div class="dashboard-printer-header">
@@ -86,6 +90,7 @@ function renderDashboardPrinters(printers, mappings) {
                 ${jobLine}
                 <div class="dashboard-printer-progress-wrap">${buildProgressHTML(p)}</div>
                 ${spools ? `<div class="dashboard-printer-spools">${spools}</div>` : ''}
+                ${filamentWarnings ? `<div class="dashboard-printer-warnings">${filamentWarnings}</div>` : ''}
                 <div class="dashboard-printer-snapshot-badge" style="display:none;margin-top:6px;"></div>
                 ${viewPrintBtn}
                 <button class="btn btn-small btn-secondary" style="margin-top:8px;align-self:flex-start;" onclick="switchToSpoolsForPrinter('${escapeHtml(id)}')">Assign Spool →</button>
@@ -212,6 +217,24 @@ function updateDashboardPrinterStatus(printerId, printerData) {
     } else if (snapEl) {
         snapEl.style.display = 'none';
         delete _snapshotLastFetch[printerId];
+    }
+
+    // Refresh filament sufficiency warnings.
+    const warningsEl = card.querySelector('.dashboard-printer-warnings');
+    const warnings = printerData.filament_warnings || [];
+    if (warnings.length > 0) {
+        const html = warnings.map(w => `<div class="dashboard-printer-warning">⚠ ${escapeHtml(w.message)}</div>`).join('');
+        if (warningsEl) {
+            warningsEl.innerHTML = html;
+        } else {
+            const newEl = document.createElement('div');
+            newEl.className = 'dashboard-printer-warnings';
+            newEl.innerHTML = html;
+            const snapshotBadge = card.querySelector('.dashboard-printer-snapshot-badge');
+            if (snapshotBadge) card.insertBefore(newEl, snapshotBadge);
+        }
+    } else if (warningsEl) {
+        warningsEl.remove();
     }
 
     // Show/hide "View Print" button reactively as printer state changes.

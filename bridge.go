@@ -101,6 +101,11 @@ type FilamentBridge struct {
 
 	// apiMonitor detects PrusaLink API shape changes across firmware updates.
 	apiMonitor *APIShapeMonitor
+
+	// printerWarnings holds active filament sufficiency warnings, keyed by printerID.
+	// Populated by checkFilamentSufficiency at print start; cleared when print ends.
+	printerWarnings   map[string][]PrinterWarning
+	printerWarningsMu sync.Mutex
 }
 
 // PrusaLinkRawCapture holds the last raw response bodies received from a PrusaLink printer.
@@ -312,6 +317,15 @@ type PrinterStatus struct {
 // PrinterData represents data for a single printer
 // PrinterData carries the current state of one printer in the WebSocket broadcast.
 // Live fields are populated for PrusaLink printers only; other types leave them zero.
+// PrinterWarning represents a predicted filament shortage for one toolhead.
+type PrinterWarning struct {
+	ToolheadIndex int     `json:"toolhead_index"`
+	SpoolID       int     `json:"spool_id"`
+	Required      float64 `json:"required_grams"`
+	Remaining     float64 `json:"remaining_grams"`
+	Message       string  `json:"message"`
+}
+
 type PrinterData struct {
 	Name      string `json:"name"`
 	State     string `json:"state"`
@@ -331,6 +345,8 @@ type PrinterData struct {
 	Speed         int     `json:"speed,omitempty"`
 	FanHotend     int     `json:"fan_hotend,omitempty"`
 	FanPrint      int     `json:"fan_print,omitempty"`
+	// Filament sufficiency warnings — populated when a print starts and a spool may run out
+	FilamentWarnings []PrinterWarning `json:"filament_warnings,omitempty"`
 }
 
 // NewFilamentBridge creates a new FilamentBridge instance
@@ -352,6 +368,7 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		commLogs:         make(map[string]*PrinterCommLog),
 		rawResponses:     make(map[string]*PrusaLinkRawCapture),
 		apiMonitor:       NewAPIShapeMonitor(),
+		printerWarnings:  make(map[string][]PrinterWarning),
 	}
 	bridge.bambuClientFactory = func(ip, serial, accessCode string) BambuStatusProvider {
 		return NewBambuMQTTClient(ip, serial, accessCode, newBambuDebugLogger(bridge))
@@ -3260,6 +3277,139 @@ func (b *FilamentBridge) MonitorPrinters() {
 // State machine:
 //
 //	PRINTING          → track wasPrinting=true, store job filename
+// checkFilamentSufficiency estimates the filament required for the active job and compares it
+// against the remaining weight on each assigned spool. Intended to be called in a goroutine
+// at print-start so it never blocks the monitor loop.
+//
+// Strategy:
+//  1. Try the lightweight /api/v1/files metadata endpoint first.
+//  2. If that returns no filament data, fall back to a full G-code download and parse.
+//  3. Compare per-toolhead required grams against spool remaining_weight from Spoolman.
+//  4. Store any warnings in b.printerWarnings[printerID]; cleared when the print ends.
+func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePath string, client *PrusaLinkClient) {
+	log.Printf("🔍 [FilamentCheck] Checking filament sufficiency for %s (%s)", printerName, filePath)
+
+	// --- Step 1: try file metadata (lightweight) ---
+	requiredByTool := make(map[int]float64) // toolhead index → grams required
+
+	fileInfo, err := client.GetFileInfo(filePath)
+	if err != nil {
+		log.Printf("⚠️  [FilamentCheck] File metadata unavailable for %s: %v — falling back to G-code download", filePath, err)
+	}
+	if fileInfo != nil {
+		for _, f := range fileInfo.Filament {
+			if f.Weight > 0 {
+				requiredByTool[f.ToolheadID] = f.Weight
+			}
+		}
+		log.Printf("📋 [FilamentCheck] Got filament data from metadata: %v", requiredByTool)
+	}
+
+	// --- Step 2: fallback — download and parse G-code ---
+	if len(requiredByTool) == 0 {
+		log.Printf("📥 [FilamentCheck] Downloading G-code for filament data: %s", filePath)
+		gcodeContent, err := client.GetGcodeFileWithRetry(filePath, b.config.PrusaLinkFileDownloadTimeout)
+		if err != nil {
+			log.Printf("⚠️  [FilamentCheck] Could not download G-code for %s: %v", filePath, err)
+			return
+		}
+		usage, err := client.ParseGcodeFilamentUsage(gcodeContent)
+		if err != nil || len(usage) == 0 {
+			log.Printf("⚠️  [FilamentCheck] No filament data in G-code for %s", filePath)
+			return
+		}
+		for toolIdx, u := range usage {
+			if u.Grams > 0 {
+				requiredByTool[toolIdx] = u.Grams
+			}
+		}
+		log.Printf("📋 [FilamentCheck] Got filament data from G-code: %v", requiredByTool)
+	}
+
+	if len(requiredByTool) == 0 {
+		return
+	}
+
+	// --- Step 3: look up assigned spools ---
+	// Primary: NFC/active assignments (toolhead_spool_assignments)
+	assignments, err := b.GetAllCurrentAssignments(printerID)
+	if err != nil {
+		log.Printf("⚠️  [FilamentCheck] Could not get assignments for %s: %v", printerID, err)
+	}
+	spoolByTool := make(map[int]int) // toolhead index → spool ID
+	for _, a := range assignments {
+		spoolByTool[a.ToolheadIndex] = a.SpoolmanSpoolID
+	}
+
+	// Fallback: Print-Ops toolhead_mappings (for printers not using NFC assignments)
+	if len(spoolByTool) == 0 {
+		mappings, err := b.GetToolheadMappings(printerName)
+		if err != nil {
+			log.Printf("⚠️  [FilamentCheck] Could not get toolhead mappings for %s: %v", printerName, err)
+		}
+		for toolID, m := range mappings {
+			if m.SpoolID > 0 {
+				spoolByTool[toolID] = m.SpoolID
+			}
+		}
+	}
+
+	// --- Step 4: fetch spool remaining weights from Spoolman ---
+	allSpools, err := b.spoolman.GetAllSpools()
+	if err != nil {
+		log.Printf("⚠️  [FilamentCheck] Could not fetch spools from Spoolman: %v", err)
+		return
+	}
+	remainingBySpoolID := make(map[int]SpoolmanSpool, len(allSpools))
+	for _, s := range allSpools {
+		remainingBySpoolID[s.ID] = s
+	}
+
+	// --- Step 5: compare and build warnings ---
+	var warnings []PrinterWarning
+	for toolIdx, required := range requiredByTool {
+		spoolID, assigned := spoolByTool[toolIdx]
+		if !assigned {
+			warnings = append(warnings, PrinterWarning{
+				ToolheadIndex: toolIdx,
+				SpoolID:       0,
+				Required:      required,
+				Remaining:     0,
+				Message:       fmt.Sprintf("T%d: needs %.0fg but no spool assigned", toolIdx, required),
+			})
+			continue
+		}
+		spool, found := remainingBySpoolID[spoolID]
+		if !found {
+			continue
+		}
+		if spool.RemainingWeight < required {
+			spoolName := spool.Name
+			if spoolName == "" {
+				spoolName = fmt.Sprintf("Spool #%d", spoolID)
+			}
+			warnings = append(warnings, PrinterWarning{
+				ToolheadIndex: toolIdx,
+				SpoolID:       spoolID,
+				Required:      required,
+				Remaining:     spool.RemainingWeight,
+				Message: fmt.Sprintf("T%d: needs %.0fg, ~%.0fg remaining (%s)",
+					toolIdx, required, spool.RemainingWeight, spoolName),
+			})
+		}
+	}
+
+	b.printerWarningsMu.Lock()
+	if len(warnings) > 0 {
+		b.printerWarnings[printerID] = warnings
+		log.Printf("⚠️  [FilamentCheck] %d filament warning(s) for %s: %v", len(warnings), printerName, warnings)
+	} else {
+		delete(b.printerWarnings, printerID)
+		log.Printf("✅ [FilamentCheck] Sufficient filament for all toolheads on %s", printerName)
+	}
+	b.printerWarningsMu.Unlock()
+}
+
 //	PAUSED            → keep wasPrinting=true (print will resume)
 //	ATTENTION         → keep wasPrinting=true (filament runout — user swaps spool, then resumes)
 //	IDLE / FINISHED   → if wasPrinting: print completed normally → process full G-code usage
@@ -3420,6 +3570,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			if uErr := b.UpsertActivePrintSession(printerID, jobInfo.ID, startedAt, currentJobFilename, 0, string(assignJSON)); uErr != nil {
 				log.Printf("[PRUSALINK] printer=%s failed to create active session: %v", printerID, uErr)
 			}
+			// Check whether any spool has enough filament for this print.
+			// Runs in a goroutine so it never delays the monitor loop.
+			go b.checkFilamentSufficiency(printerID, config.Name, currentJobFilename, client)
 		}
 		if jobInfo.ID != 0 {
 			_ = b.UpdateSessionProgress(printerID, jobInfo.ID, printProgress, jobInfo.TimePrinting)
@@ -3517,6 +3670,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 				b.currentJobDisplayName[printerID] = ""
 				b.previousState[printerID] = currentState
 				b.mutex.Unlock()
+				b.printerWarningsMu.Lock()
+				delete(b.printerWarnings, printerID)
+				b.printerWarningsMu.Unlock()
 				break
 			}
 
@@ -3546,6 +3702,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 				b.currentJobID[printerID] = 0
 			}
 			b.mutex.Unlock()
+			b.printerWarningsMu.Lock()
+			delete(b.printerWarnings, printerID)
+			b.printerWarningsMu.Unlock()
 
 			if handleErr != nil {
 				log.Printf("Error handling print finished: %v", handleErr)
@@ -3590,6 +3749,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 				b.currentJobDisplayName[printerID] = ""
 				b.previousState[printerID] = currentState
 				b.mutex.Unlock()
+				b.printerWarningsMu.Lock()
+				delete(b.printerWarnings, printerID)
+				b.printerWarningsMu.Unlock()
 				break
 			}
 
@@ -3625,6 +3787,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.currentJobDisplayName[printerID] = ""
 			b.currentJobID[printerID] = 0
 			b.mutex.Unlock()
+			b.printerWarningsMu.Lock()
+			delete(b.printerWarnings, printerID)
+			b.printerWarningsMu.Unlock()
 
 			if handleErr != nil {
 				log.Printf("Error handling cancelled print: %v", handleErr)
@@ -4509,24 +4674,29 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				continue
 			}
 
+			b.printerWarningsMu.Lock()
+			filamentWarnings := b.printerWarnings[printerID]
+			b.printerWarningsMu.Unlock()
+
 			status.Printers[printerID] = PrinterData{
-				Name:          printerName,
-				State:         printerStatus.Printer.State,
-				SortOrder:     printerConfig.SortOrder,
-				DebugLog:      printerConfig.DebugLog,
-				TempNozzle:    printerStatus.Printer.TempNozzle,
-				TargetNozzle:  printerStatus.Printer.TargetNozzle,
-				TempBed:       printerStatus.Printer.TempBed,
-				TargetBed:     printerStatus.Printer.TargetBed,
-				Progress:      printerStatus.Job.Progress,
-				TimeRemaining: printerStatus.Job.TimeRemaining,
-				TimePrinting:  printerStatus.Job.TimePrinting,
-				JobName:       jobDisplayNames[printerID],
-				AxisZ:         printerStatus.Printer.AxisZ,
-				Flow:          printerStatus.Printer.Flow,
-				Speed:         printerStatus.Printer.Speed,
-				FanHotend:     printerStatus.Printer.FanHotend,
-				FanPrint:      printerStatus.Printer.FanPrint,
+				Name:             printerName,
+				State:            printerStatus.Printer.State,
+				SortOrder:        printerConfig.SortOrder,
+				DebugLog:         printerConfig.DebugLog,
+				TempNozzle:       printerStatus.Printer.TempNozzle,
+				TargetNozzle:     printerStatus.Printer.TargetNozzle,
+				TempBed:          printerStatus.Printer.TempBed,
+				TargetBed:        printerStatus.Printer.TargetBed,
+				Progress:         printerStatus.Job.Progress,
+				TimeRemaining:    printerStatus.Job.TimeRemaining,
+				TimePrinting:     printerStatus.Job.TimePrinting,
+				JobName:          jobDisplayNames[printerID],
+				AxisZ:            printerStatus.Printer.AxisZ,
+				Flow:             printerStatus.Printer.Flow,
+				Speed:            printerStatus.Printer.Speed,
+				FanHotend:        printerStatus.Printer.FanHotend,
+				FanPrint:         printerStatus.Printer.FanPrint,
+				FilamentWarnings: filamentWarnings,
 			}
 		}
 	} else {

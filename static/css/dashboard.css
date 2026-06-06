@@ -207,6 +207,23 @@
 }
 
 /* ── Dashboard Alerts ─────────────────────────────────────────────────────── */
+/* ── Per-printer filament sufficiency warnings ────────────────────────────── */
+.dashboard-printer-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.dashboard-printer-warning {
+  font-size: 0.76em;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  color: #fbbf24;
+}
+
 .dashboard-alert {
   border-radius: 8px;
   padding: 16px 20px;

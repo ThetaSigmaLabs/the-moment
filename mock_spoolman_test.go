@@ -315,6 +315,16 @@ func (m *MockSpoolman) SetOffline(offline bool) {
 	m.offline = offline
 }
 
+// SetUsedWeight directly sets the used_weight on a mock spool, so that
+// remaining_weight = initial_weight - used_weight reflects a partially-consumed spool.
+func (m *MockSpoolman) SetUsedWeight(spoolID int, usedWeight float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if spool, ok := m.spools[spoolID]; ok {
+		spool.UsedWeight = usedWeight
+	}
+}
+
 // SetSpoolLocation directly sets the location field on a mock spool, simulating
 // a user editing the spool location in Spoolman's own UI.
 func (m *MockSpoolman) SetSpoolLocation(spoolID int, location string) {
