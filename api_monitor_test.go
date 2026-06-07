@@ -265,6 +265,21 @@ func TestAPIShapeMonitor_AxisXYDisappearsOnPrint_NoFalsePositive(t *testing.T) {
 	}
 }
 
+// TestAPIShapeMonitor_TransferFieldNoFalsePositive verifies that the /transfer
+// object appearing and disappearing (present only during file uploads) does NOT
+// trigger a shape-change alert after normalization.
+func TestAPIShapeMonitor_TransferFieldNoFalsePositive(t *testing.T) {
+	idleBody     := []byte(`{"printer":{"state":"IDLE","temp_nozzle":26}}`)
+	transferBody := []byte(`{"printer":{"state":"IDLE","temp_nozzle":26},"transfer":{"id":1,"progress":50,"time_transferring":10,"transferred":512000}}`)
+
+	m := NewAPIShapeMonitor()
+	m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(idleBody))
+	_, _, changed := m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(transferBody))
+	if changed {
+		t.Error("transfer object appearing should not trigger shape change after normalization")
+	}
+}
+
 // ─── Fixture stability ────────────────────────────────────────────────────────
 
 func TestAPIShapeMonitor_LoadStatusFixture_Stable(t *testing.T) {

@@ -100,7 +100,7 @@ type FilamentBridge struct {
 	rawResponses   map[string]*PrusaLinkRawCapture
 	rawResponsesMu sync.RWMutex
 
-	// apiMonitor detects PrusaLink API shape changes across firmware updates.
+	// apiMonitor detects when unknown objects or fields appear in PrusaLink API responses.
 	apiMonitor *APIShapeMonitor
 
 	// printerWarnings holds active filament sufficiency warnings, keyed by printerID.
@@ -3459,7 +3459,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	}
 	b.rawResponsesMu.Unlock()
 
-	// Detect API shape changes (e.g. from firmware updates).
+	// Detect API shape changes (e.g. unknown objects received from PrusaLink).
 	// The "job" sub-object in /api/v1/status is state-dependent: present during printing,
 	// absent when idle/finished. Strip it before shape comparison so a print completing
 	// doesn't trigger a false-positive "removed fields" alert.
@@ -3548,7 +3548,7 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 
 	case StatePrinting:
 		// Print is active — store the filename on first detection, keep wasPrinting=true.
-		// Unmute API-change alerts so firmware updates during a print are still detectable.
+		// Unmute API-change alerts so unexpected response changes during a print are still detectable.
 		b.apiMonitor.UnmuteOnPrint(printerID)
 		isNewPrint := false
 		b.mutex.Lock()
@@ -6767,6 +6767,7 @@ func normalizePrusaLinkStatusForMonitor(body []byte) []byte {
 	}
 	delete(m, "job")
 	delete(m, "storage")
+	delete(m, "transfer")
 	if printer, ok := m["printer"].(map[string]interface{}); ok {
 		delete(printer, "axis_x")
 		delete(printer, "axis_y")

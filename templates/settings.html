@@ -333,7 +333,7 @@
                         <option value="gcode">G-code files only</option>
                         <option value="uploads">Virtual printer uploads only</option>
                     </select>
-                    <button class="btn" onclick="createBackup()">💾 Create Backup</button>
+                    <button class="btn" id="backupCreateBtn" onclick="createBackup()">💾 Create Backup</button>
                     <span id="backupCreateStatus" style="font-size:0.9em; color:var(--text-secondary);"></span>
                 </div>
                 <div class="help-text" style="margin-top:8px;">
@@ -347,7 +347,7 @@
                 <h4 style="margin:0 0 10px;">Upload a Backup</h4>
                 <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
                     <input type="file" id="backupUploadInput" accept=".tar.gz" style="max-width:360px;">
-                    <button class="btn btn-secondary" onclick="uploadBackup()">📤 Upload</button>
+                    <button class="btn btn-secondary" id="backupUploadBtn" onclick="uploadBackup()">📤 Upload</button>
                     <span id="backupUploadStatus" style="font-size:0.9em; color:var(--text-secondary);"></span>
                 </div>
                 <div class="help-text" style="margin-top:8px;">

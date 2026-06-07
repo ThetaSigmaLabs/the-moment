@@ -493,7 +493,9 @@ function loadBackupList() {
 function createBackup() {
     const scope = document.getElementById('backupScope').value;
     const status = document.getElementById('backupCreateStatus');
-    status.textContent = 'Creating backup…';
+    const btn = document.getElementById('backupCreateBtn');
+    btn.disabled = true;
+    status.innerHTML = '<span class="btn-spinner"></span>Creating backup…';
     fetch('/api/backup/create', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -501,32 +503,36 @@ function createBackup() {
     })
         .then(r => r.json())
         .then(data => {
+            btn.disabled = false;
             if (data.error) { status.textContent = 'Error: ' + data.error; return; }
             status.textContent = 'Created: ' + data.filename;
             loadBackupList();
         })
-        .catch(() => { status.textContent = 'Failed to create backup.'; });
+        .catch(() => { btn.disabled = false; status.textContent = 'Failed to create backup.'; });
 }
 
 function uploadBackup() {
     const input = document.getElementById('backupUploadInput');
     const status = document.getElementById('backupUploadStatus');
+    const btn = document.getElementById('backupUploadBtn');
     if (!input.files || input.files.length === 0) {
         status.textContent = 'Select a file first.';
         return;
     }
     const formData = new FormData();
     formData.append('file', input.files[0]);
-    status.textContent = 'Uploading…';
+    btn.disabled = true;
+    status.innerHTML = '<span class="btn-spinner"></span>Uploading…';
     fetch('/api/backup/upload', {method: 'POST', body: formData})
         .then(r => r.json())
         .then(data => {
+            btn.disabled = false;
             if (data.error) { status.textContent = 'Error: ' + data.error; return; }
             status.textContent = 'Uploaded: ' + data.filename;
             input.value = '';
             loadBackupList();
         })
-        .catch(() => { status.textContent = 'Upload failed.'; });
+        .catch(() => { btn.disabled = false; status.textContent = 'Upload failed.'; });
 }
 
 function deleteBackup(filename) {
@@ -594,7 +600,7 @@ function confirmRestore() {
     if (!_pendingRestoreFilename) return;
     const btn = document.getElementById('restoreConfirmBtn');
     btn.disabled = true;
-    btn.textContent = 'Restoring…';
+    btn.innerHTML = '<span class="btn-spinner"></span>Restoring…';
     fetch('/api/backup/' + encodeURIComponent(_pendingRestoreFilename) + '/restore', {method: 'POST'})
         .then(r => r.json())
         .then(data => {

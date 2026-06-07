@@ -304,3 +304,19 @@
 .tag-outcome-btn.active-success    { background: var(--success-dark) !important; color: var(--success-text) !important; border-color: #2d6a4f !important; }
 .tag-outcome-btn.active-acceptable { background: #2a2a00 !important; color: #e6c84a !important; border-color: #5a5a00 !important; }
 .tag-outcome-btn.active-failed     { background: var(--error-dark) !important; color: var(--error-text) !important; border-color: #7a0000 !important; }
+
+/* ── Spinner ──────────────────────────────────────────────────────────────── */
+@keyframes tm-spin {
+  to { transform: rotate(360deg); }
+}
+.btn-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: tm-spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}

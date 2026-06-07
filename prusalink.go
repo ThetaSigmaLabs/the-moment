@@ -48,6 +48,13 @@ type PrusaLinkStatus struct {
 		FanHotend    int     `json:"fan_hotend"`
 		FanPrint     int     `json:"fan_print"`
 	} `json:"printer"`
+	// Transfer is conditionally present during file uploads to the printer.
+	Transfer struct {
+		ID               int     `json:"id"`
+		Progress         float64 `json:"progress"`
+		TimeTransferring int     `json:"time_transferring"`
+		Transferred      int64   `json:"transferred"`
+	} `json:"transfer"`
 }
 
 // PrusaLinkJob represents the job response from /api/v1/job.

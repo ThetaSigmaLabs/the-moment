@@ -13,9 +13,9 @@ import (
 )
 
 // APIShapeMonitor detects when the JSON structure of PrusaLink API responses
-// changes between poll cycles — for example when a firmware update adds or
-// removes fields. On first call for a printer+endpoint pair the response is
-// stored as the baseline. Subsequent calls return the field diff.
+// changes between poll cycles — for example when an unknown object is received
+// that was not present before. On first call for a printer+endpoint pair the
+// response is stored as the baseline. Subsequent calls return the field diff.
 //
 // Muting rules (all state is in-memory; resets on process restart):
 //   - alertPending: true while an unacknowledged API-change alert exists for a
