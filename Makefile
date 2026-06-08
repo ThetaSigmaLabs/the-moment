@@ -130,11 +130,13 @@ push-github: ## Squash main → github branch (private files excluded) and force
 	@git checkout main
 	@echo "GitHub origin/main updated. Jenkinsfile and CLAUDE.md excluded."
 
-release-github: push-github ## push-github then tag vX.Y.Z from version.go and push to GitHub
+release-github: push-github ## push-github then tag vX.Y.Z from version.go and push to GitHub and local
 	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
 	 git tag $$VERSION github && \
 	 git push origin $$VERSION && \
-	 echo "Tagged $$VERSION and pushed to GitHub." && \
+	 git tag $$VERSION-src && \
+	 git push local $$VERSION $$VERSION-src && \
+	 echo "Tagged $$VERSION (GitHub squash) and $$VERSION-src (local main)." && \
 	 echo "Actions: https://github.com/ThetaSigmaLabs/the-moment/actions"
 
 # ── Help ───────────────────────────────────────────────────────────────────────
