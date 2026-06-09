@@ -100,8 +100,10 @@ pipeline {
                     steps {
                         cleanWs()
                         checkout scm
+                        unstash 'bin-linux-arm64'
                         sh '''
-                            docker build --platform linux/arm64 --target production \
+                            cp the-moment-linux-arm64 main
+                            docker build --platform linux/arm64 --target production-prebuilt \
                               -t ${REGISTRY}/${IMAGE}:${TAG}-arm64 \
                               .
                             docker push ${REGISTRY}/${IMAGE}:${TAG}-arm64

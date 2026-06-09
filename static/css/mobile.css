@@ -138,7 +138,7 @@
      */
     .modal-content {
         box-sizing: border-box;
-        position: fixed;
+        position: absolute;
         bottom: 0;
         left: 0;
         right: 0;
@@ -168,7 +168,7 @@
         width: 100%;
         max-width: 100%;
         border-radius: 16px 16px 0 0;
-        position: fixed;
+        position: absolute;
         bottom: 0;
         left: 0;
         right: 0;

@@ -57,6 +57,20 @@ ENV THE_MOMENT_DB_PATH=/app/data
 # Run the application
 CMD ["./main"]
 
+# ─── CI stage: production image from pre-built binary ───────────────────────
+# Used by Jenkins arm64 builds to skip recompiling on slow ARM hardware.
+# Caller must place the binary at ./main in the Docker build context.
+FROM alpine:latest AS production-prebuilt
+RUN apk update && apk --no-cache --no-scripts add ca-certificates sqlite ffmpeg
+WORKDIR /app
+COPY main .
+COPY static/ ./static/
+RUN mkdir -p /app/data
+EXPOSE ${THE_MOMENT_PORT:-5000}
+ENV GIN_MODE=release
+ENV THE_MOMENT_DB_PATH=/app/data
+CMD ["./main"]
+
 # ─── Development stage (air hot-reload) ────────────────────────────────────
 # Not used in production. Activated via docker-compose.dev.yml build target.
 FROM golang:1.24-alpine AS dev
