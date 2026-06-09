@@ -44,7 +44,8 @@ jobs:
           images: ghcr.io/${{ steps.lower.outputs.repo }}
           tags: |
             type=ref,event=tag
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-beta.') }}
             type=sha
 
       - name: Build and push Docker image

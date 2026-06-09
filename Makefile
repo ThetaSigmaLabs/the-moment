@@ -11,7 +11,8 @@ BACKUP_DIR              ?= ./backups
 .PHONY: setup up down logs update ps open backup restore backup-native restore-native \
         dev-build dev-up dev-down \
         test-unit test-integration test-all lint \
-        push-github release-github help
+        version changelog-preview \
+        github-push github-release github-release-beta github-dispatch private-add help
 
 # ── Docker management ──────────────────────────────────────────────────────────
 
@@ -115,29 +116,91 @@ lint: ## Run go vet and staticcheck (install: go install honnef.co/go/tools/cmd/
 	go vet ./...
 	@command -v staticcheck >/dev/null 2>&1 && staticcheck ./... || echo "staticcheck not installed — skipping"
 
+# ── Version & changelog ────────────────────────────────────────────────────────
+
+version: ## Show current version, recent tags, and commits since last stable tag
+	@echo "Current (version.go): v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"')"
+	@echo ""
+	@echo "Recent tags (newest first):"
+	@git tag --sort=-creatordate | grep -v '\-src' | head -5
+	@echo ""
+	@LAST_TAG=$$(git tag --sort=-creatordate | grep -v '\-src' | grep -vE '\-beta\.|\-rc\.' | head -1); \
+	 if [ -n "$$LAST_TAG" ]; then \
+	     echo "Commits since last stable tag ($$LAST_TAG):"; \
+	     git log $$LAST_TAG..HEAD --oneline | head -20; \
+	 else \
+	     echo "No stable tags found."; \
+	 fi
+
+changelog-preview: ## Draft CHANGELOG entry for commits since last stable tag
+	@LAST_TAG=$$(git tag --sort=-creatordate | grep -v '\-src' | grep -vE '\-beta\.|\-rc\.' | head -1); \
+	 if [ -z "$$LAST_TAG" ]; then echo "No stable tag found."; exit 1; fi; \
+	 echo "## [vNEXT] - $$(date +%Y-%m-%d)"; echo ""; \
+	 echo "### Added"; \
+	 git log $$LAST_TAG..HEAD --oneline | grep -iE '^[a-f0-9]+ feat:' | sed 's/^[a-f0-9]* feat: /- /'; \
+	 echo ""; \
+	 echo "### Fixed"; \
+	 git log $$LAST_TAG..HEAD --oneline | grep -iE '^[a-f0-9]+ fix:' | sed 's/^[a-f0-9]* fix: /- /'; \
+	 echo ""; \
+	 echo "### Changed (CI/chore -- may omit from release notes):"; \
+	 git log $$LAST_TAG..HEAD --oneline | grep -iE '^[a-f0-9]+ (chore|ci|refactor):' | sed 's/^[a-f0-9]* [a-z]*: /- /'
+
 # ── GitHub publishing ──────────────────────────────────────────────────────────
 
-PRIVATE_FILES = Jenkinsfile CLAUDE.md
-
-push-github: ## Squash main → github branch (private files excluded) and force-push to origin/main
+github-push: ## Squash main → github branch (private_files excluded) and force-push to origin/main
 	@echo "Building public commit from main (excluding private files)..."
 	@git branch -D github 2>/dev/null; true
 	@git checkout --orphan github
 	@git add -A
-	@git rm --cached $(PRIVATE_FILES) 2>/dev/null; true
+	@if [ -f private_files ]; then \
+	    while IFS= read -r f || [ -n "$$f" ]; do \
+	        [ -n "$$f" ] && git rm --cached "$$f" 2>/dev/null; true; \
+	    done < private_files; \
+	fi
 	@git commit -m "The Moment v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"')"
 	@git push origin github:main --force
 	@git checkout main
-	@echo "GitHub origin/main updated. Jenkinsfile and CLAUDE.md excluded."
+	@echo "GitHub origin/main updated."
 
-release-github: push-github ## push-github then tag vX.Y.Z from version.go and push to GitHub and local
+github-release: github-push ## github-push then tag vX.Y.Z and create stable GitHub Release
 	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
 	 git tag $$VERSION github && \
 	 git push origin $$VERSION && \
 	 git tag $$VERSION-src && \
 	 git push local $$VERSION $$VERSION-src && \
-	 echo "Tagged $$VERSION (GitHub squash) and $$VERSION-src (local main)." && \
+	 NOTES=$$(awk "/^## \[$$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md) && \
+	 gh release create $$VERSION \
+	     --repo ThetaSigmaLabs/the-moment \
+	     --title "The Moment $$VERSION" \
+	     --notes "$$NOTES" && \
+	 echo "Tagged $$VERSION and created GitHub Release." && \
 	 echo "Actions: https://github.com/ThetaSigmaLabs/the-moment/actions"
+
+github-release-beta: github-push ## github-push then tag vX.Y.Z-beta.N as a GitHub pre-release
+	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
+	 git tag $$VERSION github && \
+	 git push origin $$VERSION && \
+	 git tag $$VERSION-src && \
+	 git push local $$VERSION $$VERSION-src && \
+	 NOTES=$$(awk "/^## \[$$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md) && \
+	 gh release create $$VERSION \
+	     --repo ThetaSigmaLabs/the-moment \
+	     --title "The Moment $$VERSION" \
+	     --notes "$$NOTES" \
+	     --prerelease && \
+	 echo "Pre-release $$VERSION published." && \
+	 echo "Actions: https://github.com/ThetaSigmaLabs/the-moment/actions"
+
+github-dispatch: ## Push current work to GitHub and trigger a test Docker build (SHA tag only)
+	$(MAKE) github-push
+	gh workflow run docker-build.yml --repo ThetaSigmaLabs/the-moment
+	@echo "Test build triggered. Find the SHA at:"
+	@echo "  https://github.com/ThetaSigmaLabs/the-moment/actions"
+
+private-add: ## Mark FILE=<path> as private (excluded from GitHub push)
+	@test -n "$(FILE)" || { echo "Error: specify FILE=<path>"; exit 1; }
+	@grep -qxF "$(FILE)" private_files 2>/dev/null || echo "$(FILE)" >> private_files
+	@echo "$(FILE) added to private_files."
 
 # ── Help ───────────────────────────────────────────────────────────────────────
 
