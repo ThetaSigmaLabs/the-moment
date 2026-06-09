@@ -159,10 +159,19 @@ github-push: ## Squash main → github branch (private_files excluded) and force
 	fi
 	@git commit -m "The Moment v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"')"
 	@git push origin github:main --force
-	@git checkout main
+	@git checkout -f main
 	@echo "GitHub origin/main updated."
 
-github-release: github-push ## github-push then tag vX.Y.Z and create stable GitHub Release
+github-release: ## github-push then tag vX.Y.Z and create stable GitHub Release
+	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
+	 if git tag | grep -qx "$$VERSION"; then \
+	     echo ""; \
+	     echo "  ERROR: $$VERSION is already tagged."; \
+	     echo "  Update version.go before running github-release."; \
+	     echo ""; \
+	     exit 1; \
+	 fi
+	$(MAKE) github-push
 	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
 	 git tag $$VERSION github && \
 	 git push origin $$VERSION && \
@@ -176,7 +185,16 @@ github-release: github-push ## github-push then tag vX.Y.Z and create stable Git
 	 echo "Tagged $$VERSION and created GitHub Release." && \
 	 echo "Actions: https://github.com/ThetaSigmaLabs/the-moment/actions"
 
-github-release-beta: github-push ## github-push then tag vX.Y.Z-beta.N as a GitHub pre-release
+github-release-beta: ## github-push then tag vX.Y.Z-beta.N as a GitHub pre-release
+	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
+	 if git tag | grep -qx "$$VERSION"; then \
+	     echo ""; \
+	     echo "  ERROR: $$VERSION is already tagged."; \
+	     echo "  Update version.go before running github-release-beta."; \
+	     echo ""; \
+	     exit 1; \
+	 fi
+	$(MAKE) github-push
 	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
 	 git tag $$VERSION github && \
 	 git push origin $$VERSION && \

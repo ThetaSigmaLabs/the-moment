@@ -23,7 +23,7 @@ The Moment runs as a Docker container alongside Spoolman. Key capabilities:
 
 - **Print history** — logs every print with duration, filament used, and cost per printer
 - **Toolhead assignment** — tracks which spool is loaded on which toolhead across all printers
-- **NFC tags** — generates `.bin` files for spool tags (ICODE SLIX2, OpenPrintTag CBOR + URL) and location tags (NTAG215, URL only), written via NFC Tools Pro
+- **NFC tags** — generates `.bin` files for spool tags (ICODE SLIX2, OpenPrintTag CBOR + URL) and location tags (NTAG215, URL only), written via [NFC Tools Pro](https://apps.apple.com/app/id1252962749) on iPhone. Confirmed stickers: [ICODE SLIX2 (spool tags)](https://www.amazon.ca/dp/B0755WF6CK), [NTAG215 (location tags)](https://www.amazon.ca/dp/B0BV25WG13) — other compatible stickers may also work
 - **Spoolman sync** — pushes filament usage back to Spoolman after each print; maintains `nfc_*` custom fields for OpenPrintTag compatibility
 - **Multi-printer support** — OctoPrint (Ender, single-head), PrusaLink (Prusa CORE One L); not tested, Bambu (X1C, P1S, A1 via MQTT)
 

@@ -19,7 +19,7 @@ Before The Moment can work with a spool, it must exist in Spoolman.
 
 ## 2. Program the NFC Tag
 
-Spool tags use **ICODE SLIX2** stickers. Each tag carries two NDEF records:
+Spool tags use **ICODE SLIX2** stickers. See the [docs overview](README.md#overview) for confirmed sticker and app options. Each tag carries two NDEF records:
 
 - **Record 1:** OpenPrintTag CBOR — machine-readable filament data (temperatures, color, weight, UUID, material properties) for hardware NFC readers
 - **Record 2:** URL — `http://{moment-host}/nfc/spool/{spoolman-id}` — opens The Moment in a phone browser when scanned
