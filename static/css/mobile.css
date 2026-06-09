@@ -100,6 +100,33 @@
         grid-template-columns: 1fr;
     }
 
+    /* Printer card action buttons — wrap rows so Delete stays inside card border */
+    .printer-card .printer-actions {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .printer-card .btn-small {
+        white-space: nowrap;
+        font-size: 11px;
+        padding: 4px 8px;
+        min-width: 0;
+        margin: 0;
+    }
+
+    /* Printers tab main action buttons — stack vertically */
+    #printer-add-buttons {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    #printer-add-buttons .btn {
+        margin: 0;
+        text-align: center;
+    }
+
     /* ── Section headers ─────────────────────────────────────────────── */
     .section-header {
         flex-wrap: wrap;
@@ -110,6 +137,7 @@
      * JS only toggles display:block/none — no JS change needed.
      */
     .modal-content {
+        box-sizing: border-box;
         position: fixed;
         bottom: 0;
         left: 0;
@@ -120,6 +148,18 @@
         max-height: 85vh;
         overflow-y: auto;
         border-radius: 16px 16px 0 0;
+    }
+
+    /* Modal action buttons — stack vertically so long labels don't overflow */
+    .modal-actions {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    .modal-actions .btn {
+        margin: 0;
+        text-align: center;
     }
 
     /* NFC QR modal uses its own class, same treatment */
