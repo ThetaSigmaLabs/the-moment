@@ -70,7 +70,7 @@ func TestSession_VirtualTwoToolheads(t *testing.T) {
 }
 
 // TestSession_VirtualThreeToolheads verifies a three-toolhead virtual print
-// (e.g. Prusa XL) also collapses to one session.
+// collapses to one session.
 func TestSession_VirtualThreeToolheads(t *testing.T) {
 	bridge := testBridge(t)
 

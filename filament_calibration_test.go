@@ -16,6 +16,7 @@ package main
 // =============================================================================
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,6 +24,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	cbor "github.com/fxamacker/cbor/v2"
 )
 
 // TestCalibrationFieldsInRequiredList asserts that all 5 slicer-calibration
@@ -206,6 +209,267 @@ func TestUpdateFilamentHandler_CalField(t *testing.T) {
 	}
 	if extra["cal_pressure_advance"] != "0.045" {
 		t.Errorf("extra[cal_pressure_advance] = %v, want \"0.045\"", extra["cal_pressure_advance"])
+	}
+}
+
+// TestGetAllVendors verifies that GetAllVendors returns non-archived vendors sorted by ID.
+func TestGetAllVendors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/vendor" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[
+			{"id":3,"name":"Polymaker","archived":false},
+			{"id":1,"name":"Bambu Lab","archived":false},
+			{"id":2,"name":"Old Brand","archived":true}
+		]`)
+	}))
+	defer srv.Close()
+
+	client := NewSpoolmanClient(srv.URL, 5)
+	vendors, err := client.GetAllVendors()
+	if err != nil {
+		t.Fatalf("GetAllVendors: %v", err)
+	}
+	// Archived vendor must be filtered out
+	if len(vendors) != 2 {
+		t.Fatalf("got %d vendors, want 2 (archived excluded)", len(vendors))
+	}
+	// Must be sorted by ID
+	if vendors[0].ID != 1 || vendors[1].ID != 3 {
+		t.Errorf("vendors not sorted by ID: got %d, %d", vendors[0].ID, vendors[1].ID)
+	}
+	if vendors[0].Name != "Bambu Lab" {
+		t.Errorf("vendors[0].Name = %q, want %q", vendors[0].Name, "Bambu Lab")
+	}
+}
+
+// TestUpdateFilamentHandler_NewNativeFields verifies that new native fields (name,
+// color_hex, multi_color_hexes, weight, etc.) are sent directly via UpdateFilament.
+func TestUpdateFilamentHandler_NewNativeFields(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		value interface{}
+	}{
+		{"name", "PolyMax PLA"},
+		{"color_hex", "FF0000"},
+		{"multi_color_hexes", "FF0000,00FF00"},
+		{"weight", 1000.0},
+		{"spool_weight", 200.0},
+		{"price", 24.99},
+		{"density", 1.24},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"id":1}`))
+			}))
+			defer srv.Close()
+			client := NewSpoolmanClient(srv.URL, 5)
+			err := client.UpdateFilament(1, map[string]interface{}{tc.field: tc.value})
+			if err != nil {
+				t.Fatalf("UpdateFilament(%s): %v", tc.field, err)
+			}
+			var body map[string]interface{}
+			if err := json.Unmarshal(gotBody, &body); err != nil {
+				t.Fatalf("body not JSON: %v", err)
+			}
+			if _, ok := body[tc.field]; !ok {
+				t.Errorf("field %q missing from PATCH body", tc.field)
+			}
+		})
+	}
+}
+
+// TestUpdateFilamentHandler_NfcField verifies that nfc_* fields are merged into
+// the extra map (not sent as top-level keys), and do not clobber existing extras.
+func TestUpdateFilamentHandler_NfcField(t *testing.T) {
+	var patchBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, `{"id":1,"name":"Test","extra":{"cal_pressure_advance":"0.04"}}`)
+			return
+		}
+		patchBody, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	client := NewSpoolmanClient(srv.URL, 5)
+	encoded, _ := json.Marshal(220)
+	if err := client.MergeFilamentExtraField(1, "nfc_max_print_temp", string(encoded)); err != nil {
+		t.Fatalf("MergeFilamentExtraField nfc: %v", err)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(patchBody, &body); err != nil {
+		t.Fatalf("PATCH body not JSON: %v", err)
+	}
+	extra, ok := body["extra"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("body[extra] is not an object: %T", body["extra"])
+	}
+	if extra["nfc_max_print_temp"] != "220" {
+		t.Errorf("extra[nfc_max_print_temp] = %v, want \"220\"", extra["nfc_max_print_temp"])
+	}
+	// Existing cal_* key must not be clobbered
+	if extra["cal_pressure_advance"] != "0.04" {
+		t.Errorf("cal_pressure_advance clobbered: got %v, want \"0.04\"", extra["cal_pressure_advance"])
+	}
+}
+
+// decodeCBORPayloadMainMap parses a 3-section OPT CBOR payload (meta|main|aux)
+// and returns the main section decoded as map[uint64]interface{}.
+func decodeCBORPayloadMainMap(t *testing.T, payload []byte) map[uint64]interface{} {
+	t.Helper()
+	dec := cbor.NewDecoder(bytes.NewReader(payload))
+
+	var meta interface{}
+	if err := dec.Decode(&meta); err != nil {
+		t.Fatalf("CBOR meta decode: %v", err)
+	}
+	var mainRaw interface{}
+	if err := dec.Decode(&mainRaw); err != nil {
+		t.Fatalf("CBOR main decode: %v", err)
+	}
+	rawMap, ok := mainRaw.(map[interface{}]interface{})
+	if !ok {
+		t.Fatalf("CBOR main is not a map: %T", mainRaw)
+	}
+	out := make(map[uint64]interface{}, len(rawMap))
+	for k, v := range rawMap {
+		switch kv := k.(type) {
+		case uint64:
+			out[kv] = v
+		case int64:
+			out[uint64(kv)] = v
+		default:
+			t.Fatalf("unexpected CBOR key type %T (%v)", k, k)
+		}
+	}
+	return out
+}
+
+func makeTestSpool(fil *SpoolmanFilament) SpoolmanSpool {
+	return SpoolmanSpool{Filament: fil}
+}
+
+// TestBuildOpenPrintTagPayload_MaterialClass verifies that nfc_material_class
+// is encoded as CBOR key 8 with integer value 0 (FFF) or 1 (SLA).
+func TestBuildOpenPrintTagPayload_MaterialClass(t *testing.T) {
+	for _, tc := range []struct{ class string; want int }{ {"FFF", 0}, {"SLA", 1} } {
+		t.Run(tc.class, func(t *testing.T) {
+			fil := &SpoolmanFilament{
+				Name:     "Test",
+				Material: "PLA",
+				Extra:    map[string]interface{}{"nfc_material_class": tc.class},
+			}
+			payload, err := buildOpenPrintTagPayload(makeTestSpool(fil))
+			if err != nil {
+				t.Fatalf("buildOpenPrintTagPayload: %v", err)
+			}
+			m := decodeCBORPayloadMainMap(t, payload)
+			v, ok := m[8]
+			if !ok {
+				t.Fatalf("CBOR key 8 (material_class) missing from payload")
+			}
+			var got int
+			switch n := v.(type) {
+			case uint64:
+				got = int(n)
+			case int64:
+				got = int(n)
+			default:
+				t.Fatalf("key 8 unexpected type %T", v)
+			}
+			if got != tc.want {
+				t.Errorf("material_class = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildOpenPrintTagPayload_MaterialProperties verifies that nfc_material_properties
+// is encoded as CBOR key 28 with an integer array of enum values.
+func TestBuildOpenPrintTagPayload_MaterialProperties(t *testing.T) {
+	fil := &SpoolmanFilament{
+		Name:     "Test",
+		Material: "PLA",
+		Extra: map[string]interface{}{
+			"nfc_material_properties": `["abrasive","matte"]`,
+		},
+	}
+	payload, err := buildOpenPrintTagPayload(makeTestSpool(fil))
+	if err != nil {
+		t.Fatalf("buildOpenPrintTagPayload: %v", err)
+	}
+	m := decodeCBORPayloadMainMap(t, payload)
+	v, ok := m[28]
+	if !ok {
+		t.Fatalf("CBOR key 28 (tags / material_properties) missing from payload")
+	}
+	arr, ok := v.([]interface{})
+	if !ok {
+		t.Fatalf("key 28 expected []interface{}, got %T", v)
+	}
+	if len(arr) != 2 {
+		t.Fatalf("key 28 length = %d, want 2", len(arr))
+	}
+	toInt := func(x interface{}) int {
+		switch n := x.(type) {
+		case uint64:
+			return int(n)
+		case int64:
+			return int(n)
+		}
+		return -1
+	}
+	if toInt(arr[0]) != 4 { // abrasive
+		t.Errorf("arr[0] = %v, want 4 (abrasive)", arr[0])
+	}
+	if toInt(arr[1]) != 16 { // matte
+		t.Errorf("arr[1] = %v, want 16 (matte)", arr[1])
+	}
+}
+
+// TestBuildOpenPrintTagPayload_SecondaryColors verifies that multi_color_hexes
+// is encoded as CBOR keys 20 and 21 (secondary_color_0, secondary_color_1).
+func TestBuildOpenPrintTagPayload_SecondaryColors(t *testing.T) {
+	fil := &SpoolmanFilament{
+		Name:            "Test",
+		Material:        "PLA",
+		MultiColorHexes: "FF0000,00FF00",
+	}
+	payload, err := buildOpenPrintTagPayload(makeTestSpool(fil))
+	if err != nil {
+		t.Fatalf("buildOpenPrintTagPayload: %v", err)
+	}
+	m := decodeCBORPayloadMainMap(t, payload)
+
+	checkColor := func(key uint64, wantR, wantG, wantB byte) {
+		t.Helper()
+		v, ok := m[key]
+		if !ok {
+			t.Fatalf("CBOR key %d missing from payload", key)
+		}
+		rgb, ok := v.([]byte)
+		if !ok {
+			t.Fatalf("key %d: expected []byte, got %T", key, v)
+		}
+		if len(rgb) != 3 || rgb[0] != wantR || rgb[1] != wantG || rgb[2] != wantB {
+			t.Errorf("key %d = %v, want [%d %d %d]", key, rgb, wantR, wantG, wantB)
+		}
+	}
+	checkColor(20, 0xFF, 0x00, 0x00) // FF0000 → secondary_color_0
+	checkColor(21, 0x00, 0xFF, 0x00) // 00FF00 → secondary_color_1
+
+	if _, ok := m[22]; ok {
+		t.Error("CBOR key 22 present but no third color was provided")
 	}
 }
 

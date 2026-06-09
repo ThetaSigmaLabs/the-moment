@@ -19,11 +19,10 @@ Before The Moment can work with a spool, it must exist in Spoolman.
 
 ## 2. Program the NFC Tag
 
-Spool tags use **NTAG213** stickers (Phase 1). Each tag carries one NDEF record:
+Spool tags use **ICODE SLIX2** stickers. Each tag carries two NDEF records:
 
-- **URL** — `http://{moment-host}/nfc/spool/{spoolman-id}` — opens The Moment in a phone browser when scanned
-
-> **Phase 2 note:** When INBXX Semi-Smart V2 ships (targeted Q3 2026), spool tags will be upgraded to ICODE SLIX2 with a second NDEF record containing OpenPrintTag CBOR for hardware readers. The URL record and `nfc_*` Spoolman fields are already in place; only CBOR generation needs to be added.
+- **Record 1:** OpenPrintTag CBOR — machine-readable filament data (temperatures, color, weight, UUID, material properties) for hardware NFC readers
+- **Record 2:** URL — `http://{moment-host}/nfc/spool/{spoolman-id}` — opens The Moment in a phone browser when scanned
 
 ![Spool Tags](../.github/screenshots/spool_tags.png)
 
@@ -39,10 +38,10 @@ Spool tags use **NTAG213** stickers (Phase 1). Each tag carries one NDEF record:
 5. Click **Save to Spoolman & Download .bin** — the file saves to your downloads (e.g. `spool-42.bin`)
    - All field values are written back to Spoolman's `nfc_*` custom fields for future use
    - A unique UUID (`nfc_spool_uuid`) is auto-generated if this spool doesn't have one yet
-   - The `.bin` file contains a URL-only NDEF record (no CBOR in Phase 1)
+   - The `.bin` file contains a dual-record NDEF message: OpenPrintTag CBOR + URL
 6. On iPhone, open **NFC Tools Pro** → **Write** → **Write Dump**
 7. Select the downloaded `.bin` file
-8. Hold the iPhone near the NTAG213 sticker — it writes in under a second
+8. Hold the iPhone near the ICODE SLIX2 sticker — it writes in under a second
 9. Affix the sticker to the spool
 
 The tag is now programmed. You only need to redo this if the filament spec changes significantly (new brand, different material). The URL on the tag never changes as long as the Spoolman spool ID stays the same.

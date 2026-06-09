@@ -32,7 +32,7 @@ Open `http://<your-server-ip>:5000` → Settings → Add Printer. Done.
 
 ### First time? Read this first
 
-The Moment reads filament and spool data from Spoolman — it doesn't create records itself. **Add your filament types and spools in Spoolman before your first print**, or there will be nothing to assign to a toolhead.
+The Moment reads filament and spool data from Spoolman — it doesn't create filament, spool, or location records there. **Add your filament types and spools in Spoolman before your first print**, or there will be nothing to assign to a toolhead.
 
 Then: open The Moment → Settings → Add Printer → go to Print Ops → assign a spool to the toolhead → print.
 
@@ -57,7 +57,7 @@ The Moment sits between your printers and Spoolman. When a print finishes it aut
 ### Filament & Spool Tracking
 
 - **Automatic deduction** — filament weight updated in Spoolman the moment a print finishes
-- **Multi-toolhead** — each toolhead tracks its own spool independently (tested with 5-toolhead Prusa XL)
+- **Multi-toolhead** — each toolhead tracks its own spool independently (tested with Core One L via manual filament changes; designed for future INDX multi-toolhead upgrade)
 - **Filament-change tracking** — spool swaps mid-print recorded as separate entries; each change gets its own usage row
 - **Location tracking** — spools carry their location (printer toolhead or storage shelf) in Spoolman; bidirectional sync keeps them in agreement
 
@@ -67,7 +67,7 @@ The Moment sits between your printers and Spoolman. When a print finishes it aut
 ### Complete Print History
 
 - **Every print logged** — source printer, spool used, filament consumed (grams), duration, cost breakdown
-- **Session grouping** — multi-toolhead prints grouped as one job; expand to see per-tool detail
+- **Session grouping** — multi-toolhead prints grouped as one job; open the print dialog to see per-tool breakdown, snapshots, cost details, and attached G-code
 - **Thumbnails** — G-code preview images extracted from PrusaSlicer/OrcaSlicer and displayed in history
 - **Notes** — add freeform notes to any history entry after the fact
 - **Searchable, deletable** — clean up test prints; filter by printer or date
@@ -88,10 +88,10 @@ The Moment sits between your printers and Spoolman. When a print finishes it aut
 
 Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assigned to that toolhead in The Moment and Spoolman simultaneously.
 
-- **Spool tags** — NTAG213/215 programmed via NFC Tools Pro; URL opens a mobile-optimized assignment page
+- **Spool tags** — ICODE SLIX2 programmed via NFC Tools Pro; dual-record NDEF (OpenPrintTag CBOR + URL fallback)
 - **Location tags** — one per printer toolhead; tap spool then location (or location then spool) within 5 minutes
 - **QR codes** — generated alongside every NFC tag for environments where NFC isn't available
-- **OpenPrintTag CBOR** — spool tags encode a full [OpenPrintTag](https://specs.openprinttag.org)-compatible CBOR record: temperatures, color, weight, UUID, manufacturing date, material properties
+- **OpenPrintTag CBOR** — spool tags allow a full [OpenPrintTag](https://specs.openprinttag.org)-compatible CBOR record: temperatures, color, weight, UUID, manufacturing date, material properties
 
 ![NFC Tag Management](.github/screenshots/spool_tags.jpg)
 *Generate NFC tag files and QR codes for every spool in your Spoolman library*
@@ -424,34 +424,36 @@ For VS Code dev mode with debugger: see [docs/deployment.md](docs/deployment.md#
 ### Project Structure
 
 ```
-main.go          — entry point, router setup
-bridge.go        — core monitoring, SetToolheadMapping, SyncSpoolmanLocationsToDB
-config.go        — printer config load/save
-cost.go          — CostSettings, CostBreakdown, cost API routes
-database.go      — SQLite init, migrations, all DB helpers
-monitor.go       — MonitorPrinters loop
-prusalink.go     — PrusaLink API client
-octoprint.go     — OctoPrint API client
-bambu.go         — Bambu MQTT client, AMS parsing
-virtual.go       — virtual printer file upload, G-code parsing
-gcode.go         — ParseGcodeMetadata (filament usage, thumbnails)
-history.go       — print history table, notes, delete
-spoolman.go      — Spoolman API client
-nfc.go           — NDEF binary generation (BuildSpoolTagNDEF, BuildLocationTagNDEF)
-nfc_routes.go    — NFC HTTP handlers, mobile spool/location pages
-web.go           — all HTTP handlers, WebSocket hub
-static/          — frontend HTML/CSS/JS
+main.go           — entry point, router setup
+bridge.go         — FilamentBridge core, SetToolheadMapping, SyncSpoolmanLocationsToDB
+config.go         — printer config load/save
+cost.go           — CostSettings, CostBreakdown, cost API routes
+database.go       — SQLite init, migrations, all DB helpers
+monitor.go        — MonitorPrinters loop
+prusalink.go      — PrusaLink API client
+octoprint.go      — OctoPrint API client
+bambu.go          — Bambu MQTT client, AMS parsing
+virtual.go        — virtual printer file upload, G-code parsing
+gcode.go          — ParseGcodeMetadata (filament usage, thumbnails)
+history.go        — print history table, notes, delete
+spoolman.go       — Spoolman API client
+nfc.go            — OpenPrintTag CBOR encoding, NDEF binary generation
+nfc_routes.go     — NFC HTTP handlers, mobile spool/location pages
+web.go            — all HTTP handlers, WebSocket hub
+templates/        — Go HTML templates (one per tab/page)
+static/           — frontend JS/CSS assets
+octoprint-plugin/ — OctoPrint plugin source and distributable zip
 ```
 
 ---
 
 ## Standing on Shoulders
 
-The Moment is a fork of [FilaBridge](https://github.com/needo37/filabridge) by [needo37](https://github.com/needo37), released under GPL-3.0.
+The Moment is a fork of [FilaBridge](https://github.com/needo37/filabridge) (archived) by [needo37](https://github.com/needo37), released under GPL-3.0.
 
 FilaBridge pioneered the Spoolman bridge pattern for real-time filament tracking — connecting live printer data to Spoolman's inventory without manual entry. Its polling architecture, Spoolman API client, and PrusaLink integration are the foundation everything else is built on.
 
-If you find The Moment useful, consider starring [FilaBridge](https://github.com/needo37/filabridge) too.
+If you find The Moment useful, consider starring [FilaBridge](https://github.com/needo37/filabridge) too — the archive preserves the original work.
 
 ---
 

@@ -166,6 +166,7 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/filaments", ws.filamentsHandler)
 		api.PATCH("/filaments/:id", ws.updateFilamentHandler)
 		api.POST("/filaments/:id/clone", ws.cloneFilamentHandler)
+		api.GET("/vendors", ws.vendorsHandler)
 		api.POST("/map_toolhead", ws.mapToolheadHandler)
 		api.GET("/available_spools", ws.availableSpoolsHandler)
 		api.GET("/spoolman/test", ws.testSpoolmanConnectionHandler)
@@ -569,6 +570,15 @@ func (ws *WebServer) filamentsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, filaments)
 }
 
+func (ws *WebServer) vendorsHandler(c *gin.Context) {
+	vendors, err := ws.bridge.spoolman.GetAllVendors()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, vendors)
+}
+
 // updateFilamentHandler updates a single field on a filament. Used by the
 // Filament tab's blur-to-save inline editor.
 // Body: {"field": "cal_pressure_advance", "value": 0.04}
@@ -594,15 +604,40 @@ func (ws *WebServer) updateFilamentHandler(c *gin.Context) {
 		"diameter":               true,
 		"settings_extruder_temp": true,
 		"settings_bed_temp":      true,
+		"name":                   true,
+		"material":               true,
+		"color_hex":              true,
+		"multi_color_hexes":      true,
+		"weight":                 true,
+		"spool_weight":           true,
+		"price":                  true,
+		"density":                true,
 	}
 
 	if nativeFields[body.Field] {
-		if err := ws.bridge.spoolman.UpdateFilament(filamentID, map[string]interface{}{body.Field: body.Value}); err != nil {
+		val := body.Value
+		// vendor_id is handled below; for native fields coerce numeric types correctly.
+		if body.Field == "settings_extruder_temp" || body.Field == "settings_bed_temp" {
+			if n, ok := val.(float64); ok {
+				val = int(n)
+			}
+		}
+		if err := ws.bridge.spoolman.UpdateFilament(filamentID, map[string]interface{}{body.Field: val}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-	} else if strings.HasPrefix(body.Field, "cal_") {
-		// Calibration custom fields: merge into extra map — Spoolman replaces the
+	} else if body.Field == "vendor_id" {
+		vendorID, ok := body.Value.(float64)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "vendor_id must be a number"})
+			return
+		}
+		if err := ws.bridge.spoolman.UpdateFilament(filamentID, map[string]interface{}{"vendor_id": int(vendorID)}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else if strings.HasPrefix(body.Field, "cal_") || strings.HasPrefix(body.Field, "nfc_") {
+		// Custom extra fields: merge into extra map — Spoolman replaces the
 		// entire extra map on PATCH, so we GET first, merge, then PATCH.
 		encoded, err := json.Marshal(body.Value)
 		if err != nil {

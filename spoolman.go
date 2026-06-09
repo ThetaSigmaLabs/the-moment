@@ -66,6 +66,7 @@ type SpoolmanFilament struct {
 	SettingsExtruderTemp int                    `json:"settings_extruder_temp"`
 	SettingsBedTemp      int                    `json:"settings_bed_temp"`
 	ColorHex             string                 `json:"color_hex"`
+	MultiColorHexes      string                 `json:"multi_color_hexes"`
 	ExternalID           string                 `json:"external_id"`
 	Extra                map[string]interface{} `json:"extra"`
 	Archived             bool                   `json:"archived"`
@@ -254,6 +255,34 @@ func (c *SpoolmanClient) GetAllFilaments() ([]SpoolmanFilament, error) {
 	})
 
 	return filaments, nil
+}
+
+// GetAllVendors returns all non-archived vendors from Spoolman, sorted by ID.
+func (c *SpoolmanClient) GetAllVendors() ([]SpoolmanVendor, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/vendor", nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating vendor request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error getting vendors from Spoolman: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.handleAPIError(resp)
+	}
+	var vendors []SpoolmanVendor
+	if err := json.NewDecoder(resp.Body).Decode(&vendors); err != nil {
+		return nil, fmt.Errorf("error decoding vendors from Spoolman: %w", err)
+	}
+	filtered := make([]SpoolmanVendor, 0, len(vendors))
+	for _, v := range vendors {
+		if !v.Archived {
+			filtered = append(filtered, v)
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool { return filtered[i].ID < filtered[j].ID })
+	return filtered, nil
 }
 
 // UpdateSpool updates spool information (used for filament usage tracking)

@@ -7,6 +7,7 @@ package main
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -356,6 +357,90 @@ func PrinterSlug(name string) string {
 
 // ─── OpenPrintTag CBOR encoding ──────────────────────────────────────────────
 
+// optMaterialClasses maps Spoolman nfc_material_class strings to OpenPrintTag material_class enum.
+// CBOR key 8; 0=FFF (filament), 1=SLA (resin). Per OpenPrintTag specification.
+var optMaterialClasses = map[string]int{
+	"FFF": 0,
+	"SLA": 1,
+}
+
+// optMaterialProperties maps OpenPrintTag tag property strings to their integer enum values.
+// CBOR key 28 ("tags"). Per OpenPrintTag specification.
+var optMaterialProperties = map[string]int{
+	"filtration_recommended":      0,
+	"biocompatible":               1,
+	"antibacterial":               2,
+	"air_filtering":               3,
+	"abrasive":                    4,
+	"foaming":                     5,
+	"self_extinguishing":          6,
+	"paramagnetic":                7,
+	"radiation_shielding":         8,
+	"high_temperature":            9,
+	"esd_safe":                    10,
+	"conductive":                  11,
+	"blend":                       12,
+	"water_soluble":               13,
+	"ipa_soluble":                 14,
+	"limonene_soluble":            15,
+	"matte":                       16,
+	"silk":                        17,
+	"translucent":                 19,
+	"transparent":                 20,
+	"iridescent":                  21,
+	"pearlescent":                 22,
+	"glitter":                     23,
+	"glow_in_the_dark":            24,
+	"neon":                        25,
+	"illuminescent_color_change":  26,
+	"temperature_color_change":    27,
+	"gradual_color_change":        28,
+	"coextruded":                  29,
+	"contains_carbon":             30,
+	"contains_carbon_fiber":       31,
+	"contains_carbon_nano_tubes":  32,
+	"contains_glass":              33,
+	"contains_glass_fiber":        34,
+	"contains_kevlar":             35,
+	"contains_stone":              36,
+	"contains_magnetite":          37,
+	"contains_organic_material":   38,
+	"contains_cork":               39,
+	"contains_wax":                40,
+	"contains_wood":               41,
+	"contains_bamboo":             42,
+	"contains_pine":               43,
+	"contains_ceramic":            44,
+	"contains_boron_carbide":      45,
+	"contains_metal":              46,
+	"contains_bronze":             47,
+	"contains_iron":               48,
+	"contains_steel":              49,
+	"contains_silver":             50,
+	"contains_copper":             51,
+	"contains_aluminium":          52,
+	"contains_brass":              53,
+	"contains_tungsten":           54,
+	"imitates_wood":               55,
+	"imitates_metal":              56,
+	"imitates_marble":             57,
+	"imitates_stone":              58,
+	"lithophane":                  59,
+	"recycled":                    60,
+	"home_compostable":            61,
+	"industrially_compostable":    62,
+	"bio_based":                   63,
+	"low_outgassing":              64,
+	"without_pigments":            65,
+	"contains_algae":              66,
+	"castable":                    67,
+	"contains_ptfe":               68,
+	"limited_edition":             69,
+	"emi_shielding":               70,
+	"high_speed":                  71,
+	"contains_graphene":           72,
+}
+
 // optMaterialTypes maps Spoolman material strings to OpenPrintTag material_type integer enum.
 // Integer values per the OpenPrintTag specification.
 var optMaterialTypes = map[string]int{
@@ -539,6 +624,35 @@ func buildOpenPrintTagPayload(spool SpoolmanSpool) ([]byte, error) {
 		}
 		if coo := extraStr(fil.Extra, "nfc_country_of_origin"); coo != "" {
 			mainMap[55] = coo // country_of_origin
+		}
+		if mc, ok := optMaterialClasses[strings.ToUpper(extraStr(fil.Extra, "nfc_material_class"))]; ok {
+			mainMap[8] = mc // material_class (0=FFF, 1=SLA)
+		}
+		if propsJSON := extraStr(fil.Extra, "nfc_material_properties"); propsJSON != "" {
+			var tags []string
+			if json.Unmarshal([]byte(propsJSON), &tags) == nil {
+				var encoded []int
+				for _, t := range tags {
+					if v, ok := optMaterialProperties[strings.ToLower(t)]; ok {
+						encoded = append(encoded, v)
+					}
+				}
+				if len(encoded) > 0 {
+					mainMap[28] = encoded // tags / material_properties
+				}
+			}
+		}
+		for i, h := range strings.SplitN(fil.MultiColorHexes, ",", 6) {
+			if i >= 5 {
+				break
+			}
+			h = strings.TrimSpace(h)
+			if h == "" {
+				continue
+			}
+			if rgb := parseHexColor(h); rgb != nil {
+				mainMap[20+i] = rgb // secondary_color_N (keys 20–24)
+			}
 		}
 	}
 

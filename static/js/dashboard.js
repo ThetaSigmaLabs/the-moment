@@ -4,16 +4,22 @@
 
 // Dashboard stats and live-printer card rendering.
 
+function _spoolChipTextColor(hex) {
+    const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+    return (r * 299 + g * 587 + b * 114) / 1000 > 128 ? '#111' : '#fff';
+}
+
 async function loadDashboardStats() {
     try {
-        const [statsResp, statusResp, histResp] = await Promise.all([
+        const [statsResp, statusResp, histResp, spoolsResp] = await Promise.all([
             fetch('/api/stats'),
             fetch('/api/status'),
             fetch('/api/history?limit=5'),
+            fetch('/api/spools'),
         ]);
-        if (statsResp.ok)  renderDashboardStats(await statsResp.json());
-        if (statusResp.ok) { const d = await statusResp.json(); renderDashboardPrinters(d.printers, d.toolhead_mappings); }
-        if (histResp.ok)   renderRecentPrints((await histResp.json()).records || []);
+        if (statsResp.ok) renderDashboardStats(await statsResp.json());
+        if (statusResp.ok) { const d = await statusResp.json(); const spools = spoolsResp.ok ? await spoolsResp.json() : []; renderDashboardPrinters(d.printers, d.toolhead_mappings, spools); }
+        if (histResp.ok) renderRecentPrints((await histResp.json()).records || []);
     } catch (e) {
         console.error('Dashboard load error:', e);
     }
@@ -41,7 +47,10 @@ function renderDashboardStats(s) {
     }
 }
 
-function renderDashboardPrinters(printers, mappings) {
+function renderDashboardPrinters(printers, mappings, spools = []) {
+    const spoolMap = {};
+    spools.forEach(s => { spoolMap[s.id] = s; });
+
     const container = document.getElementById('dashboard-printers');
     if (!container) return;
 
@@ -56,12 +65,21 @@ function renderDashboardPrinters(printers, mappings) {
     });
 
     container.innerHTML = sorted.map(([id, p]) => {
-        const state  = (p.state || 'IDLE').toUpperCase();
-        const label  = state === 'VIRTUAL' ? 'READY' : state;
-        const pm     = (mappings && mappings[id]) || {};
+        const state = (p.state || 'IDLE').toUpperCase();
+        const label = state === 'VIRTUAL' ? 'READY' : state;
+        const pm = (mappings && mappings[id]) || {};
         const spools = Object.entries(pm)
             .filter(([, m]) => m.spool_id)
-            .map(([tid, m]) => `<span class="dashboard-printer-spool">T${tid}: ${escapeHtml(m.material || ('Spool #' + m.spool_id))}</span>`)
+            .map(([tid, m]) => {
+                const s = spoolMap[m.spool_id];
+                const colorHex = s?.filament?.color_hex;
+                const chip = colorHex
+                    ? `<span style="background:#${escapeHtml(colorHex)};color:${_spoolChipTextColor(colorHex)};padding:1px 6px;border-radius:3px;font-size:0.85em;font-weight:600;border:2px solid rgba(0,0,0,0.30);">#${m.spool_id}</span>`
+                    : `#${m.spool_id}`;
+                const textPart = s?.material ? escapeHtml(s.material) : '';
+                const content = textPart ? `${chip} ${textPart}` : chip;
+                return `<span class="dashboard-printer-spool">T${tid}: ${content}</span>`;
+            })
             .join('');
 
         const jobLine = p.job_name
@@ -116,11 +134,11 @@ function renderRecentPrints(records) {
     }
 
     container.innerHTML = records.map(r => {
-        const icon    = r.status === 'cancelled' ? '⚠️' : r.status === 'failed' ? '❌' : '✅';
-        const name    = escapeHtml(r.job_name || r.filename || 'Unknown');
+        const icon = r.status === 'cancelled' ? '⚠️' : r.status === 'failed' ? '❌' : '✅';
+        const name = escapeHtml(r.job_name || r.filename || 'Unknown');
         const printer = escapeHtml(r.printer_name || '');
-        const grams   = r.filament_used > 0 ? Math.round(r.filament_used) + 'g' : '—';
-        const when    = relativeTime(r.print_started || r.print_finished);
+        const grams = r.filament_used > 0 ? Math.round(r.filament_used) + 'g' : '—';
+        const when = relativeTime(r.print_started || r.print_finished);
 
         return `<div class="dashboard-print-row" onclick="switchTab('history');setTimeout(()=>openHistoryModal(${r.id}),250)">
             <span class="dashboard-print-status">${icon}</span>
@@ -144,7 +162,7 @@ function buildProgressHTML(p) {
     const state = (p.state || '').toUpperCase();
     if (!['PRINTING', 'PAUSED', 'ATTENTION'].includes(state)) return '';
 
-    const pct    = Math.min(100, Math.max(0, p.progress || 0));
+    const pct = Math.min(100, Math.max(0, p.progress || 0));
     const heating = (p.target_nozzle || 0) > 0 && (p.temp_nozzle || 0) < (p.target_nozzle || 0) - 10;
     const timeLeft = (p.time_remaining || 0) > 0 ? formatDuration(p.time_remaining) : '';
 
@@ -164,10 +182,10 @@ function buildProgressHTML(p) {
 function relativeTime(isoStr) {
     if (!isoStr) return '';
     const diff = Date.now() - new Date(isoStr).getTime();
-    const min  = Math.floor(diff / 60000);
-    if (min < 60)  return min + 'm ago';
+    const min = Math.floor(diff / 60000);
+    if (min < 60) return min + 'm ago';
     const hr = Math.floor(min / 60);
-    if (hr  < 24)  return hr + 'h ago';
+    if (hr < 24) return hr + 'h ago';
     return Math.floor(hr / 24) + 'd ago';
 }
 
@@ -191,7 +209,7 @@ function _fetchActiveSnapshots(printerId) {
                 el.style.display = 'none';
             }
         })
-        .catch(() => {});
+        .catch(() => { });
 }
 
 // Called by websocket.js updateDashboard() to keep dashboard printer cards in sync.
@@ -245,7 +263,7 @@ function updateDashboardPrinterStatus(printerId, printerData) {
         btn.className = 'btn btn-small btn-secondary dashboard-view-print-btn';
         btn.style.cssText = 'margin-top:8px;align-self:flex-start;';
         btn.textContent = 'View Print →';
-        btn.onclick = function() { openActivePrintModal(printerId); };
+        btn.onclick = function () { openActivePrintModal(printerId); };
         const assignBtn = card.querySelector('button[onclick*="switchToSpoolsForPrinter"]');
         if (assignBtn) card.insertBefore(btn, assignBtn);
     } else if (!isActive && viewBtn) {
@@ -278,10 +296,10 @@ function closeActivePrintModal() {
 }
 
 function switchActivePrintTab(tab) {
-    document.querySelectorAll('#activePrintModal .hm-tab').forEach(function(btn) {
+    document.querySelectorAll('#activePrintModal .hm-tab').forEach(function (btn) {
         btn.classList.toggle('active', btn.dataset.apmTab === tab);
     });
-    _apmTabIds.forEach(function(t) {
+    _apmTabIds.forEach(function (t) {
         const el = document.getElementById('apmTab-' + t);
         if (el) el.style.display = (t === tab) ? 'block' : 'none';
     });
@@ -290,7 +308,7 @@ function switchActivePrintTab(tab) {
 function _apmLoad() {
     if (!_apmPrinterId) return;
     fetch('/api/printers/' + _apmPrinterId + '/active-print')
-        .then(function(r) {
+        .then(function (r) {
             if (r.status === 409) {
                 _apmSetRefreshStatus('Print ended.');
                 if (_apmRefreshTimer) { clearInterval(_apmRefreshTimer); _apmRefreshTimer = null; }
@@ -299,8 +317,8 @@ function _apmLoad() {
             if (!r.ok) return null;
             return r.json();
         })
-        .then(function(data) { if (data) _apmPopulate(data); })
-        .catch(function() {});
+        .then(function (data) { if (data) _apmPopulate(data); })
+        .catch(function () { });
 }
 
 function _apmPopulate(d) {
@@ -361,11 +379,11 @@ function _apmPopulate(d) {
         if (snaps.length === 0) {
             snapList.innerHTML = '<span style="color:#555;">No snapshots yet.</span>';
         } else {
-            _snapshotList = snaps.map(function(s) {
+            _snapshotList = snaps.map(function (s) {
                 return { url: s.url, label: s.label || s.filename || '' };
             });
             snapList.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:10px;">' +
-                snaps.map(function(s, idx) {
+                snaps.map(function (s, idx) {
                     const label = escapeHtml(s.label || s.filename);
                     const url = escapeHtml(s.url);
                     return '<div style="text-align:center;">' +
@@ -386,14 +404,14 @@ function _apmPopulate(d) {
         if (toolheads.length === 0) {
             thEl.innerHTML = '<span style="color:#555;">No toolhead data.</span>';
         } else {
-            thEl.innerHTML = toolheads.map(function(t) {
+            thEl.innerHTML = toolheads.map(function (t) {
                 const dot = t.color_hex
                     ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#' +
-                      escapeHtml(t.color_hex) + ';margin-right:6px;vertical-align:middle;flex-shrink:0;"></span>'
+                    escapeHtml(t.color_hex) + ';margin-right:6px;vertical-align:middle;flex-shrink:0;"></span>'
                     : '';
                 const spoolInfo = t.spool_id > 0
                     ? dot + escapeHtml(t.material || '') + (t.brand ? ' · ' + escapeHtml(t.brand) : '') +
-                      ' <span style="color:#666;font-size:0.88em;">#' + t.spool_id + '</span>'
+                    ' <span style="color:#666;font-size:0.88em;">#' + t.spool_id + '</span>'
                     : '<span style="color:#555;">No spool assigned</span>';
                 return '<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #222;">' +
                     '<span style="color:#888;min-width:90px;font-size:0.88em;flex-shrink:0;">' + escapeHtml(t.display_name) + '</span>' +
@@ -412,7 +430,7 @@ function _apmSetRefreshStatus(msg) {
 }
 
 // Close on backdrop click
-document.addEventListener('click', function(e) {
+document.addEventListener('click', function (e) {
     const m = document.getElementById('activePrintModal');
     if (m && e.target === m) closeActivePrintModal();
 });

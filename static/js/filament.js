@@ -118,7 +118,11 @@ function renderFilamentTable(filaments) {
     </td>
     <td style="padding:4px 8px; white-space:nowrap; font-size:0.9em;">${escHtml(f.name ?? '')}</td>
     ${inputs}
-    <td style="padding:4px 8px; text-align:right;">
+    <td style="padding:4px 8px; text-align:right; white-space:nowrap;">
+        <button class="btn btn-small btn-secondary"
+                onclick="openEditFilamentModal(${f.id})"
+                title="Edit this filament"
+                style="font-size:0.75em; padding:3px 8px; margin-right:4px;">✎</button>
         <button class="btn btn-small btn-secondary"
                 onclick="cloneFilament(${f.id})"
                 title="Clone this filament"
@@ -216,6 +220,159 @@ function filterFilamentTable(query) {
     document.querySelectorAll('.filament-group-row').forEach(r => {
         r.style.display = matchedGroups.has(r.dataset.group) ? '' : 'none';
     });
+}
+
+// ── Edit Modal ───────────────────────────────────────────────────────────────
+
+let _editFilamentID = null;
+let _vendorCache = null;
+
+async function openEditFilamentModal(id) {
+    _editFilamentID = id;
+    const f = _allFilaments.find(x => x.id === id);
+    if (!f) return;
+
+    // Populate vendor dropdown (cached after first load)
+    if (!_vendorCache) {
+        try {
+            const r = await fetch('/api/vendors');
+            _vendorCache = r.ok ? await r.json() : [];
+        } catch (_) { _vendorCache = []; }
+    }
+    const sel = document.getElementById('filEdit-vendor');
+    sel.innerHTML = '<option value="">— no vendor —</option>' +
+        _vendorCache.map(v => `<option value="${v.id}">${escHtml(v.name)}</option>`).join('');
+    sel.value = f.vendor ? String(f.vendor.id) : '';
+
+    // Tab 1 — Details
+    _setFE('filEdit-name',          f.name ?? '');
+    _setFE('filEdit-material',      f.material ?? '');
+    _setFE('filEdit-color',         f.color_hex ? '#' + f.color_hex : '#888888');
+    _setFE('filEdit-multi-color',   f.multi_color_hexes ?? '');
+    _setFE('filEdit-diameter',      f.diameter ?? 0);
+    _setFE('filEdit-weight',        f.weight ?? 0);
+    _setFE('filEdit-spool-weight',  f.spool_weight ?? 0);
+    _setFE('filEdit-price',         f.price ?? '');
+    _setFE('filEdit-density',       f.density ?? 0);
+    _setFE('filEdit-extruder-temp', f.settings_extruder_temp ?? 0);
+    _setFE('filEdit-bed-temp',      f.settings_bed_temp ?? 0);
+
+    // Tab 2 — OpenPrintTag
+    const ex = f.extra || {};
+    _setFE('filEdit-mat-class',       _extraStr(ex, 'nfc_material_class') || 'FFF');
+    _setFE('filEdit-country',         _extraStr(ex, 'nfc_country_of_origin'));
+    _setFE('filEdit-min-print-temp',  _extraInt(ex, 'nfc_min_print_temp'));
+    _setFE('filEdit-max-print-temp',  _extraInt(ex, 'nfc_max_print_temp'));
+    _setFE('filEdit-min-bed-temp',    _extraInt(ex, 'nfc_min_bed_temp'));
+    _setFE('filEdit-max-bed-temp',    _extraInt(ex, 'nfc_max_bed_temp'));
+    _setFE('filEdit-nominal-length',  _extraInt(ex, 'nfc_nominal_length'));
+    _setFE('filEdit-transmission',    _extraFloat(ex, 'nfc_transmission_distance'));
+    _setFE('filEdit-mat-props',       _extraStr(ex, 'nfc_material_properties'));
+
+    switchFilamentEditTab('details');
+    document.getElementById('editFilamentModal').style.display = 'block';
+
+    // Wire blur / change handlers (remove old ones by cloning nodes)
+    document.querySelectorAll('.filament-edit-field').forEach(el => {
+        const clone = el.cloneNode(true);
+        el.parentNode.replaceChild(clone, el);
+        const event = clone.type === 'color' ? 'change' : 'blur';
+        clone.addEventListener(event, () => handleFilamentEditBlur(clone));
+    });
+}
+
+function closeEditFilamentModal() {
+    document.getElementById('editFilamentModal').style.display = 'none';
+    loadFilaments();
+}
+
+function switchFilamentEditTab(tab) {
+    document.querySelectorAll('#editFilamentModal .hm-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    document.getElementById('filEditTab-details').style.display = tab === 'details' ? '' : 'none';
+    document.getElementById('filEditTab-opttag').style.display  = tab === 'opttag'  ? '' : 'none';
+}
+
+function handleFilamentEditBlur(el) {
+    const field = el.dataset.field;
+    const id = _editFilamentID;
+    if (!field || !id) return;
+
+    let value = el.value;
+
+    // Color picker returns #RRGGBB; Spoolman stores without '#'
+    if (field === 'color_hex') value = value.replace(/^#/, '');
+
+    // Integer fields
+    const intFields = new Set([
+        'settings_extruder_temp', 'settings_bed_temp',
+        'nfc_min_print_temp', 'nfc_max_print_temp',
+        'nfc_min_bed_temp', 'nfc_max_bed_temp', 'nfc_nominal_length', 'vendor_id',
+    ]);
+    // Float fields
+    const floatFields = new Set([
+        'diameter', 'weight', 'spool_weight', 'price', 'density', 'nfc_transmission_distance',
+    ]);
+
+    if (intFields.has(field)) {
+        value = parseInt(value, 10);
+        if (isNaN(value)) return;
+    } else if (floatFields.has(field)) {
+        value = parseFloat(value);
+        if (isNaN(value)) return;
+    }
+
+    fetch(`/api/filaments/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ field, value }),
+    })
+    .then(r => {
+        if (!r.ok) return r.json().then(j => Promise.reject(j.error || r.statusText));
+        // Update in-place so the table reflects the change without a full reload
+        const f = _allFilaments.find(x => x.id === id);
+        if (f) _applyFilamentFieldUpdate(f, field, value);
+    })
+    .catch(err => showToast(`Save failed: ${err}`, 'error'));
+}
+
+function _applyFilamentFieldUpdate(f, field, value) {
+    const nativeKeys = ['name','material','color_hex','multi_color_hexes','diameter',
+                        'weight','spool_weight','price','density',
+                        'settings_extruder_temp','settings_bed_temp'];
+    if (nativeKeys.includes(field)) {
+        f[field] = value;
+    } else if (field === 'vendor_id') {
+        const v = _vendorCache ? _vendorCache.find(x => x.id === value) : null;
+        if (v) f.vendor = { id: v.id, name: v.name };
+    } else if (field.startsWith('nfc_') || field.startsWith('cal_')) {
+        if (!f.extra) f.extra = {};
+        f.extra[field] = String(value);
+    }
+}
+
+// Read helpers for Spoolman extra map (mirrors server-side extraInt/extraStr/extraFloat)
+function _extraStr(extra, key) {
+    const v = extra[key];
+    return (v !== undefined && v !== null) ? String(v) : '';
+}
+function _extraInt(extra, key) {
+    const v = extra[key];
+    if (v === undefined || v === null) return 0;
+    const n = parseInt(v, 10);
+    return isNaN(n) ? 0 : n;
+}
+function _extraFloat(extra, key) {
+    const v = extra[key];
+    if (v === undefined || v === null) return 0;
+    const n = parseFloat(v);
+    return isNaN(n) ? 0 : n;
+}
+
+function _setFE(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
 }
 
 // ── Clone ────────────────────────────────────────────────────────────────────
