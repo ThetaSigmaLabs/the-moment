@@ -103,7 +103,7 @@ Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assign
 
 | Printer | Interface | Multi-toolhead | Status |
 |---|---|---|---|
-| Any PrusaLink printer (CORE One, XL, MK4, Mini+) | PrusaLink API | Yes (XL tested with 5 heads) | Fully supported |
+| Any PrusaLink printer (CORE One, XL, MK4, Mini+) | PrusaLink API | Yes (Core One L tester with 5 heads manual changing) | Fully supported |
 | Any OctoPrint printer (Ender, CR-10, Voron, etc.) | OctoPrint plugin | Single-head | Fully supported |
 | Bambu X1C, P1S, A1, A1 Mini | MQTT over LAN | AMS slots → toolheads | **Beta — not hardware-tested** |
 | INDX 8-head | TBD | 8 toolheads | Future |
@@ -172,7 +172,7 @@ Go 1.24 or higher is required.
 
 1. Settings → Printers → Add Printer
 2. Set Type to `PrusaLink`, enter the printer's LAN IP and API key
-3. Set Toolheads to `1` (or `5` for XL)
+3. Set Toolheads to `1` to `10` for XL, INDX, or virtual tool heads for manual changes)
 4. Save — The Moment polls on the next cycle
 
 The Moment must be configured before the first print. Prints that occur before the printer is added are not recorded.
