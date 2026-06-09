@@ -57,7 +57,7 @@ pipeline {
                     steps {
                         cleanWs()
                         checkout scm
-                        sh 'CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o the-moment-linux-arm64 .'
+                        sh 'CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -tags "osusergo netgo" -ldflags="-s -w -extldflags \'-static\'" -o the-moment-linux-arm64 .'
                         sh 'file the-moment-linux-arm64'
                         stash name: 'bin-linux-arm64', includes: 'the-moment-linux-arm64'
                     }
