@@ -118,6 +118,8 @@ pipeline {
                         cleanWs()
                         checkout scm
                         powershell '''
+                            docker pull golang:1.24-alpine
+                            docker pull alpine:latest
                             $img = "$env:REGISTRY/$($env:IMAGE):$($env:TAG)-amd64"
                             docker build --target production --platform linux/amd64 -t $img .
                             docker push $img
