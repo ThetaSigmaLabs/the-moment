@@ -3,3 +3,4 @@ Jenkinsfile
 CLAUDE.md
 SKILLS.md
 docs/release-workflow.md
+docs/ssh-keychain-undo.md
