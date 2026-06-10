@@ -1,0 +1,246 @@
+/* The Moment — Dashboard Tab Styles */
+
+/* ── Stat Cards Grid ──────────────────────────────────────────────────────── */
+.dashboard-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+@media (max-width: 900px) {
+  .dashboard-stats-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+  .dashboard-stats-grid { grid-template-columns: 1fr; }
+}
+
+.stat-card {
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  padding: 20px 22px;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+
+.stat-card:hover {
+  border-color: var(--brand-bright);
+}
+
+.stat-value {
+  font-size: 2em;
+  font-weight: 700;
+  color: var(--brand-light);
+  line-height: 1.1;
+  margin-bottom: 6px;
+  letter-spacing: -0.02em;
+}
+
+.stat-label {
+  font-size: 0.78em;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+}
+
+/* ── Dashboard Section Headers ────────────────────────────────────────────── */
+.dashboard-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 14px;
+}
+
+.dashboard-section-title {
+  font-size: 1em;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+/* ── Live Printer Cards ───────────────────────────────────────────────────── */
+.dashboard-printers-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+.dashboard-printer-card {
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dashboard-printer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dashboard-printer-name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.95em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dashboard-printer-job {
+  font-size: 0.82em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dashboard-printer-spools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.dashboard-printer-spool {
+  background: rgba(124, 92, 252, 0.12);
+  border: 1px solid rgba(124, 92, 252, 0.25);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.76em;
+  color: var(--brand-light);
+}
+
+/* ── Print Progress ───────────────────────────────────────────────────────── */
+.dashboard-printer-progress-wrap:empty { display: none; }
+
+.dashboard-printer-progress {
+  margin-top: 2px;
+}
+
+.dashboard-printer-progress-bar {
+  height: 4px;
+  background: var(--surface-border);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.dashboard-printer-progress-fill {
+  height: 100%;
+  background: #ffb347;
+  border-radius: 2px;
+  transition: width 0.8s ease;
+}
+
+.dashboard-printer-progress-label {
+  font-size: 0.8em;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Recent Prints List ───────────────────────────────────────────────────── */
+.dashboard-recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dashboard-print-row {
+  display: grid;
+  grid-template-columns: 20px 1fr auto auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.15s;
+  border: 1px solid transparent;
+}
+
+.dashboard-print-row:hover {
+  background: var(--brand-tint);
+  border-color: var(--surface-border);
+}
+
+.dashboard-print-status {
+  font-size: 0.9em;
+  text-align: center;
+}
+
+.dashboard-print-name {
+  font-size: 0.88em;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.dashboard-print-printer {
+  font-size: 0.78em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.dashboard-print-filament {
+  font-size: 0.78em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  text-align: right;
+  min-width: 40px;
+}
+
+.dashboard-print-date {
+  font-size: 0.75em;
+  color: var(--text-muted);
+  white-space: nowrap;
+  text-align: right;
+  min-width: 55px;
+}
+
+/* ── Dashboard Alerts ─────────────────────────────────────────────────────── */
+/* ── Per-printer filament sufficiency warnings ────────────────────────────── */
+.dashboard-printer-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 4px;
+}
+
+.dashboard-printer-warning {
+  font-size: 0.76em;
+  padding: 3px 8px;
+  border-radius: 3px;
+  border-left: 3px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  color: #fbbf24;
+}
+
+.dashboard-alert {
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+
+.dashboard-alert-warn {
+  background: #3d1f00;
+  border: 1px solid #f59e0b;
+  color: #fbbf24;
+}
+
+.dashboard-alert-error {
+  background: #7f1d1d;
+  border: 1px solid #ef4444;
+  color: #fca5a5;
+}
+
+.dashboard-alert h4 { margin: 0 0 8px; }
+.dashboard-alert p  { margin: 4px 0; font-size: 0.9em; }

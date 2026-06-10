@@ -1,0 +1,179 @@
+/* The Moment — Mobile Responsive Overrides
+ * All rules scoped to max-width:767px so desktop layout is unchanged.
+ */
+
+@media (max-width: 767px) {
+
+    /* ── Body & container ─────────────────────────────────────────────── */
+    body {
+        padding: 8px;
+    }
+
+    .container {
+        border-radius: 8px;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────────── */
+    .header {
+        padding: 12px 16px;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    /* Override inline style="height:52px" on the logo */
+    .header img {
+        height: 36px !important;
+    }
+
+    .header h1 {
+        font-size: 1.4em;
+    }
+
+    .header p {
+        font-size: 0.82em;
+        margin-top: 2px;
+    }
+
+    /* ── Tab navigation — 2 × 2 grid ─────────────────────────────────── */
+    .tabs {
+        flex-wrap: wrap;
+    }
+
+    .tabs li {
+        flex: 0 0 50%;
+    }
+
+    .tab {
+        width: 100%;
+        padding: 10px 8px;
+        font-size: 13px;
+        border-radius: 0;
+    }
+
+    /* ── Tab content & config sections ───────────────────────────────── */
+    .tab-content {
+        padding: 14px 10px;
+    }
+
+    .config-section {
+        padding: 14px 10px;
+    }
+
+    /* ── NFC Management — CRITICAL ────────────────────────────────────
+     * .nfc-side-by-side uses grid-template-columns: 450px 1fr which is
+     * wider than any phone screen. Stack panels vertically instead.
+     */
+    .nfc-side-by-side {
+        grid-template-columns: 1fr;
+        height: auto;
+        max-height: none;
+    }
+
+    .nfc-list-container {
+        height: 250px;
+    }
+
+    /* QR code: fluid but capped at 260px */
+    .nfc-qr-large {
+        width: min(260px, calc(100vw - 80px));
+        height: min(260px, calc(100vw - 80px));
+    }
+
+    /* ── Print Ops — toolhead table ───────────────────────────────────── */
+    .toolhead-label {
+        width: 80px;
+        font-size: 0.82em;
+    }
+
+    /* ── Forms — stack 2-column grids ────────────────────────────────── */
+    .form-row {
+        grid-template-columns: 1fr;
+        gap: 0;
+    }
+
+    .tag-issue-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* ── Printer management grid ──────────────────────────────────────── */
+    .printer-grid {
+        grid-template-columns: 1fr;
+    }
+
+    /* Printer card action buttons — wrap rows so Delete stays inside card border */
+    .printer-card .printer-actions {
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .printer-card .btn-small {
+        white-space: nowrap;
+        font-size: 11px;
+        padding: 4px 8px;
+        min-width: 0;
+        margin: 0;
+    }
+
+    /* Printers tab main action buttons — stack vertically */
+    #printer-add-buttons {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    #printer-add-buttons .btn {
+        margin: 0;
+        text-align: center;
+    }
+
+    /* ── Section headers ─────────────────────────────────────────────── */
+    .section-header {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    /* ── Modals — bottom-sheet pattern (iOS standard) ─────────────────
+     * JS only toggles display:block/none — no JS change needed.
+     */
+    .modal-content {
+        box-sizing: border-box;
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        margin: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        max-height: 85vh;
+        overflow-y: auto;
+        border-radius: 16px 16px 0 0;
+    }
+
+    /* Modal action buttons — stack vertically so long labels don't overflow */
+    .modal-actions {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+
+    .modal-actions .btn {
+        margin: 0;
+        text-align: center;
+    }
+
+    /* NFC QR modal uses its own class, same treatment */
+    .nfc-qr-content {
+        margin: 0;
+        width: 100%;
+        max-width: 100%;
+        border-radius: 16px 16px 0 0;
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        max-height: 85vh;
+        overflow-y: auto;
+    }
+
+}

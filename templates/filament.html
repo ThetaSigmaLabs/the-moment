@@ -1,0 +1,192 @@
+<!-- Filament Edit Modal -->
+<div id="editFilamentModal" class="modal">
+    <div class="modal-content" style="max-width:580px;">
+        <div class="modal-header">
+            <h3>Edit Filament</h3>
+            <button class="close" onclick="closeEditFilamentModal()">&times;</button>
+        </div>
+
+        <div style="display:flex; border-bottom:2px solid var(--surface-border); margin-bottom:16px;">
+            <button class="hm-tab active" data-tab="details" onclick="switchFilamentEditTab('details')">Details</button>
+            <button class="hm-tab" data-tab="opttag" onclick="switchFilamentEditTab('opttag')">OpenPrintTag</button>
+        </div>
+
+        <!-- Tab 1: Core filament fields -->
+        <div id="filEditTab-details">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 16px;">
+                <div class="form-group" style="grid-column:1/-1;">
+                    <label for="filEdit-name">Name</label>
+                    <input type="text" id="filEdit-name" class="filament-edit-field"
+                           data-field="name" placeholder="Filament name"
+                           style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-vendor">Vendor</label>
+                    <select id="filEdit-vendor" class="filament-edit-field"
+                            data-field="vendor_id" style="width:100%;">
+                        <option value="">— no vendor —</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-material">Material</label>
+                    <input type="text" id="filEdit-material" class="filament-edit-field"
+                           data-field="material" placeholder="e.g. PLA"
+                           style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-color">Primary Color</label>
+                    <input type="color" id="filEdit-color" class="filament-edit-field"
+                           data-field="color_hex" style="width:100%; height:36px; padding:2px 4px;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-multi-color" title="Comma-separated hex codes, e.g. FF0000,00FF00">Secondary Colors</label>
+                    <input type="text" id="filEdit-multi-color" class="filament-edit-field"
+                           data-field="multi_color_hexes" placeholder="FF0000,00FF00"
+                           style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-diameter">Diameter (mm)</label>
+                    <input type="number" id="filEdit-diameter" class="filament-edit-field"
+                           data-field="diameter" step="0.01" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-weight">Weight / Nominal (g)</label>
+                    <input type="number" id="filEdit-weight" class="filament-edit-field"
+                           data-field="weight" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-spool-weight">Spool Weight (g)</label>
+                    <input type="number" id="filEdit-spool-weight" class="filament-edit-field"
+                           data-field="spool_weight" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-price">Price / kg</label>
+                    <input type="number" id="filEdit-price" class="filament-edit-field"
+                           data-field="price" step="0.01" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-density">Density (g/cm³)</label>
+                    <input type="number" id="filEdit-density" class="filament-edit-field"
+                           data-field="density" step="0.001" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-extruder-temp">Extruder Temp (°C)</label>
+                    <input type="number" id="filEdit-extruder-temp" class="filament-edit-field"
+                           data-field="settings_extruder_temp" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-bed-temp">Bed Temp (°C)</label>
+                    <input type="number" id="filEdit-bed-temp" class="filament-edit-field"
+                           data-field="settings_bed_temp" step="1" min="0" style="width:100%;">
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab 2: OpenPrintTag / NFC fields -->
+        <div id="filEditTab-opttag" style="display:none;">
+            <p style="font-size:0.82em; color:var(--text-secondary); margin:0 0 12px;">
+                These fields populate the OpenPrintTag CBOR payload written to NFC spool tags.
+                Changes save immediately on blur.
+            </p>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px 16px;">
+                <div class="form-group">
+                    <label for="filEdit-mat-class">Material Class</label>
+                    <select id="filEdit-mat-class" class="filament-edit-field nfc-field"
+                            data-field="nfc_material_class" style="width:100%;">
+                        <option value="FFF">FFF (Filament)</option>
+                        <option value="SLA">SLA (Resin)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-country">Country of Origin</label>
+                    <input type="text" id="filEdit-country" class="filament-edit-field nfc-field"
+                           data-field="nfc_country_of_origin" placeholder="e.g. CZ"
+                           maxlength="3" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-min-print-temp">Min Print Temp (°C)</label>
+                    <input type="number" id="filEdit-min-print-temp" class="filament-edit-field nfc-field"
+                           data-field="nfc_min_print_temp" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-max-print-temp">Max Print Temp (°C)</label>
+                    <input type="number" id="filEdit-max-print-temp" class="filament-edit-field nfc-field"
+                           data-field="nfc_max_print_temp" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-min-bed-temp">Min Bed Temp (°C)</label>
+                    <input type="number" id="filEdit-min-bed-temp" class="filament-edit-field nfc-field"
+                           data-field="nfc_min_bed_temp" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-max-bed-temp">Max Bed Temp (°C)</label>
+                    <input type="number" id="filEdit-max-bed-temp" class="filament-edit-field nfc-field"
+                           data-field="nfc_max_bed_temp" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-nominal-length">Nominal Length (mm)</label>
+                    <input type="number" id="filEdit-nominal-length" class="filament-edit-field nfc-field"
+                           data-field="nfc_nominal_length" step="1" min="0" style="width:100%;">
+                </div>
+                <div class="form-group">
+                    <label for="filEdit-transmission">Transmission Distance</label>
+                    <input type="number" id="filEdit-transmission" class="filament-edit-field nfc-field"
+                           data-field="nfc_transmission_distance" step="0.001" min="0" max="1"
+                           style="width:100%;">
+                </div>
+                <div class="form-group" style="grid-column:1/-1;">
+                    <label for="filEdit-mat-props" title='JSON array, e.g. ["abrasive","matte"]'>Material Properties / Tags</label>
+                    <input type="text" id="filEdit-mat-props" class="filament-edit-field nfc-field"
+                           data-field="nfc_material_properties"
+                           placeholder='["abrasive","matte"]'
+                           style="width:100%; font-family:monospace; font-size:0.9em;">
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Filament Calibration Tab -->
+<div id="filament-tab" class="tab-content">
+    <div style="padding: 16px 0 8px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+        <input type="search" id="filament-search" placeholder="Filter filaments…"
+               oninput="filterFilamentTable(this.value)"
+               style="flex: 1; min-width: 180px; max-width: 320px; padding: 7px 12px;
+                      background: var(--surface-2); border: 1px solid var(--surface-border);
+                      border-radius: 6px; color: var(--text-primary); font-size: 0.9em;">
+        <button class="btn btn-secondary" onclick="expandAllFilaments()" title="Expand all groups"
+                style="padding: 7px 12px;">⊞ Expand All</button>
+        <button class="btn btn-secondary" onclick="collapseAllFilaments()" title="Collapse all groups"
+                style="padding: 7px 12px;">⊟ Collapse All</button>
+        <button class="btn btn-secondary" onclick="loadFilaments()" title="Refresh filament list"
+                style="padding: 7px 12px;">↺ Refresh</button>
+    </div>
+
+    <div style="overflow-x: auto;">
+        <table id="filament-table" class="toolhead-table" style="min-width: 900px;">
+            <thead>
+                <tr>
+                    <th style="width: 28px;"></th><!-- color swatch -->
+                    <th>Filament</th>
+                    <th title="Filament diameter (mm)">⌀ mm</th>
+                    <th title="Bed temperature °C">Bed °C</th>
+                    <th title="Nozzle temperature °C">Nozzle °C</th>
+                    <th title="Max volumetric flow rate mm³/s">Flow mm³/s</th>
+                    <th title="Pressure advance / linear advance">Press. Adv.</th>
+                    <th title="Flow ratio / flow multiplier">Flow Ratio</th>
+                    <th title="Retraction length mm">Ret. mm</th>
+                    <th title="Retraction speed mm/s">Ret. mm/s</th>
+                    <th style="width: 60px;"></th><!-- actions -->
+                </tr>
+            </thead>
+            <tbody id="filament-tbody">
+                <tr id="filament-loading-row">
+                    <td colspan="11" style="text-align: center; color: var(--text-muted); padding: 24px;">
+                        Loading filaments…
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+

@@ -1,0 +1,127 @@
+/* The Moment Dashboard - Dropdown Styles */
+
+.custom-dropdown {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.dropdown-button {
+  width: 100%;
+  padding: 10px 15px;
+  background: var(--surface-2);
+  border: 1px solid var(--surface-border);
+  border-radius: 5px;
+  color: var(--text-primary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.dropdown-button:hover {
+  background: var(--surface-3);
+  border-color: rgba(124, 92, 252, 0.35);
+}
+
+.dropdown-button.open {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: var(--surface-2);
+  border-color: var(--brand-bright);
+}
+
+.dropdown-content {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--brand-bright);
+  border-top: none;
+  border-radius: 0 0 5px 5px;
+  max-height: 400px;
+  overflow-y: auto;
+  z-index: 1000;
+  display: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.dropdown-content.show {
+  display: block;
+}
+
+.dropdown-option {
+  padding: 10px 15px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: background-color 0.15s ease;
+}
+
+.dropdown-option:hover {
+  background: var(--surface-3);
+}
+
+.dropdown-option.selected {
+  background: var(--brand-tint-lg);
+  color: var(--brand-light);
+}
+
+.option-text {
+  flex: 1;
+  font-size: 14px;
+}
+
+.dropdown-arrow {
+  transition: transform 0.2s ease;
+}
+
+.dropdown-arrow.open {
+  transform: rotate(180deg);
+}
+
+/* ── Search functionality ─────────────────────────────────────────────────── */
+.dropdown-search-container {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--surface-border);
+  background: var(--surface-2);
+}
+
+.dropdown-search {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+}
+
+.dropdown-search:focus {
+  border-color: var(--brand-bright);
+  background: var(--surface-2);
+}
+
+.dropdown-search::placeholder {
+  color: var(--text-muted);
+}
+
+.dropdown-options-container {
+  max-height: none;
+  overflow-y: visible;
+}
+
+.dropdown-no-results {
+  padding: 15px;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  display: none;
+}

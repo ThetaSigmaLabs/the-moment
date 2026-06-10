@@ -1,0 +1,138 @@
+/* The Moment Dashboard - Modal Styles */
+
+/* ── Modal Base ───────────────────────────────────────────────────────────── */
+.modal {
+  display: none;
+  position: fixed;
+  z-index: 1000;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.75);
+}
+
+.modal-content {
+  background-color: var(--surface-2);
+  margin: 5% auto;
+  padding: 20px;
+  border: 1px solid var(--surface-border);
+  border-radius: 12px;
+  width: 90%;
+  max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
+  position: relative;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--surface-border);
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.modal-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.close {
+  color: var(--text-muted);
+  font-size: 24px;
+  font-weight: bold;
+  cursor: pointer;
+  background: none;
+  border: none;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.close:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--surface-border);
+}
+
+/* ── History Modal Inner Tabs ─────────────────────────────────────────────── */
+.hm-tab {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.83em;
+  font-weight: 500;
+  padding: 10px 14px;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+  border-radius: 6px 6px 0 0;
+}
+
+.hm-tab:hover {
+  color: var(--text-secondary);
+  background: var(--brand-tint);
+}
+
+.hm-tab.active {
+  color: var(--brand-light);
+  border-bottom-color: var(--brand-bright);
+  background: var(--brand-tint);
+}
+
+/* ── Modal Form Groups ────────────────────────────────────────────────────── */
+.modal .form-group {
+  margin-bottom: 15px;
+}
+
+.modal .form-group label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 0.82em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.modal .form-group input,
+.modal .form-group select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--surface-border);
+  border-radius: 6px;
+  background-color: var(--surface-1);
+  color: var(--text-primary);
+  font-size: 14px;
+  box-sizing: border-box;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.modal .form-group input:focus,
+.modal .form-group select:focus {
+  outline: none;
+  border-color: var(--brand-bright);
+  background-color: var(--surface-2);
+}
+
+.modal .form-group small {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 5px;
+  display: block;
+}

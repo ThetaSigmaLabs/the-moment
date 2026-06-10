@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spool — The Moment</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 16px;
+            color: #f0f0f0;
+        }
+        .card {
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .spool-header {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+        .color-dot {
+            width: 52px;
+            height: 52px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            border: 3px solid rgba(255,255,255,0.3);
+        }
+        .spool-title { font-size: 1.15em; font-weight: 700; }
+        .spool-sub { font-size: 0.85em; color: #aaa; margin-top: 3px; }
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 7px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            font-size: 0.88em;
+        }
+        .detail-row:last-child { border-bottom: none; }
+        .detail-label { color: #aaa; }
+        .detail-value { font-weight: 500; }
+        h2 { font-size: 1em; font-weight: 600; margin-bottom: 14px; color: #c8b8ff; }
+        .assign-btn {
+            display: block;
+            width: 100%;
+            padding: 13px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: rgba(255,255,255,0.07);
+            color: #f0f0f0;
+            font-size: 0.95em;
+            text-align: left;
+            cursor: pointer;
+            margin-bottom: 10px;
+            transition: background 0.15s;
+        }
+        .assign-btn:active { background: rgba(124,58,237,0.25); border-color: #7c3aed; }
+        .btn-primary {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            border-radius: 10px;
+            border: none;
+            background: #7c3aed;
+            color: white;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            text-align: center;
+            margin-top: 8px;
+        }
+        .success-box {
+            background: rgba(74,222,128,0.15);
+            border: 1px solid rgba(74,222,128,0.4);
+            border-radius: 14px;
+            padding: 24px;
+            text-align: center;
+            display: none;
+        }
+        .success-box.visible { display: block; }
+        .success-icon { font-size: 2.5em; margin-bottom: 8px; }
+        .error-box {
+            background: rgba(220,38,38,0.15);
+            border: 1px solid rgba(220,38,38,0.4);
+            border-radius: 14px;
+            padding: 16px;
+            margin-top: 12px;
+            display: none;
+        }
+        .error-box.visible { display: block; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="spool-header">
+            <div class="color-dot" style="background:{{.ColorHex}};"></div>
+            <div>
+                <div class="spool-title">{{.SpoolName}}</div>
+                <div class="spool-sub">{{.Material}}{{if .Vendor}} &middot; {{.Vendor}}{{end}}</div>
+            </div>
+        </div>
+        <div class="detail-row">
+            <span class="detail-label">Remaining</span>
+            <span class="detail-value">{{printf "%.0f" .RemainingWeight}} g</span>
+        </div>
+        {{if .CurrentAssignment}}
+        <div class="detail-row">
+            <span class="detail-label">Currently on</span>
+            <span class="detail-value">{{.CurrentAssignment}}</span>
+        </div>
+        {{end}}
+    </div>
+
+    <div id="assign-section">
+        <div class="card">
+            <h2>Assign to…</h2>
+            {{range .Toolheads}}
+            <button class="assign-btn" onclick="assign('{{.PrinterID}}', {{.Index}}, {{$.SpoolID}})">
+                {{.Label}}
+            </button>
+            {{else}}
+            <p style="color:#aaa; font-size:0.9em;">No printers configured.</p>
+            {{end}}
+        </div>
+    </div>
+
+    <div id="success-box" class="success-box">
+        <div class="success-icon">✓</div>
+        <div id="success-msg" style="font-weight:600; margin-bottom:4px;"></div>
+        <div style="font-size:0.85em; color:#aaa;">Spool assigned successfully.</div>
+    </div>
+    <div id="error-box" class="error-box">
+        <div id="error-msg"></div>
+    </div>
+
+    <script>
+    function assign(printerID, toolheadIndex, spoolID) {
+        fetch('/api/nfc/assignments', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                printer_id: printerID,
+                toolhead_index: toolheadIndex,
+                spoolman_spool_id: spoolID,
+                reason: 'nfc_scan'
+            })
+        })
+        .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+        .then(function(res) {
+            if (res.ok) {
+                document.getElementById('assign-section').style.display = 'none';
+                var box = document.getElementById('success-box');
+                box.classList.add('visible');
+                var toolheads = {{.ToolheadsJSON}};
+                var label = 'Toolhead ' + toolheadIndex;
+                for (var i = 0; i < toolheads.length; i++) {
+                    if (toolheads[i].PrinterID === printerID && toolheads[i].Index === toolheadIndex) {
+                        label = toolheads[i].Label;
+                        break;
+                    }
+                }
+                document.getElementById('success-msg').textContent = label;
+            } else {
+                var eb = document.getElementById('error-box');
+                eb.classList.add('visible');
+                document.getElementById('error-msg').textContent = res.data.error || 'Assignment failed.';
+            }
+        })
+        .catch(function(e) {
+            var eb = document.getElementById('error-box');
+            eb.classList.add('visible');
+            document.getElementById('error-msg').textContent = 'Network error: ' + e.message;
+        });
+    }
+    </script>
+</body>
+</html>

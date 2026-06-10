@@ -1,0 +1,163 @@
+<!-- Spools Tab -->
+<div id="spools-tab" class="tab-content">
+    <div id="status">
+
+        {{range $printerID, $printerConfig := .Printers}}
+        {{$printerData := index $.Status.Printers $printerID}}
+        <div class="printer" data-printer-id="{{$printerID}}" data-printer-name="{{$printerData.Name}}">
+            <div class="printer-header">
+                <h3>
+                    {{$printerData.Name}}
+                    {{if $printerConfig.IsVirtual}}
+                    <span style="background:#ede7f6;color:#4a148c;padding:2px 8px;border-radius:12px;
+                                 font-size:0.7em;font-weight:600;vertical-align:middle;margin-left:6px;">
+                        🧪 VIRTUAL
+                    </span>
+                    {{end}}
+                </h3>
+                <span class="status {{$printerData.State}}">
+                    {{if eq $printerData.State "virtual"}}READY{{else}}{{$printerData.State}}{{end}}
+                </span>
+            </div>
+
+            {{if $printerConfig.IsVirtual}}
+            <p style="color:#aaa;font-size:0.9em;margin-bottom:4px;">
+                <strong>Toolheads:</strong> {{$printerConfig.Toolheads}} &nbsp;|&nbsp;
+                Map spools below, then upload &amp; process a G-code file in <strong>Printers</strong>.
+            </p>
+            {{else}}
+            <p><strong>Model:</strong> {{$printerConfig.Model}} ({{$printerConfig.Toolheads}} toolhead{{if ne $printerConfig.Toolheads 1}}s{{end}})</p>
+            {{end}}
+
+            <div class="mapping-section">
+                <table class="toolhead-table">
+                    <thead>
+                        <tr>
+                            <th>Toolhead</th>
+                            <th>Assigned Spool</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {{$mapping := index $.Status.ToolheadMappings $printerID}}
+                    {{range $toolheadID := generateToolheadIDs $printerConfig.Toolheads}}
+                    {{$mappedSpool := index $mapping $toolheadID}}
+                    {{$displayName := "Toolhead"}}
+                    {{if $mappedSpool.DisplayName}}
+                        {{$displayName = $mappedSpool.DisplayName}}
+                    {{else}}
+                        {{$displayName = printf "Toolhead %d" $toolheadID}}
+                    {{end}}
+                    <tr class="toolhead-mapping-row" data-printer-id="{{$printerID}}" data-toolhead-id="{{$toolheadID}}">
+                        <td class="toolhead-label">{{$displayName}}</td>
+                        <td>
+                            <div class="custom-dropdown">
+                                <div class="dropdown-button">
+                                    <div style="display: flex; align-items: center; gap: 10px;">
+                                        {{if $mappedSpool.SpoolID}}
+                                        {{range $.Spools}}
+                                        {{if eq .ID $mappedSpool.SpoolID}}
+                                        <div class="color-swatch" data-color="{{.Filament.ColorHex}}"></div>
+                                        <span>[{{.ID}}] {{if .Material}}{{.Material}}{{else}}Unknown Material{{end}} - {{if .Brand}}{{.Brand}}{{else}}Unknown Brand{{end}} - {{if .Name}}{{.Name}}{{else}}Unnamed Spool{{end}}{{if .RemainingWeight}} ({{printf "%.0f" .RemainingWeight}}g remaining){{end}}</span>
+                                        {{end}}
+                                        {{end}}
+                                        {{else}}
+                                        <div class="color-swatch" style="background-color: #ccc;"></div>
+                                        <span>Empty</span>
+                                        {{end}}
+                                    </div>
+                                    <span class="dropdown-arrow">▼</span>
+                                </div>
+                                <div class="dropdown-content">
+                                    <div class="dropdown-search-container">
+                                        <input type="text" class="dropdown-search" placeholder="Search spools..." autocomplete="off">
+                                    </div>
+                                    <div class="dropdown-options-container">
+                                        <div class="dropdown-option" data-value="" data-color="">
+                                            <div class="color-swatch" style="background-color: #ccc;"></div>
+                                            <div class="option-text">Empty</div>
+                                        </div>
+                                        {{range $.Spools}}
+                                        <div class="dropdown-option" data-value="{{.ID}}" data-color="{{.Filament.ColorHex}}" {{if $mappedSpool.SpoolID}}{{if eq .ID $mappedSpool.SpoolID}}class="selected"{{end}}{{end}}>
+                                            <div class="color-swatch" data-color="{{.Filament.ColorHex}}"></div>
+                                            <div class="option-text">[{{.ID}}] {{if .Material}}{{.Material}}{{else}}Unknown Material{{end}} - {{if .Brand}}{{.Brand}}{{else}}Unknown Brand{{end}} - {{if .Name}}{{.Name}}{{else}}Unnamed Spool{{end}}{{if .RemainingWeight}} ({{printf "%.0f" .RemainingWeight}}g remaining){{end}}</div>
+                                        </div>
+                                        {{end}}
+                                        <div class="dropdown-no-results">No spools found</div>
+                                    </div>
+                                </div>
+                                <input type="hidden" name="spool_{{$printerID}}_{{$toolheadID}}" value="{{if $mappedSpool.SpoolID}}{{$mappedSpool.SpoolID}}{{end}}">
+                            </div>
+                        </td>
+                        <td>
+                            <button class="edit-spool-btn {{if not $mappedSpool.SpoolID}}hidden{{end}}"
+                                    data-spool-id="{{if $mappedSpool.SpoolID}}{{$mappedSpool.SpoolID}}{{end}}"
+                                    onclick="openSpoolmanEdit(this.dataset.spoolId)"
+                                    {{if $mappedSpool.SpoolID}}
+                                    {{range $.Spools}}
+                                    {{if eq .ID $mappedSpool.SpoolID}}
+                                    data-color-hex="{{.Filament.ColorHex}}"
+                                    {{end}}
+                                    {{end}}
+                                    {{end}}>
+                                ✏️ Edit
+                            </button>
+                        </td>
+                    </tr>
+                    {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- NFC Spool Tags -->
+    <div class="config-section" style="margin-top:20px;border-top:1px solid var(--surface-border);padding-top:20px;">
+        <h4 style="margin-top:0;">🏷️ NFC Spool Tags</h4>
+        <p class="help-text">Select a spool to generate its NFC URL and QR code. Scan the QR code with NFC Tools Pro to program your tags.</p>
+
+        <div class="nfc-side-by-side">
+            <!-- Left: Spool List -->
+            <div class="nfc-list-panel">
+                <div class="nfc-search-container">
+                    <input type="text" id="spool-search" class="nfc-search-input" placeholder="Search spools..." autocomplete="off">
+                </div>
+                <div class="nfc-list-container" id="spool-list-container">
+                    <p>Loading spools...</p>
+                </div>
+            </div>
+
+            <!-- Right: QR Code Display -->
+            <div class="nfc-display-panel">
+                <div id="spool-qr-display" class="nfc-qr-display" style="display: none;">
+                    <div class="nfc-selected-info">
+                        <h4 id="spool-selected-name">Selected Spool</h4>
+                        <div id="spool-selected-details"></div>
+                    </div>
+                    <div class="nfc-qr-large-container">
+                        <img id="spool-qr-large" src="" alt="QR Code" class="nfc-qr-large">
+                        <div class="nfc-url-container">
+                            <div id="spool-url-text" class="nfc-url-large"></div>
+                            <button class="nfc-copy-btn" onclick="copyUrlToClipboard('spool-url-text', this)" title="Copy URL">
+                                <span class="nfc-copy-icon">📋</span>
+                            </button>
+                        </div>
+                    </div>
+                    <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1);">
+                        <button id="spool-bin-btn" class="btn" onclick="openSpoolTagEditor()" style="width:100%; background:#7c3aed;">
+                            📲 Edit OpenPrintTag Fields &amp; Download .bin
+                        </button>
+                        <p style="font-size:0.78em; color:#888; margin:6px 0 0; text-align:center;">For ICODE SLIX2 tags — use NFC Tools "Write Dump"</p>
+                    </div>
+                </div>
+                <div id="spool-no-selection" class="nfc-no-selection">
+                    <div class="nfc-no-selection-icon">🏷️</div>
+                    <h4>Select a Spool</h4>
+                    <p>Choose a spool from the list to generate its QR code</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>

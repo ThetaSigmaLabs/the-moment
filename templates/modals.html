@@ -1,0 +1,688 @@
+<!-- Add Printer Modal -->
+<div id="addPrinterModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Add Printer</h3>
+            <button class="close" onclick="closeAddPrinterModal()">&times;</button>
+        </div>
+        <form id="addPrinterForm" onsubmit="addPrinter(event)">
+            <div class="form-group">
+                <label for="printerType">Printer Type *</label>
+                <select id="printerType" name="printer_type" onchange="onPrinterTypeChange(this.value,'printer')">
+                    <option value="prusalink">PrusaLink (Prusa printers)</option>
+                    <option value="octoprint">OctoPrint</option>
+                    <option value="bambu">Bambu (MQTT / LAN)</option>
+                </select>
+                <small>Select how this printer connects to The Moment</small>
+            </div>
+            <div class="form-group">
+                <label for="printerName">Printer Name *</label>
+                <input type="text" id="printerName" name="name" required placeholder="e.g., Prusa MK3S+">
+                <small>Give your printer a descriptive name</small>
+            </div>
+            <div class="form-group">
+                <label for="printerIP">Hostname or IP Address *</label>
+                <input type="text" id="printerIP" name="ip_address" required placeholder="192.168.1.100 or printer.local">
+                <small id="printerIPHint">Hostname or IP address of your printer</small>
+            </div>
+            <div class="form-group">
+                <label for="printerAPIKey" id="printerAPIKeyLabel">API Key</label>
+                <input type="password" id="printerAPIKey" name="api_key" placeholder="Your PrusaLink API key">
+                <small id="printerAPIKeyHint">Found in PrusaLink settings on your printer</small>
+            </div>
+            <div class="form-group">
+                <label for="printerModel">Printer Model</label>
+                <select id="printerModel" name="model">
+                    <optgroup label="Bambu">
+                        <option value="X1C">X1C</option>
+                        <option value="P1S">P1S</option>
+                        <option value="P1P">P1P</option>
+                        <option value="A1">A1</option>
+                        <option value="A1 Mini">A1 Mini</option>
+                    </optgroup>
+                    <optgroup label="Prusa">
+                        <option value="MK3S+">MK3S+</option>
+                        <option value="MK3S">MK3S</option>
+                        <option value="MINI+">MINI+</option>
+                        <option value="MINI">MINI</option>
+                        <option value="XL">XL</option>
+                    </optgroup>
+                    <option value="Other" selected>Other</option>
+                </select>
+                <small id="printerModelHint">Select your printer model (auto-detected for PrusaLink)</small>
+            </div>
+            <div class="form-group">
+                <label for="printerToolheads" id="printerToolheadsLabel">Number of Toolheads</label>
+                <select id="printerToolheads" name="toolheads">
+                    <option value="1" selected>1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                    <option value="6">6</option>
+                    <option value="7">7</option>
+                    <option value="8">8</option>
+                    <option value="9">9</option>
+                    <option value="10">10</option>
+                </select>
+                <small id="printerToolheadsHint">How many toolheads does your printer have?</small>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeAddPrinterModal()">Cancel</button>
+                <button type="submit" class="btn">Add Printer</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Edit Printer Modal -->
+<div id="editPrinterModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Edit Printer</h3>
+            <button class="close" onclick="closeEditPrinterModal()">&times;</button>
+        </div>
+
+        <!-- Tab bar -->
+        <div id="editPrinterTabBar" style="display:flex;border-bottom:2px solid #2a2a2a;margin:0 -20px 16px;padding:0 20px;">
+            <button class="hm-tab active" data-tab="details" onclick="switchEditPrinterTab('details')">Details</button>
+            <button class="hm-tab" data-tab="toolheads" onclick="switchEditPrinterTab('toolheads')">Toolheads</button>
+        </div>
+
+        <!-- Tab: Details -->
+        <div id="editPrinterTab-details">
+            <form id="editPrinterForm">
+                <input type="hidden" id="editPrinterId" name="printerId">
+                <input type="hidden" id="editPrinterIsVirtual" name="is_virtual" value="false">
+                <div class="form-group" id="editPrinterTypeGroup">
+                    <label for="editPrinterType">Printer Type *</label>
+                    <select id="editPrinterType" name="printer_type" onchange="onPrinterTypeChange(this.value,'editPrinter')">
+                        <option value="prusalink">PrusaLink (Prusa printers)</option>
+                        <option value="octoprint">OctoPrint</option>
+                        <option value="bambu">Bambu (MQTT / LAN)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterName">Printer Name *</label>
+                    <input type="text" id="editPrinterName" name="name" required>
+                </div>
+                <div class="form-group" id="editPrinterIPGroup">
+                    <label for="editPrinterIP">Hostname or IP Address *</label>
+                    <input type="text" id="editPrinterIP" name="ip_address" required>
+                    <small id="editPrinterIPHint"></small>
+                </div>
+                <div class="form-group" id="editPrinterAPIKeyGroup">
+                    <label for="editPrinterAPIKey" id="editPrinterAPIKeyLabel">API Key</label>
+                    <input type="password" id="editPrinterAPIKey" name="api_key">
+                    <small id="editPrinterAPIKeyHint"></small>
+                </div>
+                <div class="form-group" id="editPrinterModelGroup">
+                    <label for="editPrinterModel">Printer Model</label>
+                    <select id="editPrinterModel" name="model">
+                        <optgroup label="Bambu">
+                            <option value="X1C">X1C</option>
+                            <option value="P1S">P1S</option>
+                            <option value="P1P">P1P</option>
+                            <option value="A1">A1</option>
+                            <option value="A1 Mini">A1 Mini</option>
+                        </optgroup>
+                        <optgroup label="Prusa">
+                            <option value="MK3S+">MK3S+</option>
+                            <option value="MK3S">MK3S</option>
+                            <option value="MINI+">MINI+</option>
+                            <option value="MINI">MINI</option>
+                            <option value="XL">XL</option>
+                        </optgroup>
+                        <option value="Other">Other</option>
+                    </select>
+                    <small id="editPrinterModelHint"></small>
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterToolheads" id="editPrinterToolheadsLabel">Number of Toolheads</label>
+                    <select id="editPrinterToolheads" name="toolheads">
+                        <option value="1" selected>1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                        <option value="6">6</option>
+                        <option value="7">7</option>
+                        <option value="8">8</option>
+                        <option value="9">9</option>
+                        <option value="10">10</option>
+                    </select>
+                    <small id="editPrinterToolheadsHint"></small>
+                </div>
+                <div class="form-group" id="editPrinterCameraURLGroup">
+                    <label for="editPrinterCameraURL">Camera Snapshot URL <span style="color:#777;font-weight:400;">(optional)</span></label>
+                    <div style="display:flex;gap:8px;align-items:flex-start;">
+                        <input type="text" id="editPrinterCameraURL" name="camera_snapshot_url"
+                               placeholder="rtsp://192.168.1.x/live  or  http://…/snapshot.jpg"
+                               style="flex:1;">
+                        <button type="button" class="btn btn-secondary" onclick="testCameraURL()" id="testCameraBtn"
+                                style="white-space:nowrap;flex-shrink:0;">Test</button>
+                    </div>
+                    <small style="color:#888;">HTTP/HTTPS or RTSP. Leave blank to disable snapshots. ffmpeg required for RTSP.</small>
+                    <div id="cameraTestResult" style="margin-top:8px;display:none;">
+                        <img id="cameraTestImg" src="" alt="Camera preview"
+                             style="max-width:100%;max-height:180px;border-radius:4px;border:1px solid #333;">
+                        <p id="cameraTestMsg" style="font-size:0.85em;margin:4px 0 0;"></p>
+                    </div>
+                </div>
+                <div class="form-group" id="editPrinterProgressSnapshotsGroup">
+                    <label>Progress Snapshots <span style="color:#777;font-weight:400;">(optional)</span></label>
+                    <select id="editProgressSnapshotMode" onchange="onProgressSnapshotModeChange(this.value)" style="width:100%;">
+                        <option value="none">None</option>
+                        <option value="interval">Every N%</option>
+                        <option value="milestones">At specific %</option>
+                    </select>
+                    <div id="progressSnapshotIntervalRow" style="display:none;margin-top:8px;">
+                        <label style="font-size:.88em;color:#aaa;">Capture every</label>
+                        <input type="number" id="editProgressSnapshotInterval" min="1" max="50" value="10"
+                               style="width:70px;margin:0 6px;">
+                        <span style="color:#aaa;font-size:.88em;">%</span>
+                        <small style="display:block;margin-top:4px;color:#666;">e.g. 10 → captures at 10%, 20%, … 90%</small>
+                    </div>
+                    <div id="progressSnapshotMilestonesRow" style="display:none;margin-top:8px;">
+                        <label style="font-size:.88em;color:#aaa;display:block;margin-bottom:6px;">Capture at:</label>
+                        <div style="display:flex;gap:14px;flex-wrap:wrap;">
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="25"> 25%</label>
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="50"> 50%</label>
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="75"> 75%</label>
+                            <label style="color:#ccc;font-size:.9em;"><input type="checkbox" class="snapshotMilestone" value="90"> 90%</label>
+                        </div>
+                    </div>
+                    <small style="color:#555;display:block;margin-top:6px;">Requires a configured camera URL (or PrusaLink native camera). Attention and resume snapshots always fire when a camera is available.</small>
+                </div>
+                <div class="form-group">
+                    <label for="editPrinterSortOrder">Display Order</label>
+                    <input type="number" id="editPrinterSortOrder" name="sort_order" value="0" min="0" max="999" style="width:80px;">
+                    <small>Lower numbers appear first on the dashboard (0 = default).</small>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditPrinterModal()">Cancel</button>
+                    <button type="submit" class="btn">Update Printer</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Tab: Toolheads -->
+        <div id="editPrinterTab-toolheads" style="display:none;">
+            <p style="color:#aaa;font-size:0.85em;margin-bottom:12px;">
+                Assign a Spoolman storage location to each toolhead. When a spool is loaded onto a toolhead,
+                The Moment will update its location in Spoolman automatically.
+                <a id="editPrinterSpoolmanLink" href="#" target="_blank" style="color:#a98eff;margin-left:6px;">Open Spoolman &#8599;</a>
+            </p>
+            <div id="editPrinterToolheadsTable">
+                <p style="color:#777;">Loading&hellip;</p>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeEditPrinterModal()">Close</button>
+                <button type="button" class="btn" id="saveToolheadLocationsBtn" onclick="saveToolheadLocations()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Add Virtual Test Printer Modal -->
+<div id="addVirtualPrinterModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>🧪 Add Virtual Test Printer</h3>
+            <button class="close" onclick="closeVirtualPrinterModal()">&times;</button>
+        </div>
+        <p style="margin: 0 0 16px; color: #aaa; font-size: 0.9em;">
+            A virtual printer lets you upload real G-code files and test Spoolman integration
+            without a physical printer. Map spools to toolheads on the Dashboard, upload a file,
+            then click Process to deduct filament usage.
+        </p>
+        <form id="addVirtualPrinterForm">
+            <div class="form-group">
+                <label for="virtualPrinterName">Printer Name *</label>
+                <input type="text" id="virtualPrinterName" name="name" required
+                       placeholder="e.g., My Test Printer">
+                <small>Appears in the Dashboard spool mapping UI</small>
+            </div>
+            <div class="form-group">
+                <label for="virtualPrinterToolheads">Number of Toolheads</label>
+                <select id="virtualPrinterToolheads" name="toolheads">
+                    <option value="1">1 Toolhead</option>
+                    <option value="2">2 Toolheads</option>
+                    <option value="3">3 Toolheads</option>
+                    <option value="4">4 Toolheads</option>
+                    <option value="5">5 Toolheads</option>
+                    <option value="6">6 Toolheads</option>
+                    <option value="7">7 Toolheads</option>
+                    <option value="8">8 Toolheads</option>
+                    <option value="9">9 Toolheads</option>
+                    <option value="10">10 Toolheads</option>
+                </select>
+                <small>Match this to the G-code files you plan to upload</small>
+            </div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeVirtualPrinterModal()">Cancel</button>
+                <button type="submit" class="btn">Create Virtual Printer</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Process Result Modal -->
+<div id="processResultModal" class="modal">
+    <div class="modal-content" style="max-width:560px;">
+        <div class="modal-header">
+            <h3 id="processResultTitle">✅ Processing Complete</h3>
+            <button class="close" onclick="closeProcessResultModal()">&times;</button>
+        </div>
+
+        <!-- Filament usage section -->
+        <div id="processResultBody" style="padding:8px 0;"></div>
+
+        <!-- Cost calculation section — shown after filament is processed -->
+        <div id="processCostSection" style="display:none;margin-top:16px;
+             border-top:1px solid #333;padding-top:16px;">
+            <h4 style="margin:0 0 12px;font-size:0.95em;">💰 Cost Estimate</h4>
+
+            <!-- Editable inputs -->
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+                <div>
+                    <label style="font-size:0.8em;color:#aaa;display:block;margin-bottom:3px;">
+                        Print time (min)
+                    </label>
+                    <input type="number" id="costPrintTime" min="0" step="1" placeholder="0"
+                           style="width:90px;padding:6px;border-radius:4px;border:1px solid #555;
+                                  background:rgba(255,255,255,0.07);color:#fff;font-size:0.9em;">
+                </div>
+                <div>
+                    <label style="font-size:0.8em;color:#aaa;display:block;margin-bottom:3px;">
+                        Filament cost/kg (override)
+                    </label>
+                    <input type="number" id="costPriceKg" min="0" step="0.01" placeholder="from Spoolman"
+                           style="width:120px;padding:6px;border-radius:4px;border:1px solid #555;
+                                  background:rgba(255,255,255,0.07);color:#fff;font-size:0.9em;">
+                </div>
+                <div style="display:flex;align-items:flex-end;">
+                    <button class="btn btn-small" onclick="calculateProcessCost()"
+                            style="background:#7c5cfc;">Calculate</button>
+                </div>
+            </div>
+
+            <!-- Result rows — filled in by JS -->
+            <div id="costBreakdownRows" style="font-size:0.9em;"></div>
+        </div>
+
+        <div class="modal-actions" style="margin-top:16px;">
+            <button class="btn btn-secondary" onclick="toggleCostSection()"
+                    id="costToggleBtn" style="display:none;">💰 Calculate Cost</button>
+            <button class="btn" onclick="closeProcessResultModal()">Done</button>
+        </div>
+    </div>
+</div>
+
+<!-- Import Virtual Printer Modal -->
+<div id="importVirtualPrinterModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>📥 Import Virtual Printer</h3>
+            <button class="close" onclick="closeImportPrinterModal()">&times;</button>
+        </div>
+        <p style="margin:0 0 16px;color:#aaa;font-size:0.9em;">
+            Select a <strong>.json</strong> file previously exported from The Moment.
+            The printer, toolhead names, spool mappings, and uploaded G-code files
+            will all be restored. Spool IDs must exist in your current Spoolman instance.
+        </p>
+        <form id="importVirtualPrinterForm">
+            <div class="form-group">
+                <label for="importFileInput">Export File *</label>
+                <input type="file" id="importFileInput" accept=".json" required
+                       style="padding:8px;border:1px solid #555;border-radius:6px;
+                              background:rgba(255,255,255,0.05);color:#fff;width:100%;box-sizing:border-box;">
+                <small>Select a virtual-printer-*.json export file</small>
+            </div>
+            <div id="importStatus" style="display:none;padding:10px;border-radius:6px;
+                 margin-top:8px;font-size:0.9em;"></div>
+            <div class="modal-actions">
+                <button type="button" class="btn btn-secondary" onclick="closeImportPrinterModal()">Cancel</button>
+                <button type="submit" class="btn">📥 Import</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Print History Detail Modal -->
+<div id="historyDetailModal" class="modal">
+    <div class="modal-content" style="max-width:680px;padding:0;display:flex;flex-direction:column;max-height:88vh;">
+
+        <!-- Header -->
+        <div class="modal-header" style="padding:14px 20px;margin:0;border-bottom:1px solid #2e2e2e;flex-shrink:0;">
+            <h3 id="historyDetailTitle" style="margin:0;font-size:0.95em;word-break:break-all;color:#e0e0e0;font-weight:500;">Print Detail</h3>
+            <button class="close" onclick="closeHistoryModal()" style="margin:0;line-height:1;">&times;</button>
+        </div>
+
+        <!-- Inner tab bar -->
+        <div style="display:flex;border-bottom:2px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;overflow-x:auto;">
+            <button class="hm-tab active" data-tab="details"  onclick="switchModalTab('details')">Details</button>
+            <button class="hm-tab"        data-tab="costs"    onclick="switchModalTab('costs')">Costs</button>
+            <button class="hm-tab"        data-tab="quality"  onclick="switchModalTab('quality')">Quality</button>
+            <button class="hm-tab"        data-tab="filament" onclick="switchModalTab('filament')">Filament</button>
+            <button class="hm-tab"        data-tab="files"      onclick="switchModalTab('files')">Files</button>
+            <button class="hm-tab" id="hmTab-snapshots-btn" data-tab="snapshots"
+                    onclick="switchModalTab('snapshots')" style="display:none;">Snapshots</button>
+            <button class="hm-tab" id="hmTab-debuglog-btn" data-tab="debuglog"
+                    onclick="switchModalTab('debuglog')" style="display:none;">Debug Log</button>
+        </div>
+
+        <!-- Scrollable tab content -->
+        <div style="flex:1;overflow-y:auto;min-height:0;">
+
+            <!-- Tab: Details -->
+            <div id="hmTab-details" style="padding:18px 20px;">
+                <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:16px;">
+                    <div style="flex-shrink:0;">
+                        <div id="historyThumb" style="width:108px;height:108px;border-radius:8px;
+                             background:#e0e0e0;border:1px solid rgba(102,126,234,0.45);box-shadow:0 0 12px rgba(102,126,234,0.22);overflow:hidden;display:flex;
+                             align-items:center;justify-content:center;">
+                            <span style="color:#444;font-size:2em;">🖼</span>
+                        </div>
+                        <div style="text-align:center;margin-top:6px;">
+                            <button id="historyReparseBtn" class="btn btn-small btn-secondary"
+                                    onclick="reparseGcodeMetadata()"
+                                    style="display:none;font-size:0.72em;padding:2px 10px;">↻ Re-parse</button>
+                        </div>
+                    </div>
+                    <div style="flex:1;min-width:180px;">
+                        <table style="width:100%;border-collapse:collapse;font-size:0.875em;">
+                            <tbody id="historyMetaRows"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <!-- Pause events (OctoPrint) -->
+                <div id="historyPauses" style="display:none;border-top:1px solid #2a2a2a;padding-top:12px;margin-top:4px;"></div>
+                <!-- Note -->
+                <div style="border-top:1px solid #2a2a2a;padding-top:14px;margin-top:8px;">
+                    <label style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;display:block;margin-bottom:7px;">Note</label>
+                    <textarea id="historyNoteInput" rows="3"
+                              style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.05);
+                                     border:1px solid #444;border-radius:6px;color:#d0d0d0;padding:8px 10px;
+                                     font-size:0.88em;resize:vertical;font-family:inherit;"
+                              placeholder="Add a note about this print…"></textarea>
+                    <div style="margin-top:8px;text-align:right;">
+                        <button class="btn btn-small" onclick="saveHistoryNote()">💾 Save Note</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Costs -->
+            <div id="hmTab-costs" style="display:none;padding:18px 20px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">💰 Cost Breakdown</div>
+                    <button class="btn btn-small btn-secondary" onclick="recalcHistoryCost()"
+                            id="historyRecalcBtn" style="display:none;font-size:0.78em;padding:3px 12px;">↻ Recalculate</button>
+                </div>
+                <div id="historyDetailCost" style="display:none;">
+                    <div id="historyDetailCostRows" style="font-size:0.88em;"></div>
+                </div>
+                <div id="hmCostEmpty" style="color:#555;font-size:0.875em;padding:24px 0;text-align:center;">
+                    No cost data stored — click Recalculate to compute from current rates.
+                </div>
+            </div>
+
+            <!-- Tab: Quality -->
+            <div id="hmTab-quality" style="display:none;padding:18px 20px;">
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Outcome</div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        <button id="tagOutcomeSuccess" class="tag-outcome-btn" data-outcome="success"
+                                onclick="toggleOutcome('success')"
+                                style="padding:6px 16px;border-radius:20px;border:1px solid #444;
+                                       background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                            ✅ Success
+                        </button>
+                        <button id="tagOutcomeAcceptable" class="tag-outcome-btn" data-outcome="acceptable"
+                                onclick="toggleOutcome('acceptable')"
+                                style="padding:6px 16px;border-radius:20px;border:1px solid #444;
+                                       background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                            👍 Acceptable
+                        </button>
+                        <button id="tagOutcomeFailed" class="tag-outcome-btn" data-outcome="failed"
+                                onclick="toggleOutcome('failed')"
+                                style="padding:6px 16px;border-radius:20px;border:1px solid #444;
+                                       background:transparent;color:#aaa;cursor:pointer;font-size:0.85em;transition:all 0.15s;">
+                            ❌ Failed
+                        </button>
+                    </div>
+                </div>
+                <div>
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Issues Observed</div>
+                    <div class="tag-issue-grid">
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="bed-adhesion"> Bed Adhesion</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="warping"> Warping</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="stringing"> Stringing</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="spaghetti"> Spaghetti</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-shift"> Layer Shift</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="layer-delamination"> Layer Delamination</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="under-extrusion"> Under-Extrusion</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="over-extrusion"> Over-Extrusion</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="seam-blobbing"> Seam Blobbing</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="vfa"> VFA (Salmon Skin)</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="ghosting"> Ghosting / Ringing</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="elephant-foot"> Elephant Foot</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="filament-jam"> Filament Jam</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="nozzle-clog"> Nozzle Clog</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="thermal-issue"> Thermal Issue</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="power-failure"> Power Failure</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="user-cancelled"> User Cancelled</label>
+                        <label class="tag-issue-check"><input type="checkbox" name="tag-issue" value="custom" id="tagIssueCustomCheck" onchange="toggleCustomText()"> Custom…</label>
+                    </div>
+                    <input type="text" id="tagCustomText" placeholder="Describe the issue…"
+                           style="display:none;width:100%;box-sizing:border-box;margin-top:8px;
+                                  background:rgba(255,255,255,0.05);border:1px solid #444;border-radius:6px;
+                                  color:#d0d0d0;padding:7px 10px;font-size:0.88em;font-family:inherit;">
+                    <div style="margin-top:14px;">
+                        <button class="btn btn-small" onclick="saveHistoryTags()">💾 Save Tags</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Filament -->
+            <div id="hmTab-filament" style="display:none;padding:18px 20px;">
+                <div id="historyFilamentUsages"></div>
+                <!-- Inline spool reassignment picker -->
+                <div id="reassignPicker" style="display:none;border:1px solid #444;border-radius:8px;padding:12px;margin-top:14px;background:rgba(255,255,255,0.04);">
+                    <div style="font-size:0.83em;color:#aaa;margin-bottom:8px;">Reassign segment to a different spool</div>
+                    <select id="reassignSpoolSelect" style="width:100%;padding:7px;background:#1e1e1e;color:#d0d0d0;border:1px solid #444;border-radius:4px;margin-bottom:10px;font-family:inherit;">
+                        <option value="">Loading spools…</option>
+                    </select>
+                    <div style="margin-bottom:10px;">
+                        <label style="font-size:0.8em;color:#888;display:block;margin-bottom:4px;">Grams used</label>
+                        <input id="reassignGrams" type="number" min="0" step="0.01"
+                               style="width:100%;box-sizing:border-box;padding:7px;background:#1e1e1e;color:#d0d0d0;border:1px solid #444;border-radius:4px;font-family:inherit;font-size:1em;">
+                    </div>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn btn-small" onclick="confirmReassign()">✓ Confirm</button>
+                        <button class="btn btn-small btn-secondary" onclick="cancelReassign()">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tab: Debug Log -->
+            <div id="hmTab-debuglog" style="display:none;padding:18px 20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">Poll Transcript</div>
+                    <button class="btn btn-small btn-secondary" style="font-size:0.78em;padding:3px 10px;"
+                            onclick="copyDebugLog()">Copy All</button>
+                </div>
+                <textarea id="hmDebugLogText" readonly
+                          style="width:100%;box-sizing:border-box;height:340px;
+                                 background:#111;border:1px solid #333;border-radius:5px;
+                                 color:#b0c4b0;padding:10px;font-size:0.78em;
+                                 font-family:'Courier New',monospace;resize:vertical;
+                                 white-space:pre;overflow:auto;"
+                          placeholder="Loading…"></textarea>
+            </div>
+
+            <!-- Tab: Snapshots -->
+            <div id="hmTab-snapshots" style="display:none;padding:18px 20px;">
+                <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:14px;">Camera Snapshots</div>
+                <div id="historySnapshotList" style="font-size:0.85em;color:#777;">Loading…</div>
+            </div>
+
+            <!-- Tab: Files -->
+            <div id="hmTab-files" style="display:none;padding:18px 20px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                    <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">Attachments</div>
+                    <label style="cursor:pointer;">
+                        <input type="file" id="historyAttachInput" style="display:none;" onchange="uploadHistoryAttachment()">
+                        <span class="btn btn-small btn-secondary" style="font-size:0.78em;padding:3px 10px;"
+                              onclick="document.getElementById('historyAttachInput').click()">+ Attach File</span>
+                    </label>
+                </div>
+                <div id="historyAttachmentList" style="font-size:0.85em;color:#777;">Loading…</div>
+            </div>
+
+        </div><!-- end scrollable content -->
+
+        <!-- Footer — always visible -->
+        <div style="display:flex;justify-content:space-between;align-items:center;
+                    padding:12px 20px;border-top:1px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;">
+            <button class="btn btn-small btn-danger" onclick="deleteHistoryEntry()">🗑 Delete</button>
+            <button class="btn btn-small btn-secondary" onclick="closeHistoryModal()">Close</button>
+        </div>
+
+    </div>
+</div>
+
+<!-- Active Print Modal -->
+<div id="activePrintModal" class="modal">
+    <div class="modal-content" style="max-width:620px;padding:0;display:flex;flex-direction:column;max-height:88vh;">
+
+        <div class="modal-header" style="padding:14px 20px;margin:0;border-bottom:1px solid #2e2e2e;flex-shrink:0;">
+            <div>
+                <h3 id="activePrintTitle" style="margin:0;font-size:0.95em;word-break:break-all;color:#e0e0e0;font-weight:500;">Live Print</h3>
+                <span id="activePrintState" style="font-size:0.75em;margin-top:2px;display:block;"></span>
+            </div>
+            <button class="close" onclick="closeActivePrintModal()" style="margin:0;line-height:1;">&times;</button>
+        </div>
+
+        <div style="display:flex;border-bottom:2px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;overflow-x:auto;">
+            <button class="hm-tab active" data-apm-tab="live" onclick="switchActivePrintTab('live')">Live</button>
+            <button class="hm-tab" data-apm-tab="snapshots" id="apmTab-snapshots-btn"
+                    onclick="switchActivePrintTab('snapshots')" style="display:none;">Snapshots</button>
+            <button class="hm-tab" data-apm-tab="filament" onclick="switchActivePrintTab('filament')">Filament</button>
+        </div>
+
+        <div style="flex:1;overflow-y:auto;min-height:0;">
+
+            <!-- Live tab -->
+            <div id="apmTab-live" style="padding:18px 20px;">
+                <div style="margin-bottom:18px;">
+                    <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+                        <span id="apm-progress-pct" style="font-size:1.6em;font-weight:700;color:var(--brand-light);font-variant-numeric:tabular-nums;">—</span>
+                        <span id="apm-time-remaining" style="font-size:0.85em;color:var(--text-secondary);align-self:flex-end;padding-bottom:3px;"></span>
+                    </div>
+                    <div style="height:8px;background:var(--surface-border);border-radius:4px;overflow:hidden;">
+                        <div id="apm-progress-bar" style="height:100%;background:#ffb347;border-radius:4px;transition:width 0.8s ease;width:0%;"></div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-top:5px;">
+                        <span style="font-size:0.75em;color:var(--text-muted);">Elapsed: <span id="apm-time-printing">—</span></span>
+                        <span style="font-size:0.75em;color:var(--text-muted);">Z: <span id="apm-axis-z">—</span> mm</span>
+                    </div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px;">
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Nozzle</div>
+                        <div id="apm-temp-nozzle" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Bed</div>
+                        <div id="apm-temp-bed" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Flow / Speed</div>
+                        <div id="apm-flow-speed" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                    <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+                        <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">Fans (Hotend / Print)</div>
+                        <div id="apm-fans" style="font-size:1.05em;font-weight:600;color:#e0e0e0;font-variant-numeric:tabular-nums;">—</div>
+                    </div>
+                </div>
+                <div style="border-top:1px solid #2a2a2a;padding-top:12px;">
+                    <div style="font-size:0.72em;color:#777;text-transform:uppercase;letter-spacing:0.06em;">File</div>
+                    <div id="apm-job-name" style="font-size:0.88em;color:#c0c0c0;margin-top:3px;word-break:break-all;"></div>
+                </div>
+            </div>
+
+            <!-- Snapshots tab -->
+            <div id="apmTab-snapshots" style="display:none;padding:18px 20px;">
+                <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:14px;">Progress Snapshots (Pending)</div>
+                <div id="apm-snapshot-list" style="font-size:0.85em;color:#777;">Loading…</div>
+            </div>
+
+            <!-- Filament tab -->
+            <div id="apmTab-filament" style="display:none;padding:18px 20px;">
+                <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:12px;">Current Toolhead Assignments</div>
+                <div id="apm-toolheads"></div>
+            </div>
+
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;align-items:center;
+                    padding:10px 20px;border-top:1px solid #2a2a2a;flex-shrink:0;background:#1e1e1e;">
+            <span id="apm-refresh-status" style="font-size:0.75em;color:#555;margin-right:auto;"></span>
+            <button class="btn btn-small btn-secondary" onclick="closeActivePrintModal()">Close</button>
+        </div>
+
+    </div>
+</div>
+
+<!-- Snapshot lightbox — click backdrop to close -->
+<div id="snapshotLightbox"
+     onclick="if(event.target===this)closeSnapshotLightbox()"
+     style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;
+            background:rgba(0,0,0,0.92);z-index:9999;
+            align-items:center;justify-content:center;">
+    <div id="snapshotLightboxPos"
+         style="position:absolute;top:14px;left:16px;font-size:0.78em;
+                color:rgba(255,255,255,0.45);pointer-events:none;user-select:none;"></div>
+    <button onclick="closeSnapshotLightbox()"
+            style="position:absolute;top:8px;right:12px;background:none;border:none;
+                   color:rgba(255,255,255,0.5);font-size:1.5em;cursor:pointer;
+                   padding:4px 10px;line-height:1;">×</button>
+    <button id="snapshotLightboxPrev"
+            onclick="navigateSnapshotLightbox(-1)"
+            style="position:absolute;left:14px;top:50%;transform:translateY(-50%);
+                   background:rgba(255,255,255,0.1);border:none;color:#fff;font-size:2em;
+                   cursor:pointer;padding:10px 16px;border-radius:8px;line-height:1;
+                   visibility:hidden;">‹</button>
+    <img id="snapshotLightboxImg" src="" alt="Snapshot"
+         style="max-width:88vw;max-height:92vh;object-fit:contain;border-radius:4px;
+                box-shadow:0 4px 32px rgba(0,0,0,0.7);">
+    <button id="snapshotLightboxNext"
+            onclick="navigateSnapshotLightbox(1)"
+            style="position:absolute;right:14px;top:50%;transform:translateY(-50%);
+                   background:rgba(255,255,255,0.1);border:none;color:#fff;font-size:2em;
+                   cursor:pointer;padding:10px 16px;border-radius:8px;line-height:1;
+                   visibility:hidden;">›</button>
+</div>
+
+<!-- NFC QR Code Modal -->
+<div id="nfcQrModal" class="nfc-qr-modal">
+    <div class="nfc-qr-content">
+        <h3 id="nfcQrTitle">NFC QR Code</h3>
+        <div class="nfc-qr-modal-code">
+            <img id="nfcQrImage" src="" alt="QR Code">
+        </div>
+        <div class="nfc-url" id="nfcQrUrl"></div>
+        <div class="nfc-instructions">
+            <h4>How to use this QR code:</h4>
+            <ol>
+                <li>Open NFC Tools Pro on your phone</li>
+                <li>Tap "Write" and then "Add a record"</li>
+                <li>Select "URL" and scan this QR code</li>
+                <li>Write the tag to your NFC sticker</li>
+                <li>Test by scanning the tag with your phone</li>
+            </ol>
+        </div>
+        <button class="btn" onclick="closeNfcQrModal()">Close</button>
+    </div>
+</div>

@@ -1,0 +1,78 @@
+<!-- Printers Tab -->
+<div id="printers-tab" class="tab-content">
+
+    <!-- Printer Management -->
+    <div class="config-section">
+        <div id="printer-add-buttons" style="margin-bottom: 20px;">
+            <button class="btn" onclick="showAddPrinterForm()">➕ Add Printer</button>
+            <button class="btn btn-secondary" onclick="showVirtualPrinterForm()" style="margin-left:8px;" title="Create a virtual test printer to upload G-code files and validate Spoolman integration without hardware">🧪 Add Virtual Test Printer</button>
+            <button class="btn btn-secondary" onclick="showImportPrinterForm()" style="margin-left:8px;" title="Import a virtual printer from a previously exported JSON file">📥 Import Virtual Printer</button>
+        </div>
+        <div id="printer-list">
+            <p>Loading printers...</p>
+        </div>
+    </div>
+
+    <!-- Stuck Spool Assignments -->
+    <div class="config-section" style="margin-top:20px;border-top:1px solid var(--surface-border);padding-top:20px;">
+        <h4 style="margin-top:0;">🔓 Stuck Spool Assignments</h4>
+        <p style="color:var(--text-secondary);font-size:0.9em;margin-bottom:12px;">
+            If you deleted a printer and its spools are still showing as assigned elsewhere,
+            use this to find and release them. This only removes assignments for printers
+            that no longer exist — active printers are not affected.
+        </p>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <button class="btn btn-small btn-secondary" id="checkStuckBtn" onclick="checkOrphanedMappings()">
+                🔍 Check for Stuck Assignments
+            </button>
+            <button class="btn btn-small btn-danger" id="clearOrphansBtn"
+                    onclick="clearOrphanedMappings()" style="display:none;">
+                🔓 Release All Stuck Spools
+            </button>
+        </div>
+        <div id="orphanStatus" style="margin-top:12px;font-size:0.88em;"></div>
+    </div>
+
+    <!-- NFC Location Tags -->
+    <div class="config-section" style="margin-top:20px;border-top:1px solid var(--surface-border);padding-top:20px;">
+        <h4 style="margin-top:0;">📍 NFC Location Tags</h4>
+        <p class="help-text">Generate QR codes for printer toolhead location tags. Scanning a location tag on your iPhone opens the spool assignment page for that toolhead directly.</p>
+
+        <div class="nfc-side-by-side">
+            <!-- Left: Location List -->
+            <div class="nfc-list-panel">
+                <div class="nfc-search-container">
+                    <input type="text" id="location-search" class="nfc-search-input" placeholder="Search locations..." autocomplete="off">
+                </div>
+                <div class="nfc-list-container" id="location-list-container">
+                    <p>Loading locations...</p>
+                </div>
+            </div>
+
+            <!-- Right: QR Display -->
+            <div class="nfc-display-panel">
+                <div id="location-qr-display" class="nfc-qr-display" style="display: none;">
+                    <div class="nfc-selected-info">
+                        <h4 id="location-selected-name">Selected Location</h4>
+                        <div id="location-selected-details"></div>
+                    </div>
+                    <div class="nfc-qr-large-container">
+                        <img id="location-qr-large" src="" alt="QR Code" class="nfc-qr-large">
+                        <div class="nfc-url-container">
+                            <div id="location-url-text" class="nfc-url-large"></div>
+                            <button class="nfc-copy-btn" onclick="copyUrlToClipboard('location-url-text', this)" title="Copy URL">
+                                <span class="nfc-copy-icon">📋</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div id="location-no-selection" class="nfc-no-selection">
+                    <div class="nfc-no-selection-icon">📍</div>
+                    <h4>Select a Location</h4>
+                    <p>Choose a location from the list to generate its QR code</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>

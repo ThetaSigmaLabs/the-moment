@@ -1,0 +1,16 @@
+# =============================================================================
+# Local development overrides — NOT auto-activated (renamed from override.yml).
+# Replaces the published GHCR image with a locally-built image.
+#
+# Build first:  docker build -t the-moment:local .
+# Then run:     THE_MOMENT_PORT=5002 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# =============================================================================
+
+services:
+  the-moment:
+    image: the-moment:dev
+    build:
+      context: .
+      target: dev
+    volumes:
+      - .:/app/src

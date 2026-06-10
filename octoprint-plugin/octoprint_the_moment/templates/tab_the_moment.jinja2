@@ -1,0 +1,136 @@
+<form class="form-horizontal">
+    <div class="control-group">
+        <label class="control-label">The Moment URL</label>
+        <div class="controls">
+            <input type="text" class="input-block-level"
+                   data-bind="value: settings.plugins.the_moment.url"
+                   placeholder="http://192.168.1.x:5000">
+            <span class="help-block">LAN address of the machine running The Moment — must be reachable from this OctoPrint device (e.g. http://192.168.1.100:5000).</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">API Key</label>
+        <div class="controls">
+            <input type="password" class="input-block-level"
+                   data-bind="value: settings.plugins.the_moment.api_key"
+                   placeholder="Leave blank if not set in The Moment">
+            <span class="help-block">Matches the API key in The Moment → Config → The Moment API Key.</span>
+        </div>
+    </div>
+    <div class="control-group">
+        <label class="control-label">Printer ID</label>
+        <div class="controls">
+            <input type="text" class="input-block-level"
+                   data-bind="value: settings.plugins.the_moment.printer_id"
+                   placeholder="ender3-v3-se">
+            <span class="help-block">Short identifier shown in The Moment print history.</span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label class="control-label">Spoolman Integration</label>
+        <div class="controls">
+            <label class="checkbox">
+                <input type="checkbox"
+                       data-bind="checked: settings.plugins.the_moment.spoolman_managed">
+                OctoPrint manages Spoolman filament inventory
+            </label>
+            <span class="help-block">
+                <strong>Checked (default):</strong> The OctoPrint Spoolman or SpoolManager plugin
+                is installed and automatically deducts filament from Spoolman when a print finishes.
+                The Moment will <em>not</em> deduct filament a second time — it records history
+                and calculates cost only.<br>
+                <strong>Unchecked:</strong> No Spoolman plugin is active in OctoPrint. The Moment
+                will deduct the filament used from the assigned spool in Spoolman on your behalf.
+                Make sure you have assigned the correct spool to each toolhead in The Moment's
+                Printers tab before printing.
+            </span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label class="control-label">Test Connection</label>
+        <div class="controls">
+            <button type="button" class="btn" onclick="TheMomentSettings.testConnection()">
+                Send Test Ping to The Moment
+            </button>
+            <div id="the-moment-ping-result" style="margin-top:8px; display:none;">
+                <span id="the-moment-ping-message"></span>
+            </div>
+            <span class="help-block">
+                Sends a lightweight request to verify The Moment is reachable and the
+                API key (if set) is correct. No print data is sent.
+            </span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label class="control-label">Debug Logging</label>
+        <div class="controls">
+            <label class="checkbox">
+                <input type="checkbox"
+                       data-bind="checked: settings.plugins.the_moment.debug_mode">
+                Enable verbose debug logging
+            </label>
+            <span class="help-block">
+                When enabled, the plugin writes detailed logs for every event, the full
+                JSON payload sent to The Moment, and the server's response.<br>
+                <strong>Where to find logs:</strong> In OctoPrint go to
+                <strong>Settings → Logging</strong>, look for entries under
+                <code>octoprint.plugin.the_moment</code>. You can also download the
+                full log from <strong>Settings → Logging → octoprint.log</strong>.
+            </span>
+        </div>
+    </div>
+
+    <hr style="border-color:#ddd; margin:16px 0 12px;">
+    <div class="control-group">
+        <label class="control-label" style="color:#999;">Version</label>
+        <div class="controls" style="padding-top:6px; font-size:0.9em; color:#999;">
+            <table style="border-collapse:collapse;">
+                <tr>
+                    <td style="padding:2px 16px 2px 0;">Plugin</td>
+                    <td style="font-family:monospace;">v1.2.0</td>
+                </tr>
+                <tr>
+                    <td style="padding:2px 16px 2px 0;">The Moment server</td>
+                    <td style="font-family:monospace;" id="the-moment-server-version">
+                        — run Test Connection to check
+                    </td>
+                </tr>
+            </table>
+        </div>
+    </div>
+</form>
+
+<script type="text/javascript">
+var TheMomentSettings = {
+    testConnection: function () {
+        var resultDiv = document.getElementById("the-moment-ping-result");
+        var resultMsg = document.getElementById("the-moment-ping-message");
+        var serverVer = document.getElementById("the-moment-server-version");
+        resultMsg.textContent = "Testing…";
+        resultMsg.style.color = "";
+        resultDiv.style.display = "block";
+
+        OctoPrint.simpleApiCommand("the_moment", "test_connection", {})
+            .done(function (response) {
+                if (response.success) {
+                    resultMsg.textContent = "✓ " + response.message;
+                    resultMsg.style.color = "green";
+                    if (response.server_version) {
+                        serverVer.textContent = "v" + response.server_version;
+                    }
+                } else {
+                    resultMsg.textContent = "✗ " + response.message;
+                    resultMsg.style.color = "red";
+                    serverVer.textContent = "— unreachable";
+                }
+            })
+            .fail(function () {
+                resultMsg.textContent = "✗ Could not reach the plugin API — check OctoPrint is running.";
+                resultMsg.style.color = "red";
+            });
+    }
+};
+</script>

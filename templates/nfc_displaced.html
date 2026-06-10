@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Displaced Spool — The Moment</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 16px;
+            color: #f0f0f0;
+        }
+        .card {
+            background: rgba(255,255,255,0.07);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 16px;
+        }
+        .info-banner {
+            background: rgba(251,191,36,0.12);
+            border: 1px solid rgba(251,191,36,0.3);
+            border-radius: 10px;
+            padding: 14px;
+            font-size: 0.9em;
+            margin-bottom: 16px;
+            color: #fbbf24;
+        }
+        h2 { font-size: 1em; font-weight: 600; margin-bottom: 14px; color: #c8b8ff; }
+        .page-title { font-size: 1.3em; font-weight: 700; margin-bottom: 16px; }
+        label { display: block; font-size: 0.82em; color: #aaa; margin-bottom: 4px; }
+        select {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.2);
+            background: rgba(255,255,255,0.08);
+            color: #f0f0f0;
+            font-size: 0.95em;
+            margin-bottom: 12px;
+            appearance: auto;
+        }
+        select option { background: #1a1a2e; color: #f0f0f0; }
+        .radio-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+        .radio-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.15);
+            cursor: pointer;
+        }
+        .radio-option input[type=radio] { width: auto; margin: 0; accent-color: #7c3aed; }
+        .radio-option:has(input:checked) { border-color: #7c3aed; background: rgba(124,58,237,0.15); }
+        .radio-label { font-size: 0.9em; }
+        .radio-label small { display: block; color: #aaa; font-size: 0.8em; margin-top: 2px; }
+        .btn {
+            display: block; width: 100%; padding: 14px; border-radius: 10px;
+            border: none; font-size: 1em; font-weight: 600; cursor: pointer;
+        }
+        .btn-primary { background: #7c3aed; color: white; }
+        .btn:disabled { opacity: 0.4; }
+        select#customLocation { display: none; margin-top: 8px; }
+    </style>
+</head>
+<body>
+    <p class="page-title">📦 Where to put the old spool?</p>
+
+    <div class="info-banner">
+        Toolhead is currently loaded with <strong>{{.OldSpoolName}}</strong>.
+        Choose where to send it before the new spool is assigned.
+    </div>
+
+    <form method="POST" action="/nfc/spool/{{.NfcUUID}}/complete" id="completeForm">
+        <!-- Pass through assignment context -->
+        <input type="hidden" name="new_spool_id"    value="{{.NewSpoolID}}">
+        <input type="hidden" name="printer_name"    value="{{.PrinterName}}">
+        <input type="hidden" name="toolhead_id"     value="{{.ToolheadID}}">
+        <input type="hidden" name="displaced_spool_id" value="{{.OldSpoolID}}">
+        <input type="hidden" name="displaced_location" id="displaced_location" value="">
+
+        <div class="card">
+            <h2>Send <em>{{.OldSpoolName}}</em> to…</h2>
+
+            <div class="radio-group">
+                {{if .InventoryLocation}}
+                <label class="radio-option">
+                    <input type="radio" name="__dest" value="inventory"
+                           onchange="setDest('{{.InventoryLocation}}')">
+                    <div class="radio-label">
+                        📦 Inventory — {{.InventoryLocation}}
+                        <small>Default storage location</small>
+                    </div>
+                </label>
+                {{end}}
+
+                {{if .TrashLocation}}
+                <label class="radio-option">
+                    <input type="radio" name="__dest" value="trash"
+                           onchange="setDest('{{.TrashLocation}}')">
+                    <div class="radio-label">
+                        🗑️ Trash — {{.TrashLocation}}
+                        <small>Spool is empty; tag ready for re-programming</small>
+                    </div>
+                </label>
+                {{end}}
+
+                <label class="radio-option">
+                    <input type="radio" name="__dest" value="custom"
+                           onchange="setDest('')">
+                    <div class="radio-label">
+                        📍 Other location…
+                    </div>
+                </label>
+            </div>
+
+            <select id="customLocation" onchange="setDest(this.value)">
+                <option value="">— select location —</option>
+                {{range .Locations}}
+                <option value="{{.}}">{{.}}</option>
+                {{end}}
+            </select>
+
+            <button type="submit" class="btn btn-primary" id="confirmBtn" disabled>
+                Confirm &amp; Assign
+            </button>
+        </div>
+    </form>
+
+    <script>
+    function setDest(loc) {
+        if (document.querySelector('input[value=custom]:checked')) {
+            document.getElementById('customLocation').style.display = 'block';
+        } else {
+            document.getElementById('customLocation').style.display = 'none';
+        }
+        document.getElementById('displaced_location').value = loc;
+        document.getElementById('confirmBtn').disabled = (loc === '');
+    }
+    </script>
+</body>
+</html>

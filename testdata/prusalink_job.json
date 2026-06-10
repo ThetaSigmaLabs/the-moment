@@ -1,0 +1,19 @@
+{
+  "id": 62,
+  "state": "PRINTING",
+  "progress": 9.00,
+  "time_remaining": 100260,
+  "time_printing": 10428,
+  "file": {
+    "refs": {
+      "icon": "/thumb/s/usb/PRUSA/KNIGH~12.BGC",
+      "thumbnail": "/thumb/l/usb/PRUSA/KNIGH~12.BGC",
+      "download": "/usb/PRUSA/KNIGH~12.BGC"
+    },
+    "name": "KNIGH~12.BGC",
+    "display_name": "Knight_Helmet_0.4n_0.2mm_PLA_COREONEL_1d6h37m.bgcode",
+    "path": "/usb/PRUSA",
+    "size": 88316222,
+    "m_timestamp": 1779907696
+  }
+}

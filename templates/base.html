@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="The Moment - The missing link between printers and filament inventory">
+    <meta name="theme-color" content="#7c5cfc">
+    <title>The Moment Dashboard</title>
+    <!-- External CSS Files -->
+    <link rel="stylesheet" href="/static/css/main.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/dropdowns.css">
+    <link rel="stylesheet" href="/static/css/tabs.css">
+    <link rel="stylesheet" href="/static/css/printers.css">
+    <link rel="stylesheet" href="/static/css/nfc.css">
+    <link rel="stylesheet" href="/static/css/modals.css">
+    <link rel="stylesheet" href="/static/css/mobile.css">
+    <link rel="stylesheet" href="/static/css/dashboard.css">
+
+</head>
+<body data-spoolman-url="{{.SpoolmanBaseURL}}">
+    <div class="container">
+        <div class="header">
+            <div style="display:flex;align-items:center;gap:14px;">
+                <img src="/static/images/the-moment-logo-2.png" alt="The Moment"
+                     style="height:52px;width:auto;flex-shrink:0;">
+                <div>
+                    <h1 style="margin:0;">The Moment Dashboard</h1>
+                    <p style="margin:4px 0 0;opacity:0.75;font-size:0.9em;">
+                        The missing link between printers, filament inventory, and cost
+                        <button onclick="showAbout()" title="About The Moment" style="background:none;border:none;cursor:pointer;color:inherit;padding:0;margin-left:10px;opacity:0.55;font-size:0.85em;letter-spacing:0.02em;">v{{.AppVersion}}</button>
+                    </p>
+                </div>
+            </div>
+            <div class="header-brand">
+                <img src="/static/images/thetasigma-labs-logo.svg"
+                     alt="ThetaSigma Labs"
+                     class="header-brand-logo"
+                     onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+                <div style="display:none;width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#7c5cfc,#2d1b69);align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;letter-spacing:-0.5px;flex-shrink:0;">ΘΣ</div>
+                <span class="header-brand-name">ThetaSigma Labs</span>
+                <a href="{{.SpoolmanBaseURL}}" target="_blank" rel="noopener" class="spoolman-header-btn">
+                    🧵 Spoolman
+                </a>
+            </div>
+        </div>
+        
+        <div class="content">
+            <!-- Tab Navigation -->
+            <ul class="tabs">
+                <li><button class="tab active" onclick="switchTab('dashboard')">🏠 Dashboard<span class="tab-sub">The Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('history')">📋 History<span class="tab-sub">Relive the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('spools')">🧵 Spools<span class="tab-sub">Shape the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('filament')">🧪 Filaments<span class="tab-sub">Tune the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('printers')">🖨️ Printers<span class="tab-sub">Create the Moment</span></button></li>
+                <li><button class="tab" onclick="switchTab('settings')">⚙️ Settings<span class="tab-sub">Configure the Moment</span></button></li>
+            </ul>
+            
+            {{template "content" .}}
+        </div>
+    </div>
+
+    {{template "modals" .}}
+
+    <!-- Communication Log modal -->
+    <div id="comm-log-modal" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;padding:16px;">
+        <div class="comm-log-box">
+            <div class="comm-log-header">
+                <strong>📡 Comm Log — <span id="comm-log-title"></span></strong>
+                <div class="comm-log-actions">
+                    <button class="btn btn-small btn-secondary" onclick="commLogSelectAll()">Select All</button>
+                    <button class="btn btn-small btn-secondary" onclick="commLogCopySelected()">Copy</button>
+                    <button class="btn btn-small btn-secondary" onclick="commLogClear()">Clear</button>
+                    <button class="btn btn-small" onclick="closeCommLog()">✕ Close</button>
+                </div>
+            </div>
+            <div id="comm-log-entries" class="comm-log-entries"></div>
+        </div>
+    </div>
+
+    <!-- External JavaScript Files -->
+    <script src="/static/js/toast.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/main.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/history.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/cost-calculator.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/dropdowns.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/printers.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/websocket.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/nfc.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/filament.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/commlog.js?v={{.AppVersion}}"></script>
+    <script src="/static/js/dashboard.js?v={{.AppVersion}}"></script>
+</body>
+</html>

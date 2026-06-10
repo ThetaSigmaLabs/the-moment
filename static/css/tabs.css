@@ -1,0 +1,151 @@
+/* The Moment Dashboard - Tab Styles */
+
+/* ── Main Tab Navigation ──────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.tab {
+  flex: 1;
+  padding: 14px 20px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border-bottom: 3px solid transparent;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.tab:hover {
+  background: var(--brand-tint);
+  color: var(--text-primary);
+}
+
+.tab.active {
+  background: var(--brand-tint);
+  color: var(--text-primary);
+  border-bottom: 3px solid var(--brand-bright);
+}
+
+/* Tagline sub-text shown inside the active tab */
+.tab-sub {
+  display: none;
+  font-size: 0.62em;
+  font-weight: 400;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  font-style: italic;
+  margin-top: 2px;
+}
+
+.tab.active .tab-sub {
+  display: block;
+}
+
+.tab-content {
+  display: none;
+  padding: 30px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  overflow: visible;
+}
+
+.tab-content.active {
+  display: block;
+  overflow: visible;
+}
+
+/* ── NFC Sub-tabs ─────────────────────────────────────────────────────────── */
+.nfc-tabs {
+  display: flex;
+  border-bottom: 2px solid var(--surface-border);
+  margin-bottom: 20px;
+}
+
+.nfc-tab {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border-radius: 8px 8px 0 0;
+  padding: 12px 20px;
+  margin-right: 5px;
+}
+
+.nfc-tab:hover {
+  background: var(--brand-tint);
+  color: var(--text-primary);
+}
+
+.nfc-tab.active {
+  background: var(--brand-tint);
+  color: var(--brand-light);
+  border-bottom: 3px solid var(--brand-bright);
+}
+
+.nfc-tab-content {
+  display: none;
+  overflow: visible;
+}
+
+.nfc-tab-content.active {
+  display: block;
+  overflow: visible;
+}
+
+/* ── Settings Sub-tabs ────────────────────────────────────────────────────── */
+.settings-tabs {
+  display: flex;
+  border-bottom: 2px solid var(--surface-border);
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.settings-tab {
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  border-radius: 8px 8px 0 0;
+  padding: 12px 20px;
+}
+
+.settings-tab:hover {
+  background: var(--brand-tint);
+  color: var(--text-primary);
+}
+
+.settings-tab.active {
+  background: var(--brand-tint);
+  color: var(--brand-light);
+  border-bottom: 3px solid var(--brand-bright);
+}
+
+.settings-tab-content {
+  display: none;
+  overflow: visible;
+}
+
+.settings-tab-content.active {
+  display: block;
+  overflow: visible;
+}

@@ -1,0 +1,406 @@
+<!-- Settings Tab -->
+<div id="settings-tab" class="tab-content">
+    <!-- Settings Sub-tabs -->
+    <div class="settings-tabs">
+        <button class="settings-tab active" onclick="switchSettingsTab('basic-config', this)">🔧 Basic Configuration</button>
+        <button class="settings-tab" onclick="switchSettingsTab('cost', this)">💰 Cost Settings</button>
+        <button class="settings-tab" onclick="switchSettingsTab('advanced', this)">⚙️ Advanced Settings</button>
+        <button class="settings-tab" onclick="switchSettingsTab('about', this)">ℹ️ About</button>
+    </div>
+
+    <!-- Basic Configuration Tab -->
+    <div id="basic-config-tab" class="settings-tab-content active">
+        <div class="config-section">
+            <div id="config-form">
+                <p>Loading configuration...</p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Cost Settings Tab -->
+    <div id="cost-tab" class="settings-tab-content">
+        <div class="config-section">
+            <div class="help-text">
+                These settings are used when calculating the cost of a print job.
+                Filament cost per kg comes automatically from Spoolman.
+                Print time is read from the G-code file metadata.
+            </div>
+
+            <div class="form-group" style="margin-top:20px;">
+                <label for="cost-currency">Currency</label>
+                <input type="text" id="cost-currency" maxlength="3" placeholder="USD"
+                       style="width:80px;text-transform:uppercase;">
+                <small>3-letter ISO code — USD, CAD, EUR, GBP, etc.</small>
+            </div>
+
+            <h4 style="margin:24px 0 12px;">Running Costs (per hour of print time)</h4>
+
+            <div class="form-group">
+                <label for="cost-electricity-rate">Electricity Rate (per kWh)</label>
+                <input type="number" id="cost-electricity-rate" min="0" step="0.001" placeholder="0.12">
+                <small>Check your electricity bill — typically $0.10–$0.30/kWh</small>
+            </div>
+            <div class="form-group">
+                <label for="cost-wattage">Printer Power Draw (Watts)</label>
+                <input type="number" id="cost-wattage" min="0" step="1" placeholder="150">
+                <small>Average draw including heated bed. Prusa Core One L: ~120–180W typical.</small>
+            </div>
+            <div class="form-group">
+                <label for="cost-maintenance">Maintenance Rate (per hour)</label>
+                <input type="number" id="cost-maintenance" min="0" step="0.01" placeholder="0.10">
+                <small>Nozzle wear, lubricant, belts, etc. spread across expected print hours.</small>
+            </div>
+            <div class="form-group">
+                <label for="cost-depreciation">Depreciation Rate (per hour)</label>
+                <input type="number" id="cost-depreciation" min="0" step="0.01" placeholder="0.05">
+                <small>Printer purchase price ÷ expected lifetime hours.
+                    Example: $1,000 printer over 5,000h = $0.20/h</small>
+            </div>
+
+            <h4 style="margin:24px 0 12px;">Margin</h4>
+            <div class="form-group">
+                <label for="cost-margin">Profit Margin (%)</label>
+                <input type="number" id="cost-margin" min="0" max="500" step="1" placeholder="0">
+                <small>Applied as a percentage markup on top of all costs.
+                    0% = cost recovery only.</small>
+            </div>
+
+            <div style="margin-top:24px;padding:16px;background:rgba(255,255,255,0.04);
+                        border-radius:8px;border:1px solid var(--surface-border);">
+                <strong>Quick cost calculator</strong>
+                <p style="color:var(--text-secondary);font-size:0.85em;margin:8px 0 16px;">
+                    Test your settings without printing. Enter filament and time to see the breakdown.
+                </p>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Filament (g)</label>
+                        <input type="number" id="calc-grams" min="0" step="0.1" placeholder="72.6"
+                               style="display:block;width:100px;margin-top:4px;padding:6px;
+                                      border-radius:4px;border:1px solid #555;
+                                      background:rgba(255,255,255,0.05);color:#fff;">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Print time (min)</label>
+                        <input type="number" id="calc-minutes" min="0" step="1" placeholder="337"
+                               style="display:block;width:100px;margin-top:4px;padding:6px;
+                                      border-radius:4px;border:1px solid #555;
+                                      background:rgba(255,255,255,0.05);color:#fff;">
+                    </div>
+                    <div>
+                        <label style="font-size:0.85em;color:var(--text-secondary);">Filament cost/kg</label>
+                        <input type="number" id="calc-price-kg" min="0" step="0.01" placeholder="24.99"
+                               style="display:block;width:100px;margin-top:4px;padding:6px;
+                                      border-radius:4px;border:1px solid #555;
+                                      background:rgba(255,255,255,0.05);color:#fff;">
+                    </div>
+                    <div style="display:flex;align-items:flex-end;">
+                        <button class="btn btn-small" onclick="runQuickCalc()">Calculate</button>
+                    </div>
+                </div>
+                <div id="quick-calc-result" style="display:none;"></div>
+            </div>
+
+            <div style="margin-top:20px;">
+                <button class="btn" onclick="saveCostSettings()">💾 Save Global Settings</button>
+                <button class="btn btn-secondary" onclick="loadCostSettings()" style="margin-left:8px;">↺ Reset</button>
+            </div>
+        </div>
+
+        <!-- Per-printer cost overrides -->
+        <div class="config-section" style="margin-top:0;border-top:1px solid var(--surface-border);">
+            <h4 style="margin:0 0 8px;">🖨️ Per-Printer Overrides</h4>
+            <div class="help-text" style="margin-bottom:16px;">
+                Override global defaults for each printer. Zero means "use global".
+                <strong>Print wattage</strong> replaces the global default.
+                <strong>Preheat</strong> adds a one-time electricity charge per print.
+                <strong>High-temp extra wattage</strong> is added automatically when Spoolman identifies the spool material as ABS, ASA, PA, or PC.
+                <strong>Purchase cost ÷ lifespan</strong> derives the per-hour depreciation; or enter it directly.
+            </div>
+            <div id="printerCostCards" style="display:flex;flex-direction:column;gap:12px;">
+                <p style="color:#666;font-size:0.9em;">Loading printers…</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- About Tab -->
+    <div id="about-tab" class="settings-tab-content">
+
+        <!-- Hero -->
+        <div class="config-section" style="text-align:center;padding:32px 25px 28px;">
+            <div style="font-size:2em;font-weight:700;color:#fff;letter-spacing:-0.5px;">The Moment</div>
+            <div style="font-size:0.95em;color:var(--text-secondary);margin:10px 0 18px;">
+                Automatic filament tracking, print history, and cost accounting for every 3D printer you own
+            </div>
+            <span style="display:inline-block;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;font-family:monospace;font-size:0.85em;padding:4px 16px;border-radius:20px;font-weight:600;letter-spacing:0.02em;">
+                v{{.AppVersion}}
+            </span>
+        </div>
+
+        <!-- Features -->
+        <div class="config-section">
+            <h3 style="margin-bottom:20px;">Features</h3>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;">
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🖨️</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Multi-Printer Support</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">OctoPrint, PrusaLink, and Bambu MQTT. Monitors all printers concurrently and detects print start and finish automatically.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🧵</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Spoolman Integration</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Reads every spool and filament spec from Spoolman. Writes consumed weight back after each print — no manual entry.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🏷️</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">NFC Spool Tags</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Scan an NTAG213 sticker on your iPhone to assign a physical spool to a toolhead slot instantly, from anywhere on the LAN.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">💰</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Print Cost Estimation</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Per-material filament pricing plus electricity cost. Cost breakdown available for every print in history.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">📋</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Print History</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Full record of every print: duration, filament consumed, spool used, cost breakdown, and attached G-code file.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">📍</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Location Sync</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Bidirectional sync between toolhead assignments and Spoolman spool locations. Spool moves in Spoolman reflect in The Moment within 5 minutes.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Supported interfaces -->
+        <div class="config-section">
+            <h3 style="margin-bottom:16px;">Supported Printer Interfaces</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;">
+                <span style="background:rgba(40,167,69,0.15);border:1px solid rgba(40,167,69,0.35);color:#6ee7a0;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">OctoPrint</span>
+                <span style="background:rgba(40,167,69,0.15);border:1px solid rgba(40,167,69,0.35);color:#6ee7a0;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">PrusaLink</span>
+                <span style="background:rgba(102,126,234,0.15);border:1px solid rgba(102,126,234,0.35);color:#a0b4f8;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">Bambu (MQTT)</span>
+                <span style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#888;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">Virtual / Test</span>
+            </div>
+        </div>
+
+        <!-- Version info -->
+        <div class="config-section">
+            <h3 style="margin-bottom:16px;">Version Info</h3>
+            <table style="border-collapse:collapse;font-size:0.93em;width:100%;">
+                <tr>
+                    <td style="padding:9px 24px 9px 0;color:var(--text-secondary);white-space:nowrap;width:170px;">The Moment</td>
+                    <td style="padding:9px 0;font-family:monospace;color:#fff;">v{{.AppVersion}}</td>
+                </tr>
+                <tr style="border-top:1px solid rgba(255,255,255,0.06);">
+                    <td style="padding:9px 24px 9px 0;color:var(--text-secondary);white-space:nowrap;">OctoPrint Plugin</td>
+                    <td style="padding:9px 0;font-family:monospace;color:#fff;" id="about-octoprint-plugin-version">—</td>
+                </tr>
+            </table>
+            <p style="margin-top:10px;font-size:0.82em;color:#555;line-height:1.5;">
+                OctoPrint plugin version appears after a successful connection test in OctoPrint's own settings panel (Settings → OctoPrint).
+            </p>
+        </div>
+
+        <!-- Attribution -->
+        <div class="config-section" style="font-size:0.85em;line-height:1.6;">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+                <span style="color:var(--text-secondary);font-weight:600;">License</span>
+                <span style="background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:2px 10px;font-family:monospace;color:#ccc;font-size:0.9em;">GPL-3.0</span>
+                <a href="https://github.com/ThetaSigmaLabs/the-moment" target="_blank" rel="noopener"
+                   style="background:rgba(102,126,234,0.12);border:1px solid rgba(102,126,234,0.3);border-radius:4px;padding:2px 10px;color:#a0b4f8;text-decoration:none;font-size:0.9em;">
+                    GitHub ↗
+                </a>
+            </div>
+            <div style="color:#666;">
+                Forked from <a href="https://github.com/needo37/filabridge" target="_blank" rel="noopener" style="color:#888;text-decoration:none;">FilaBridge</a> by needo37.
+                FilaBridge pioneered the Spoolman bridge pattern — its polling architecture, Spoolman API client, and PrusaLink integration are the foundation everything else is built on.
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Advanced Settings Tab -->
+    <div id="advanced-tab" class="settings-tab-content">
+        <div class="config-section">
+            <h3>⏱️ Connection Timeouts</h3>
+            <div class="help-text">
+                These settings control API timeouts and connection behavior. Only modify if you're experiencing connection issues.
+            </div>
+            <div class="advanced-settings">
+                <div class="timeout-settings">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="prusalinkTimeout">PrusaLink API Timeout (seconds)</label>
+                            <input type="number" id="prusalinkTimeout" min="5" max="300" value="10">
+                            <small>How long to wait for PrusaLink API responses (5-300 seconds)</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="prusalinkFileDownloadTimeout">File Download Timeout (seconds)</label>
+                            <input type="number" id="prusalinkFileDownloadTimeout" min="10" max="600" value="60">
+                            <small>How long to wait for file downloads (10-600 seconds)</small>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="spoolmanTimeout">Spoolman API Timeout (seconds)</label>
+                            <input type="number" id="spoolmanTimeout" min="5" max="300" value="30">
+                            <small>How long to wait for Spoolman API responses (5-300 seconds)</small>
+                        </div>
+                        <div class="form-group">
+                            <!-- Empty for alignment -->
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top: 20px; text-align: center;">
+                    <button class="btn" onclick="saveAdvancedSettings()">💾 Save Advanced Settings</button>
+                    <button class="btn btn-secondary" onclick="resetAdvancedSettings()">🔄 Reset to Defaults</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- NFC Locations Section -->
+        <div class="config-section" style="margin-top: 30px;">
+            <h3>🏷️ NFC Spool Locations</h3>
+            <div class="help-text">
+                These Spoolman location names are shared by the NFC workflow and the settings below.
+                When a spool is finished, tapping its tag and choosing Trash moves it to <strong>Trash</strong> so the tag can be re-programmed.
+                Each location is created in Spoolman automatically the first time it is used.
+            </div>
+
+            <!-- Spoolman Location Sync Toggle -->
+            <div class="form-group" style="margin-bottom:16px;">
+                <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+                    <input type="checkbox" id="spoolmanLocationSyncEnabled"
+                           onchange="document.getElementById('spoolmanLocationSyncRow').style.display=this.checked?'':'none'; saveNFCConfig();">
+                    <span>Bidirectional location sync with Spoolman</span>
+                </label>
+                <small>
+                    When enabled, The Moment keeps Spoolman's spool location field in sync with toolhead assignments — in both directions.
+                    Assigning a spool writes <em>{Printer Name} - T{index}</em> (e.g. "Ender3 - T0") to Spoolman.
+                    Unassigning, deleting a printer, or reducing toolhead count moves the spool to the Inventory location.
+                    Spoolman is also polled every 5 minutes: editing a spool's location directly in Spoolman will update the toolhead assignment here automatically.
+                    <strong>Changes save immediately.</strong>
+                </small>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="nfcInventoryLocation">Inventory Location</label>
+                    <input type="text" id="nfcInventoryLocation" placeholder="e.g. Inventory"
+                           style="width:100%;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;">
+                    <small>Where spools go when removed from a toolhead via NFC or location sync.</small>
+                </div>
+                <div class="form-group">
+                    <label for="nfcTrashLocation">Trash Location</label>
+                    <input type="text" id="nfcTrashLocation" placeholder="e.g. Trash"
+                           style="width:100%;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;">
+                    <small>Where finished/empty spools go. Tag is ready for re-programming.</small>
+                </div>
+            </div>
+            <div id="spoolmanLocationSyncRow" style="display:none;margin-top:8px;">
+                <small style="color:var(--text-secondary);">
+                    Location format written to Spoolman: <strong>{Printer Name} - T{toolhead index}</strong>
+                    &nbsp;&mdash;&nbsp;e.g. "Roci - T0", "Ender3 - T0"
+                </small>
+            </div>
+            <div style="margin-top: 16px; text-align: center;">
+                <button class="btn" onclick="saveNFCConfig()">💾 Save NFC Location Settings</button>
+            </div>
+        </div>
+
+        <!-- Backup & Restore Section -->
+        <div class="config-section" style="margin-top: 30px;">
+            <h3>💾 Backup &amp; Restore</h3>
+            <div class="help-text">
+                Backups include the database, G-code attachments, and virtual printer uploads.
+                Spoolman data is <strong>not</strong> included — use <code>make backup</code> (Docker) for a full system backup that covers both.
+            </div>
+
+            <!-- Restore-pending banner -->
+            <div id="restorePendingBanner" style="display:none; background:var(--warning-bg,#fff3cd); border:1px solid var(--warning-border,#ffc107); border-radius:6px; padding:12px 16px; margin-bottom:16px; color:var(--text-primary);">
+                ⚠️ <strong>Restart required.</strong> A restore completed successfully. Restart the service to load the restored data:
+                <br><code>Docker: make down &amp;&amp; make up</code> &nbsp;|&nbsp; <code>Native: stop and restart the binary</code>
+            </div>
+
+            <!-- Create backup -->
+            <div style="margin-bottom: 20px;">
+                <h4 style="margin:0 0 10px;">Create a Backup</h4>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <select id="backupScope" style="padding:6px 10px; border-radius:4px; border:1px solid var(--input-border,#ccc);">
+                        <option value="db">Database only (small, fast)</option>
+                        <option value="all">All data — database + G-code + uploads (large)</option>
+                        <option value="gcode">G-code files only</option>
+                        <option value="uploads">Virtual printer uploads only</option>
+                    </select>
+                    <button class="btn" id="backupCreateBtn" onclick="createBackup()">💾 Create Backup</button>
+                    <span id="backupCreateStatus" style="font-size:0.9em; color:var(--text-secondary);"></span>
+                </div>
+                <div class="help-text" style="margin-top:8px;">
+                    "Database only" covers all print history, printer configs, costs, and settings.
+                    Use it for quick daily backups. Choose "All data" before migrating to a new PC.
+                </div>
+            </div>
+
+            <!-- Upload a backup -->
+            <div style="margin-bottom: 20px;">
+                <h4 style="margin:0 0 10px;">Upload a Backup</h4>
+                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <input type="file" id="backupUploadInput" accept=".tar.gz" style="max-width:360px;">
+                    <button class="btn btn-secondary" id="backupUploadBtn" onclick="uploadBackup()">📤 Upload</button>
+                    <span id="backupUploadStatus" style="font-size:0.9em; color:var(--text-secondary);"></span>
+                </div>
+                <div class="help-text" style="margin-top:8px;">
+                    Upload a backup archive from another PC to make it available in the list below.
+                </div>
+            </div>
+
+            <!-- Backup list -->
+            <div>
+                <h4 style="margin:0 0 10px;">Backup Archives</h4>
+                <div id="backupListContainer">
+                    <p style="color:var(--text-secondary); font-size:0.9em;">Loading…</p>
+                </div>
+            </div>
+
+            <!-- Restore confirm modal -->
+            <div id="restoreModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:1000; align-items:center; justify-content:center;">
+                <div style="background:var(--surface-2); border:1px solid var(--surface-border); border-radius:12px; padding:28px 32px; max-width:520px; width:90%; box-shadow:0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px var(--surface-border); color:var(--text-primary);">
+                    <h3 style="margin:0 0 14px 0; padding-bottom:14px; border-bottom:1px solid var(--surface-border); color:var(--brand-light); font-weight:600;">Confirm Restore</h3>
+                    <div id="restorePreflightInfo" style="margin-bottom:16px; font-size:0.9em; line-height:1.6; color:var(--text-secondary);"></div>
+                    <div style="margin-bottom:20px; padding:12px; background:var(--surface-3); border-radius:8px; border:1px solid var(--surface-border);">
+                        <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; font-size:0.9em; color:var(--warning-text); line-height:1.5;">
+                            <input type="checkbox" id="restoreConfirmCheck" style="margin-top:2px; flex-shrink:0;">
+                            I understand that the selected data will be permanently overwritten and the service must be restarted afterward.
+                        </label>
+                    </div>
+                    <div style="display:flex; gap:10px; justify-content:flex-end; padding-top:14px; border-top:1px solid var(--surface-border);">
+                        <button class="btn btn-secondary" onclick="closeRestoreModal()">Cancel</button>
+                        <button class="btn btn-danger" id="restoreConfirmBtn" onclick="confirmRestore()" disabled>Restore</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Spool Displacement Section -->
+        <div class="config-section" style="margin-top: 30px;">
+            <h3>🔄 Spool Displacement</h3>
+            <div class="help-text">
+                Covers one specific scenario: assigning a spool to a toolhead that already has one.
+                When enabled, the displaced spool is automatically moved to the <strong>Inventory</strong> location.
+                Works independently of bidirectional location sync.
+            </div>
+            <div class="spool-assignment-settings">
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                        <input type="checkbox" id="autoAssignPreviousSpoolEnabled" style="width: auto; cursor: pointer;">
+                        <span>Move displaced spool to Inventory when replaced</span>
+                    </label>
+                </div>
+                <div style="margin-top: 20px; text-align: center;">
+                    <button class="btn" onclick="saveAutoAssignSettings()">💾 Save Spool Displacement Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

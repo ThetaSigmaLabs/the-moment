@@ -1,0 +1,212 @@
+/* The Moment Dashboard - Main Styles */
+
+/* ── Design Tokens ────────────────────────────────────────────────────────── */
+:root {
+  /* Brand */
+  --brand-deep:    #1a0e3d;
+  --brand-mid:     #2d1b69;
+  --brand:         #6c3aaa;
+  --brand-bright:  #7c5cfc;
+  --brand-light:   #c8b8ff;
+  --brand-tint:    rgba(124, 92, 252, 0.12);
+  --brand-tint-lg: rgba(124, 92, 252, 0.22);
+
+  /* Surfaces (dark, purple-shifted) */
+  --surface-0:      #100e1a;
+  --surface-1:      #16131f;
+  --surface-2:      #1e1a2e;
+  --surface-3:      #272040;
+  --surface-border: rgba(124, 92, 252, 0.18);
+
+  /* Text */
+  --text-primary:   #f0ecff;
+  --text-secondary: #a89ec4;
+  --text-muted:     #6e6885;
+
+  /* Semantic colours — green/amber/red for status ONLY */
+  --success:      #10b981;
+  --success-dark: #064e3b;
+  --success-text: #6ee7a0;
+
+  --warning:      #f59e0b;
+  --warning-dark: #3d1f00;
+  --warning-text: #fbbf24;
+
+  --error:        #ef4444;
+  --error-dark:   #7f1d1d;
+  --error-text:   #fca5a5;
+
+  /* Neutral surfaces for secondary UI */
+  --neutral:      #3a3553;
+  --neutral-dark: #2e2a43;
+}
+
+/* ── Base Layout ──────────────────────────────────────────────────────────── */
+body {
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Verdana, sans-serif;
+  margin: 0;
+  padding: 20px;
+  background: linear-gradient(135deg, var(--brand-mid) 0%, var(--brand-deep) 100%);
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  background: var(--surface-1);
+  border-radius: 15px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--surface-border);
+  overflow: visible;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+.header {
+  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-deep) 100%);
+  color: white;
+  padding: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 15px 15px 0 0;
+}
+
+.spoolman-header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  color: white;
+  text-decoration: none;
+  font-size: 0.88em;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.spoolman-header-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.header h1 {
+  margin: 0;
+  font-size: 2.5em;
+  font-weight: 300;
+  color: var(--text-primary);
+}
+
+.header p {
+  margin: 10px 0 0 0;
+  opacity: 0.85;
+  font-size: 1.1em;
+}
+
+/* ── Content ──────────────────────────────────────────────────────────────── */
+.content {
+  padding: 0;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+/* ── Welcome Banner ───────────────────────────────────────────────────────── */
+/* Keep green — semantically correct for "first-run / ready" */
+.welcome-banner {
+  background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+  color: white;
+  padding: 25px;
+  margin: 20px 0;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.welcome-banner h3 {
+  margin: 0 0 15px 0;
+  font-size: 1.5em;
+}
+
+.welcome-banner ol {
+  text-align: left;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.welcome-banner li {
+  margin: 8px 0;
+}
+
+/* ── Help Section ─────────────────────────────────────────────────────────── */
+.help-section {
+  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-deep) 100%);
+  color: white;
+  padding: 25px;
+  margin: 20px 0;
+  border-radius: 10px;
+  border: 1px solid var(--surface-border);
+}
+
+.help-section h4 {
+  margin: 0 0 15px 0;
+}
+
+.help-section ol {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.help-section li {
+  margin: 8px 0;
+}
+
+/* ── Utility ──────────────────────────────────────────────────────────────── */
+.hidden {
+  display: none;
+}
+
+/* ── Section Headers ──────────────────────────────────────────────────────── */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.section-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.tab-tagline {
+  margin: 3px 0 0;
+  font-size: 0.75em;
+  color: var(--text-muted);
+  font-style: italic;
+  letter-spacing: 0.03em;
+}
+
+/* ── ThetaSigma Labs branding in header ───────────────────────────────────── */
+.header-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+.header-brand-logo {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  filter: invert(1);
+}
+
+.header-brand-name {
+  font-size: 0.6em;
+  letter-spacing: 0.07em;
+  opacity: 0.65;
+  white-space: nowrap;
+  text-transform: uppercase;
+  font-weight: 500;
+}

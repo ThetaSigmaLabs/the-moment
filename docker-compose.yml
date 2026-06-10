@@ -1,0 +1,99 @@
+# =============================================================================
+# The Moment + Spoolman — Full Stack
+# =============================================================================
+#
+# Quick start — no git clone needed:
+#
+#   curl -O https://raw.githubusercontent.com/ThetaSigmaLabs/the-moment/main/docker-compose.yml
+#   curl -O https://raw.githubusercontent.com/ThetaSigmaLabs/the-moment/main/.env.example
+#   cp .env.example .env        # review ports and timezone; defaults work out of the box
+#   docker compose up -d
+#
+# Services:
+#   spoolman    — Filament inventory database  → http://<server-ip>:${SPOOLMAN_PORT:-7912}
+#   the-moment  — Printer bridge and web UI    → http://<server-ip>:${THE_MOMENT_PORT:-5000}
+#
+# Common operations:
+#   docker compose up -d                            # start
+#   docker compose logs -f                          # tail logs
+#   docker compose pull && docker compose up -d     # update to latest images
+#   docker compose down                             # stop
+#
+# Makefile shortcuts (if you have the repo cloned):
+#   make up / make down / make logs / make update / make backup
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Spoolman — filament inventory database
+  # Also integrates natively with Klipper/Moonraker via its built-in plugin
+  # ---------------------------------------------------------------------------
+  spoolman:
+    image: ghcr.io/donkie/spoolman:latest
+    container_name: spoolman
+    restart: unless-stopped
+    ports:
+      - "${SPOOLMAN_PORT:-7912}:8000"
+    volumes:
+      - ${SPOOLMAN_DB_PATH:-./spoolman-data}:/home/spoolman/data
+    environment:
+      # Timezone — set TZ in .env.example (e.g. TZ=America/New_York)
+      TZ: ${TZ:-UTC}
+      # Optional: enable debug logging
+      # SPOOLMAN_LOGGING_LEVEL: DEBUG
+    networks:
+      - momentnet
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/info')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # The Moment — bridges your printers to Spoolman
+  # Supports: PrusaLink, OctoPrint, Bambu (MQTT), virtual test printers
+  # ---------------------------------------------------------------------------
+  the-moment:
+    image: ghcr.io/thetasigmalabs/the-moment:latest
+    container_name: the-moment
+    restart: unless-stopped
+    depends_on:
+      spoolman:
+        condition: service_healthy
+    ports:
+      - "${THE_MOMENT_PORT:-5000}:${THE_MOMENT_PORT:-5000}"
+    volumes:
+      # Four bind mounts — one per data type plus the backup store — so each can be relocated independently.
+      - ${THE_MOMENT_DB_PATH:-./the-moment-data/db}:/app/data/db
+      - ${THE_MOMENT_GCODE_PATH:-./the-moment-data/gcode}:/app/data/gcode
+      - ${THE_MOMENT_UPLOADS_PATH:-./the-moment-data/uploads}:/app/data/uploads
+      - ${BACKUP_DIR:-./backups}:/app/data/backups
+    environment:
+      THE_MOMENT_PORT: ${THE_MOMENT_PORT:-5000}
+      THE_MOMENT_DB_PATH: /app/data/db
+      THE_MOMENT_GCODE_PATH: /app/data/gcode
+      THE_MOMENT_UPLOADS_PATH: /app/data/uploads
+      BACKUP_DIR: /app/data/backups
+
+      # Point The Moment at the Spoolman service on the internal Docker network.
+      # Uses the service name "spoolman" — Docker DNS resolves this automatically.
+      # This env var is read at first-run config init; if you have already run
+      # The Moment and configured it via the UI, this variable is ignored.
+      SPOOLMAN_URL: http://spoolman:8000
+    networks:
+      - momentnet
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:${THE_MOMENT_PORT:-5000}/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+# =============================================================================
+# Internal network — services talk to each other without exposing ports
+# =============================================================================
+networks:
+  momentnet:
+    driver: bridge

@@ -1,0 +1,322 @@
+/* The Moment Dashboard - Component Styles */
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+.btn {
+  background: var(--brand-bright);
+  color: white;
+  padding: 15px 30px;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  font-size: 16px;
+  text-decoration: none;
+  display: inline-block;
+  margin: 10px 5px;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  background: var(--brand);
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(124, 92, 252, 0.35);
+}
+
+.btn-secondary {
+  background: var(--neutral);
+}
+
+.btn-secondary:hover {
+  background: var(--neutral-dark);
+}
+
+.btn-danger {
+  background: #dc3545;
+}
+
+.btn-danger:hover {
+  background: #c82333;
+}
+
+.btn-small {
+  padding: 5px 12px;
+  font-size: 12px;
+  min-width: 60px;
+}
+
+/* ── Form Elements ────────────────────────────────────────────────────────── */
+.form-group {
+  margin-bottom: 20px;
+  overflow: visible;
+}
+
+.form-group label {
+  display: block;
+  font-weight: bold;
+  margin-bottom: 8px;
+  color: var(--text-primary);
+}
+
+.form-group input, .form-group select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 2px solid var(--surface-border);
+  border-radius: 8px;
+  font-size: 16px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  transition: border-color 0.2s ease;
+}
+
+.form-group input:focus, .form-group select:focus {
+  outline: none;
+  border-color: var(--brand-bright);
+  background: var(--surface-3);
+}
+
+.form-group select option {
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+
+.form-group input[type="password"] {
+  border-color: var(--brand);
+}
+
+.form-group small {
+  color: var(--text-secondary);
+  font-size: 0.9em;
+  margin-top: 5px;
+  display: block;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+/* ── Configuration Sections ───────────────────────────────────────────────── */
+.config-section {
+  background: var(--surface-2);
+  padding: 25px;
+  margin: 20px 0;
+  border-radius: 10px;
+  border: 1px solid var(--surface-border);
+  overflow: visible;
+}
+
+.config-section h3 {
+  margin: 0 0 20px 0;
+  color: var(--text-primary);
+}
+
+.advanced-settings {
+  background: var(--surface-2);
+  padding: 20px;
+  border-radius: 8px;
+  margin-top: 15px;
+}
+
+.help-text {
+  color: var(--text-secondary);
+  font-style: italic;
+  margin-bottom: 20px;
+  padding: 10px;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 3px solid var(--warning);
+  border-radius: 4px;
+}
+
+.timeout-settings {
+  display: grid;
+  gap: 15px;
+}
+
+/* ── Status Indicators ────────────────────────────────────────────────────── */
+/* Dark-mode badge versions — Bootstrap light colours don't work on dark cards */
+.status {
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75em;
+  letter-spacing: 0.04em;
+}
+
+.status.idle {
+  background: var(--success-dark);
+  color: var(--success-text);
+}
+
+.status.printing {
+  background: #3d2a00;
+  color: #ffb347;
+}
+
+.status.offline {
+  background: var(--error-dark);
+  color: var(--error-text);
+}
+
+.status.not_configured {
+  background: var(--surface-3);
+  color: var(--text-muted);
+}
+
+.status.virtual {
+  background: #2a1a3d;
+  color: var(--brand-light);
+}
+
+.status.paused {
+  background: #1a2a3d;
+  color: #7ab8f5;
+}
+
+.status.attention {
+  background: var(--warning-dark);
+  color: var(--warning-text);
+}
+
+.status.finished {
+  background: var(--success-dark);
+  color: var(--success-text);
+}
+
+.status.cancelled {
+  background: #2a2a2a;
+  color: var(--text-secondary);
+}
+
+/* PrusaLink returns uppercase states */
+.status.IDLE      { background: var(--success-dark); color: var(--success-text); }
+.status.PRINTING  { background: #3d2a00; color: #ffb347; }
+.status.PAUSED    { background: #1a2a3d; color: #7ab8f5; }
+.status.STOPPED   { background: var(--error-dark); color: var(--error-text); }
+.status.ATTENTION { background: var(--warning-dark); color: var(--warning-text); }
+.status.attention { background: var(--warning-dark); color: var(--warning-text); }
+.status.FINISHED  { background: var(--success-dark); color: var(--success-text); }
+
+/* ── Color Swatches ───────────────────────────────────────────────────────── */
+.color-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  flex-shrink: 0;
+  background-color: #ccc;
+}
+
+/* ── Toolhead Specific ────────────────────────────────────────────────────── */
+.toolhead-select {
+  background: var(--surface-2) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--surface-border) !important;
+  padding: 8px !important;
+  border-radius: 4px !important;
+}
+
+.toolhead-select option {
+  background: var(--surface-1) !important;
+  color: var(--text-primary) !important;
+}
+
+.toolhead-label {
+  color: var(--text-primary) !important;
+}
+
+.edit-spool-btn {
+  background: var(--brand-bright);
+  color: white;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: bold;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  margin-left: 25px;
+}
+
+.edit-spool-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(124, 92, 252, 0.4);
+  filter: brightness(0.85);
+}
+
+.edit-spool-btn.hidden {
+  display: none;
+}
+
+/* ── Quality Tag Badges ───────────────────────────────────────────────────── */
+.tag-outcome-badge {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 12px;
+  font-size: 0.78em;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.tag-outcome-badge.success    { background: var(--success-dark); color: var(--success-text); }
+.tag-outcome-badge.acceptable { background: #2a2a00; color: #e6c84a; }
+.tag-outcome-badge.failed     { background: var(--error-dark); color: var(--error-text); }
+
+.tag-issue-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.72em;
+  white-space: nowrap;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  margin: 1px 2px;
+  border: 1px solid var(--surface-border);
+}
+
+.tag-issue-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 16px;
+  font-size: 0.85em;
+}
+
+.tag-issue-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tag-issue-check input[type="checkbox"] {
+  accent-color: var(--brand-bright);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.tag-outcome-btn.active-success    { background: var(--success-dark) !important; color: var(--success-text) !important; border-color: #2d6a4f !important; }
+.tag-outcome-btn.active-acceptable { background: #2a2a00 !important; color: #e6c84a !important; border-color: #5a5a00 !important; }
+.tag-outcome-btn.active-failed     { background: var(--error-dark) !important; color: var(--error-text) !important; border-color: #7a0000 !important; }
+
+/* ── Spinner ──────────────────────────────────────────────────────────────── */
+@keyframes tm-spin {
+  to { transform: rotate(360deg); }
+}
+.btn-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: tm-spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}

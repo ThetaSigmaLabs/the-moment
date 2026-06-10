@@ -1,0 +1,100 @@
+<!-- Print History Tab -->
+<div id="history-tab" class="tab-content">
+    <div class="config-section" style="padding:0;">
+
+        <!-- Toolbar -->
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:16px 20px;border-bottom:1px solid var(--surface-border);flex-wrap:wrap;gap:10px;">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                <span id="historyCount" style="background:var(--surface-3);color:var(--text-secondary);padding:2px 10px;
+                      border-radius:12px;font-size:0.8em;">0 records</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <!-- Search -->
+                <input type="text" id="historySearch" placeholder="Search file, printer…"
+                       oninput="filterHistory()"
+                       style="padding:7px 12px;border-radius:6px;border:1px solid var(--surface-border);
+                              background:var(--surface-2);color:#fff;font-size:0.85em;width:200px;">
+                <!-- Filter by status -->
+                <select id="historyStatusFilter" onchange="filterHistory()"
+                        style="padding:7px 10px;border-radius:6px;border:1px solid var(--surface-border);
+                               background:var(--surface-2);color:#fff;font-size:0.85em;">
+                    <option value="">All statuses</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="failed">Failed</option>
+                </select>
+                <select id="historyPerPage" onchange="setPerPage(this.value)"
+                        style="padding:7px 10px;border-radius:6px;border:1px solid var(--surface-border);
+                               background:var(--surface-2);color:#fff;font-size:0.85em;">
+                    <option value="10">10 / page</option>
+                    <option value="25">25 / page</option>
+                    <option value="50">50 / page</option>
+                    <option value="100">100 / page</option>
+                    <option value="0">All</option>
+                </select>
+                <button class="btn btn-small btn-secondary" onclick="loadHistory()" title="Refresh">↺ Refresh</button>
+                <button id="historyRecalcSelectedBtn" class="btn btn-small btn-secondary"
+                        onclick="recalcSelectedSessions()"
+                        style="display:none;">💰 Recalc Selected</button>
+                <button id="historyDeleteSelectedBtn" class="btn btn-small btn-danger"
+                        onclick="deleteSelectedSessions()"
+                        style="display:none;">🗑 Delete Selected</button>
+            </div>
+        </div>
+
+        <!-- Pagination top -->
+        <div id="historyPagTop"></div>
+
+        <!-- Table -->
+        <div style="overflow-x:auto;">
+            <table id="historyTable" style="width:100%;border-collapse:collapse;font-size:0.88em;">
+                <thead>
+                    <tr style="border-bottom:2px solid #444;color:#888;text-transform:uppercase;
+                                font-size:0.75em;letter-spacing:0.05em;">
+                        <th style="padding:10px 8px;text-align:center;width:32px;">
+                            <input type="checkbox" id="historySelectAll" title="Select all"
+                                   onchange="toggleSelectAll(this.checked)"
+                                   style="cursor:pointer;width:15px;height:15px;">
+                        </th>
+                        <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
+                            onclick="sortHistory('print_finished')">Date ↕</th>
+                        <th style="padding:10px 12px;text-align:center;width:52px;">🖼</th>
+                        <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
+                            onclick="sortHistory('printer_name')">Printer ↕</th>
+                        <th style="padding:10px 12px;text-align:left;">File</th>
+                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;"
+                            onclick="sortHistory('filament_used')" style="cursor:pointer;">Usage ↕</th>
+                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;">Time</th>
+                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;"
+                            onclick="sortHistory('total_cost')" style="cursor:pointer;">Cost ↕</th>
+                        <th style="padding:10px 12px;text-align:left;">Note</th>
+                        <th style="padding:10px 12px;text-align:center;">Status</th>
+                        <th style="padding:10px 12px;text-align:center;white-space:nowrap;">Quality</th>
+                    </tr>
+                </thead>
+                <tbody id="historyBody">
+                    <tr>
+                        <td colspan="11" style="text-align:center;padding:40px;color:#666;">
+                            Loading print history…
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination bottom -->
+        <div id="historyPagBottom"></div>
+
+        <!-- Empty state (shown by JS) -->
+        <div id="historyEmpty" style="display:none;text-align:center;padding:60px 20px;color:var(--text-muted);">
+            <div style="font-size:3em;margin-bottom:12px;">🗂️</div>
+            <div style="font-size:1.1em;margin-bottom:8px;">No print history yet</div>
+            <div style="font-size:0.85em;">
+                History is recorded automatically when a PrusaLink print finishes
+                or when you process a G-code file on a virtual printer.
+            </div>
+        </div>
+
+    </div>
+</div>

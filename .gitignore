@@ -1,0 +1,63 @@
+# Binaries
+the-moment
+the-moment.exe
+main
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Build artifacts
+dist/
+build/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+__debug_bin*
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data directories
+the-moment-data/
+spoolman-data/
+backups/
+
+# Environment files (use .env.example as template)
+.env
+.dev/
+
+# Claude Code local settings and AI agent instructions
+.claude/
+CLAUDE.md
+
+# Build artifacts
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
