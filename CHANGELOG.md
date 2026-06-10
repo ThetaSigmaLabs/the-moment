@@ -5,7 +5,7 @@ All notable changes to The Moment will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.0.0] - 2026-06-07
+## [v1.0.0] - 2026-06-09
 
 First public release. Forked from FilaBridge v0.3.0; feature-complete and running in production on Odroid N2+ with Prusa CORE One L, Ender 3 V3 SE, and Spoolman. All items below are additions or changes relative to FilaBridge v0.3.0.
 
@@ -48,6 +48,7 @@ First public release. Forked from FilaBridge v0.3.0; feature-complete and runnin
 #### Filament Management
 
 - **Filament calibration tab** — inline weight editing with real-time Spoolman sync
+- **OpenPrintTag filament edit dialogues** — edit OpenPrintTag/NFC custom fields (temperatures, dates, material properties) directly from the filament dialog
 - **Filament sufficiency warning** — pre-print alert when remaining spool weight may not be enough for the job
 - **Filament check indicator** — pre-print check badge on toolhead assignment view
 - **Spool trash workflow** — archived spools returned to configured inventory location in Spoolman
@@ -74,12 +75,15 @@ First public release. Forked from FilaBridge v0.3.0; feature-complete and runnin
 - **`[RECOVERED]` stub deduplication** — prevents duplicate recovery stubs across dev restarts during an active print
 - **Pre-print cost field validation** — cost fields now persist and display correctly before print starts
 - **Backup/restore spinners** — UI now shows loading state during backup creation and restore preflight
+- **Mobile layout** — printer view layout and dialog scrolling fixed for mobile browsers
 
 ### Changed
 
 - Module path updated to `github.com/ThetaSigmaLabs/the-moment`
 - Deployment uses bind-mount data directories (not Docker volumes); data lives on host filesystem
 - Jenkins CI pipeline: 3-phase local pipeline covering linux-arm64 and windows/amd64
+- GitHub Actions: multi-arch Docker images (amd64 + arm64) published to GHCR on release; tested on Prusa CORE One L in production
+- ROADMAP.md added outlining planned features
 
 ## [v0.3.0] - 2026-04-18
 
