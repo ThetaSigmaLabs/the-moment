@@ -230,10 +230,11 @@ All configuration lives in the SQLite database and is managed through the web UI
 | Tab | What it does |
 |---|---|
 | **Dashboard** | Live printer status, current jobs, toolhead-to-spool assignments |
-| **Filament Status** | Assign spools to toolheads; smart search by name, material, brand |
 | **History** | Full print history with cost breakdown, notes, thumbnails; grouped by session |
-| **NFC Tags** | Generate QR codes and NFC tag files for spools, filament types, and locations |
-| **Settings** | Printers, cost settings (global + per-printer), advanced timeouts, Spoolman connection |
+| **Spools** | Assign spools to toolheads; NFC spool tag generation and QR codes |
+| **Filaments** | Manage filament profiles; edit OpenPrintTag NFC fields (temps, material class, colors) |
+| **Printers** | Add/remove printers; NFC location tag generation; stuck spool assignment cleanup |
+| **Settings** | Basic config (Spoolman URL, timeouts), cost settings (global + per-printer overrides), advanced options, About |
 
 ### Cost Settings
 
@@ -252,8 +253,8 @@ All configuration lives in the SQLite database and is managed through the web UI
 
 ### NFC Spool Assignment Workflow
 
-1. NFC Tags tab → generate a spool tag for each physical spool
-2. NFC Tags tab → generate location tags for each printer toolhead
+1. Spools tab → generate a spool tag for each physical spool
+2. Printers tab → generate location tags for each printer toolhead
 3. Write the tags using [NFC Tools Pro](https://apps.apple.com/app/nfc-tools/id1252962749) on iPhone
 4. To assign: tap the spool tag → tap the toolhead location tag (within 5 minutes)
 5. Spoolman location field updates automatically
@@ -454,6 +455,12 @@ The Moment is a fork of [FilaBridge](https://github.com/needo37/filabridge) (arc
 FilaBridge pioneered the Spoolman bridge pattern for real-time filament tracking — connecting live printer data to Spoolman's inventory without manual entry. Its polling architecture, Spoolman API client, and PrusaLink integration are the foundation everything else is built on.
 
 If you find The Moment useful, consider starring [FilaBridge](https://github.com/needo37/filabridge) too — the archive preserves the original work.
+
+---
+
+## Roadmap
+
+Ideas under consideration — not scheduled, not committed. See [ROADMAP.md](ROADMAP.md).
 
 ---
 
