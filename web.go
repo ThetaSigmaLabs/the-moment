@@ -275,6 +275,13 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/nfc/prints/:print_history_id/spool-swap", ws.nfcSpoolSwapHandler)
 		api.GET("/nfc/spoolman-setup-status", ws.nfcSetupStatusHandler)
 		api.POST("/nfc/spoolman-setup", ws.nfcSetupHandler)
+
+		// NFCs tab — tag registry CRUD (nfc_tags). Filament sub-tab activated in Stage 2.
+		api.GET("/nfc/tags", ws.nfcTagsListHandler)
+		api.POST("/nfc/tags", ws.nfcTagCreateHandler)
+		api.PATCH("/nfc/tags/:tag_id/label", ws.nfcTagLabelHandler)
+		api.DELETE("/nfc/tags/:tag_id", ws.nfcTagDeleteHandler)
+		api.GET("/nfc/tags/:tag_id/payload", ws.nfcTagPayloadHandler)
 		api.GET("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsGetHandler)
 		api.POST("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsPostHandler)
 		api.POST("/nfc/spools/:spoolman_id/trash", ws.nfcSpoolTrashHandler)
@@ -2827,71 +2834,8 @@ func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 		})
 	}
 
-	// Get all filaments
-	filaments, err := ws.bridge.spoolman.GetAllFilaments()
-	if err != nil {
-		log.Printf("Warning: Failed to get filaments for NFC URLs: %v", err)
-		filaments = []SpoolmanFilament{}
-	}
-
-	// Generate filament URLs
-	for _, filament := range filaments {
-		url := fmt.Sprintf("%s/filament/show/%d", ws.bridge.config.SpoolmanURL, filament.ID)
-
-		// Safely get color hex
-		colorHex := ""
-		if filament.ColorHex != "" {
-			colorHex = filament.ColorHex
-			// Ensure it starts with #
-			if !strings.HasPrefix(colorHex, "#") {
-				colorHex = "#" + colorHex
-			}
-		}
-
-		// Get brand name
-		brand := "Unknown Brand"
-		if filament.Vendor != nil {
-			brand = filament.Vendor.Name
-		}
-
-		// Generate QR code
-		qrCode, err := qrcode.Encode(url, qrcode.Medium, 256)
-		if err != nil {
-			log.Printf("Error generating QR code for filament %d: %v", filament.ID, err)
-			// Continue without QR code if generation fails
-			urls = append(urls, gin.H{
-				"type":           "filament",
-				"filament_id":    filament.ID,
-				"filament_name":  filament.Name,
-				"material":       filament.Material,
-				"brand":          brand,
-				"color_hex":      colorHex,
-				"extruder_temp":  filament.SettingsExtruderTemp,
-				"bed_temp":       filament.SettingsBedTemp,
-				"diameter":       filament.Diameter,
-				"density":        filament.Density,
-				"url":            url,
-				"qr_code_base64": "",
-			})
-			continue
-		}
-
-		qrCodeBase64 := base64.StdEncoding.EncodeToString(qrCode)
-		urls = append(urls, gin.H{
-			"type":           "filament",
-			"filament_id":    filament.ID,
-			"filament_name":  filament.Name,
-			"material":       filament.Material,
-			"brand":          brand,
-			"color_hex":      colorHex,
-			"extruder_temp":  filament.SettingsExtruderTemp,
-			"bed_temp":       filament.SettingsBedTemp,
-			"diameter":       filament.Diameter,
-			"density":        filament.Density,
-			"url":            url,
-			"qr_code_base64": qrCodeBase64,
-		})
-	}
+	// Filament tags are managed in the NFCs tab via /api/nfc/tags (nfc_tags registry).
+	// The legacy read-only filament deep-link list was removed in Stage 2.
 
 	// Get Spoolman locations
 	spoolmanLocations, err := ws.bridge.spoolman.GetLocations()

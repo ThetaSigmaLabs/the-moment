@@ -4,7 +4,7 @@
 
 // The Moment Dashboard - Main JavaScript Functions
 
-const VALID_TABS = ['dashboard', 'history', 'spools', 'filament', 'printers', 'settings'];
+const VALID_TABS = ['dashboard', 'history', 'spools', 'filament', 'printers', 'nfcs', 'settings'];
 
 // Tab switching functionality
 function switchTab(tabName) {

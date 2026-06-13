@@ -37,9 +37,6 @@ function switchNfcTab(tabName, clickedElement) {
     if (tabName === 'spool-tags') {
         console.log('Loading spool tags...');
         loadSpoolTags();
-    } else if (tabName === 'filament-tags') {
-        console.log('Loading filament tags...');
-        loadFilamentTags();
     } else if (tabName === 'location-tags') {
         console.log('Loading location tags...');
         loadLocationTags();
@@ -139,63 +136,8 @@ async function loadSpoolTags() {
     }
 }
 
-// TODO: assess whether Filament Tags serve a purpose in the spool-centric NFC workflow; tab hidden in nfc.html until decided
-async function loadFilamentTags() {
-    try {
-        console.log('Loading filament tags...');
-        const response = await fetch('/api/nfc/urls');
-        const data = await response.json();
-        console.log('NFC URLs data:', data);
-
-        const container = document.getElementById('filament-list-container');
-        const filamentUrls = data.urls.filter(url => url.type === 'filament');
-        console.log('Filament URLs:', filamentUrls);
-
-        if (filamentUrls.length === 0) {
-            container.innerHTML = '<p>No filaments available</p>';
-            return;
-        }
-
-        container.innerHTML = '';
-
-        filamentUrls.forEach(url => {
-            const item = document.createElement('div');
-            item.className = 'nfc-list-item';
-            item.dataset.value = url.filament_id;
-            item.dataset.color = url.color_hex;
-            item.dataset.url = url.url;
-            item.dataset.qr = url.qr_code_base64;
-
-            const colorHex = url.color_hex || '#ccc';
-            item.innerHTML = `
-                <div class="color-swatch" style="background-color: ${colorHex}"></div>
-                <div class="item-info">
-                    <div class="item-name">${url.filament_name}</div>
-                    <div class="item-details">${url.material} - ${url.brand}</div>
-                </div>
-            `;
-
-            // Add click handler
-            item.addEventListener('click', () => {
-                // Remove selected class from all items
-                container.querySelectorAll('.nfc-list-item').forEach(i => i.classList.remove('selected'));
-                // Add selected class to clicked item
-                item.classList.add('selected');
-                // Show QR code
-                displayFilamentQR(url);
-            });
-
-            container.appendChild(item);
-        });
-
-        // Initialize search functionality
-        initializeFilamentSearch(filamentUrls);
-
-    } catch (error) {
-        console.error('Error loading filament tags:', error);
-        document.getElementById('filament-list-container').innerHTML = '<p>Error loading filaments</p>';
-    }
-}
+// Filament tags are managed in the NFCs tab (nfc_management.js / nfc_tags registry).
+// The legacy read-only filament viewer was removed in Stage 2.
 
 async function loadLocationTags() {
     try {
@@ -426,24 +368,6 @@ async function removeNFCTag(spoolID) {
     }
 }
 
-// Display QR code for selected filament
-function displayFilamentQR(filamentData) {
-    console.log('Displaying filament QR:', filamentData);
-
-    // Hide no-selection message
-    document.getElementById('filament-no-selection').style.display = 'none';
-
-    // Show QR display
-    const display = document.getElementById('filament-qr-display');
-    display.style.display = 'block';
-
-    // Update content
-    document.getElementById('filament-selected-name').textContent = filamentData.filament_name;
-    document.getElementById('filament-selected-details').innerHTML = ``;
-    document.getElementById('filament-qr-large').src = `data:image/png;base64,${filamentData.qr_code_base64}`;
-    document.getElementById('filament-url-text').textContent = filamentData.url;
-}
-
 // Display QR code for selected location
 function displayLocationQR(locationData) {
     console.log('Displaying location QR:', locationData);
@@ -469,28 +393,6 @@ function displayLocationQR(locationData) {
 function initializeSpoolSearch(spoolUrls) {
     const searchInput = document.getElementById('spool-search');
     const container = document.getElementById('spool-list-container');
-
-    searchInput.addEventListener('input', (e) => {
-        const searchTerm = e.target.value.toLowerCase();
-        const items = container.querySelectorAll('.nfc-list-item');
-
-        items.forEach(item => {
-            const name = item.querySelector('.item-name').textContent.toLowerCase();
-            const details = item.querySelector('.item-details').textContent.toLowerCase();
-
-            if (name.includes(searchTerm) || details.includes(searchTerm)) {
-                item.style.display = 'flex';
-            } else {
-                item.style.display = 'none';
-            }
-        });
-    });
-}
-
-// Initialize search functionality for filaments
-function initializeFilamentSearch(filamentUrls) {
-    const searchInput = document.getElementById('filament-search');
-    const container = document.getElementById('filament-list-container');
 
     searchInput.addEventListener('input', (e) => {
         const searchTerm = e.target.value.toLowerCase();

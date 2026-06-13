@@ -244,6 +244,62 @@ func (b *FilamentBridge) DeleteNFCTag(tagID string) error {
 	return nil
 }
 
+// ─── tag_filament_spec (filament tags) ────────────────────────────────────────
+
+// TagFilamentSpec is the OpenPrintTag authoring spec stored alongside a filament tag.
+// Only populated for filament tags authored from typed fields; bound tags read their
+// data from the Spoolman filament instead.
+type TagFilamentSpec struct {
+	TagID            string  `json:"tag_id"`
+	Manufacturer     string  `json:"manufacturer"`
+	Material         string  `json:"material"`
+	ColorName        string  `json:"color_name"`
+	ColorHex         string  `json:"color_hex"`
+	DiameterMM       float64 `json:"diameter_mm"`
+	Density          float64 `json:"density"`
+	DefaultWeightG   float64 `json:"default_weight_g"`
+	DefaultPrice     float64 `json:"default_price"`
+	OpenPrintTagJSON string  `json:"openprinttag_json"`
+}
+
+// SetTagFilamentSpec inserts or replaces the spec row for a filament tag.
+func (b *FilamentBridge) SetTagFilamentSpec(spec TagFilamentSpec) error {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	_, err := b.db.Exec(
+		`INSERT OR REPLACE INTO tag_filament_spec
+		 (tag_id, manufacturer, material, color_name, color_hex, diameter_mm, density, default_weight_g, default_price, openprinttag_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		spec.TagID, spec.Manufacturer, spec.Material, spec.ColorName, spec.ColorHex,
+		spec.DiameterMM, spec.Density, spec.DefaultWeightG, spec.DefaultPrice, spec.OpenPrintTagJSON,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set filament spec for tag %q: %w", spec.TagID, err)
+	}
+	return nil
+}
+
+// GetTagFilamentSpec returns the spec for a filament tag, or (nil, nil) when none exists.
+func (b *FilamentBridge) GetTagFilamentSpec(tagID string) (*TagFilamentSpec, error) {
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
+
+	var s TagFilamentSpec
+	err := b.db.QueryRow(
+		`SELECT tag_id, manufacturer, material, color_name, color_hex, diameter_mm, density, default_weight_g, default_price, openprinttag_json
+		 FROM tag_filament_spec WHERE tag_id = ?`, tagID,
+	).Scan(&s.TagID, &s.Manufacturer, &s.Material, &s.ColorName, &s.ColorHex,
+		&s.DiameterMM, &s.Density, &s.DefaultWeightG, &s.DefaultPrice, &s.OpenPrintTagJSON)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get filament spec for tag %q: %w", tagID, err)
+	}
+	return &s, nil
+}
+
 // ─── pending tap-tap state ────────────────────────────────────────────────────
 
 // GetPendingTap returns the pending tap, or (nil, nil) when none is set — a clean
