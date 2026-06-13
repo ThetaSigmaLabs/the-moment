@@ -460,6 +460,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		return nil, fmt.Errorf("failed to migrate pending snapshot label: %w", err)
 	}
 
+	if err := bridge.migrateNFCTags(); err != nil {
+		return nil, fmt.Errorf("failed to migrate NFC tags: %w", err)
+	}
+
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
 		log.Printf("[RECONCILE] dedup migration warning: %v", err)
 	}
@@ -2343,6 +2347,7 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 		ConfigKeyNFCTrashLocation:                "Trash",     // Location for empty/done spools (tag ready to re-program)
 		ConfigKeyNFCInventoryLocation:            "Inventory", // Default storage when spool displaced from toolhead
 		ConfigKeySpoolmanLocationSyncEnabled:     "false",     // Bidirectional Spoolman location sync
+		ConfigKeyNFCTapTimeoutSeconds:            "15",        // Tap-tap pending window in seconds (Stage 5)
 	}
 
 	// INSERT OR IGNORE ensures new keys added in updates are seeded for existing
@@ -2375,6 +2380,7 @@ func getConfigDescription(key string) string {
 		ConfigKeyNFCTrashLocation:                "Spoolman location name for empty/finished spools (NFC tag ready to re-program)",
 		ConfigKeyNFCInventoryLocation:            "Spoolman location name used as default storage when a spool is displaced from a toolhead via NFC",
 		ConfigKeySpoolmanLocationSyncEnabled:     "When true, The Moment writes spool locations to Spoolman on assign/unassign and polls for Spoolman-initiated moves",
+		ConfigKeyNFCTapTimeoutSeconds:            "Seconds a first NFC tap stays pending before a second tap is treated as a fresh first tap (tap-tap engine)",
 	}
 	if desc, exists := descriptions[key]; exists {
 		return desc

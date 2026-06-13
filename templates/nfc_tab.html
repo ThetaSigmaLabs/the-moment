@@ -1,0 +1,61 @@
+<!-- NFCs Tab — tag inventory (Spool / Location / Filament). Stage 1: empty shell.
+     Data wiring begins in Stage 2. Self-contained: no dependency on the legacy nfc.js loaders. -->
+<div id="nfcs-tab" class="tab-content">
+
+    <div class="config-section">
+        <p class="help-text">
+            Inventory of NFC tags. Each tag is a reusable handle that binds to a Spoolman
+            spool, location, or filament — Spoolman remains the source of truth for the data.
+            Tag binding wiring begins in Stage 2.
+        </p>
+
+        <style>
+            .nfcs-subtabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid var(--surface-border); }
+            .nfcs-subtab { background: none; border: none; padding: 10px 16px; cursor: pointer; color: var(--text-secondary); font-size: 0.95em; border-bottom: 2px solid transparent; }
+            .nfcs-subtab.active { color: var(--brand-light); border-bottom-color: var(--brand-light); font-weight: 600; }
+            .nfcs-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+            .nfcs-table th { text-align: left; padding: 8px; border-bottom: 1px solid var(--surface-border); color: var(--text-secondary); font-size: 0.85em; }
+            .nfcs-empty { padding: 24px 8px; text-align: center; color: var(--text-secondary); }
+        </style>
+
+        <div class="nfcs-subtabs">
+            <button class="nfcs-subtab active" onclick="switchNfcsSubTab('spool', this)">🧵 Spool</button>
+            <button class="nfcs-subtab" onclick="switchNfcsSubTab('location', this)">📍 Location</button>
+            <button class="nfcs-subtab" onclick="switchNfcsSubTab('filament', this)">🧪 Filament</button>
+        </div>
+
+        <div id="nfcs-subtab-spool" class="nfcs-subtab-content">
+            <table class="nfcs-table">
+                <thead><tr><th></th><th>Tag ID</th><th>Label</th><th>Bound spool</th><th>Status</th><th></th></tr></thead>
+            </table>
+            <p class="nfcs-empty">No spool tags yet.</p>
+        </div>
+
+        <div id="nfcs-subtab-location" class="nfcs-subtab-content" style="display:none;">
+            <table class="nfcs-table">
+                <thead><tr><th></th><th>Tag ID</th><th>Label</th><th>Kind</th><th>Spools here</th><th></th></tr></thead>
+            </table>
+            <p class="nfcs-empty">No location tags yet.</p>
+        </div>
+
+        <div id="nfcs-subtab-filament" class="nfcs-subtab-content" style="display:none;">
+            <table class="nfcs-table">
+                <thead><tr><th></th><th>Tag ID</th><th>Label</th><th>Bound filament</th><th></th></tr></thead>
+            </table>
+            <p class="nfcs-empty">No filament tags yet.</p>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Local sub-tab toggle for the NFCs tab. Scoped to #nfcs-tab so it cannot collide
+    // with the legacy switchNfcTab() loaders.
+    function switchNfcsSubTab(name, el) {
+        ['spool', 'location', 'filament'].forEach(function (n) {
+            var pane = document.getElementById('nfcs-subtab-' + n);
+            if (pane) pane.style.display = (n === name) ? '' : 'none';
+        });
+        document.querySelectorAll('#nfcs-tab .nfcs-subtab').forEach(function (b) { b.classList.remove('active'); });
+        if (el) el.classList.add('active');
+    }
+</script>
