@@ -29,11 +29,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o main .
 
 # Final stage
-FROM alpine:latest AS production
+FROM alpine:3.24 AS production
 
 # Install runtime dependencies
-# Using --no-scripts to work around Alpine 3.23 trigger script issues with QEMU emulation on arm64
-RUN apk update && apk --no-cache --no-scripts add ca-certificates sqlite ffmpeg
+# Using --no-scripts to work around Alpine trigger script issues with QEMU emulation on arm64
+RUN apk add --no-cache --no-scripts ca-certificates sqlite ffmpeg
 
 # Create app directory
 WORKDIR /app
@@ -60,8 +60,8 @@ CMD ["./main"]
 # ─── CI stage: production image from pre-built binary ───────────────────────
 # Used by Jenkins arm64 builds to skip recompiling on slow ARM hardware.
 # Caller must place the binary at ./main in the Docker build context.
-FROM alpine:latest AS production-prebuilt
-RUN apk update && apk --no-cache --no-scripts add ca-certificates sqlite ffmpeg
+FROM alpine:3.24 AS production-prebuilt
+RUN apk add --no-cache --no-scripts ca-certificates sqlite ffmpeg
 WORKDIR /app
 COPY main .
 COPY static/ ./static/

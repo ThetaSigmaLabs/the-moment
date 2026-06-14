@@ -101,14 +101,16 @@ pipeline {
                         cleanWs()
                         checkout scm
                         unstash 'bin-linux-arm64'
-                        sh '''
-                            cp the-moment-linux-arm64 main
-                            docker build --platform linux/arm64 --target production-prebuilt \
-                              -t ${REGISTRY}/${IMAGE}:${TAG}-arm64 \
-                              .
-                            docker push ${REGISTRY}/${IMAGE}:${TAG}-arm64
-                            echo "Pushed ${REGISTRY}/${IMAGE}:${TAG}-arm64"
-                        '''
+                        retry(3) {
+                            sh '''
+                                cp the-moment-linux-arm64 main
+                                docker build --platform linux/arm64 --target production-prebuilt \
+                                  -t ${REGISTRY}/${IMAGE}:${TAG}-arm64 \
+                                  .
+                                docker push ${REGISTRY}/${IMAGE}:${TAG}-arm64
+                                echo "Pushed ${REGISTRY}/${IMAGE}:${TAG}-arm64"
+                            '''
+                        }
                     }
                 }
                 stage('Docker: linux/amd64') {
