@@ -3444,10 +3444,16 @@ func (ws *WebServer) nfcConfigHandler(c *gin.Context) {
 	trash, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTrashLocation)
 	inv, _ := ws.bridge.GetConfigValue(ConfigKeyNFCInventoryLocation)
 	syncEnabled, _ := ws.bridge.GetConfigValue(ConfigKeySpoolmanLocationSyncEnabled)
+	tapTimeoutStr, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTapTimeoutSeconds)
+	tapTimeout, _ := strconv.Atoi(tapTimeoutStr)
+	if tapTimeout <= 0 {
+		tapTimeout = 15
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"trash_location":                  trash,
-		"inventory_location":              inv,
-		"spoolman_location_sync_enabled":  syncEnabled == "true",
+		"trash_location":                 trash,
+		"inventory_location":             inv,
+		"spoolman_location_sync_enabled": syncEnabled == "true",
+		"tap_timeout_seconds":            tapTimeout,
 	})
 }
 
@@ -3455,9 +3461,10 @@ func (ws *WebServer) nfcConfigHandler(c *gin.Context) {
 // POST /api/nfc/config
 func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
 	var body struct {
-		TrashLocation              string `json:"trash_location"`
-		InventoryLocation          string `json:"inventory_location"`
-		SpoolmanLocationSyncEnabled bool  `json:"spoolman_location_sync_enabled"`
+		TrashLocation               string `json:"trash_location"`
+		InventoryLocation           string `json:"inventory_location"`
+		SpoolmanLocationSyncEnabled bool   `json:"spoolman_location_sync_enabled"`
+		TapTimeoutSeconds           int    `json:"tap_timeout_seconds"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -3478,6 +3485,19 @@ func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
 	if err := ws.bridge.SetConfigValue(ConfigKeySpoolmanLocationSyncEnabled, syncVal); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if body.TapTimeoutSeconds > 0 {
+		t := body.TapTimeoutSeconds
+		if t < 5 {
+			t = 5
+		}
+		if t > 120 {
+			t = 120
+		}
+		if err := ws.bridge.SetConfigValue(ConfigKeyNFCTapTimeoutSeconds, strconv.Itoa(t)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "NFC config saved"})
 }

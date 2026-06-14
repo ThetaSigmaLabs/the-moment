@@ -314,6 +314,8 @@ function loadAdvancedSettings() {
                 syncToggle.checked = !!data.spoolman_location_sync_enabled;
                 if (syncRow) syncRow.style.display = syncToggle.checked ? '' : 'none';
             }
+            var tapTimeout = document.getElementById('nfcTapTimeout');
+            if (tapTimeout) tapTimeout.value = data.tap_timeout_seconds || 15;
         })
         .catch(function() {});
 }
@@ -322,10 +324,11 @@ function saveNFCConfig() {
     var inv   = (document.getElementById('nfcInventoryLocation')  || {}).value || '';
     var trash = (document.getElementById('nfcTrashLocation')       || {}).value || '';
     var syncEnabled = !!(document.getElementById('spoolmanLocationSyncEnabled') || {}).checked;
+    var tapTimeout = parseInt((document.getElementById('nfcTapTimeout') || {value: '15'}).value, 10) || 15;
     fetch('/api/nfc/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inventory_location: inv, trash_location: trash, spoolman_location_sync_enabled: syncEnabled })
+        body: JSON.stringify({ inventory_location: inv, trash_location: trash, spoolman_location_sync_enabled: syncEnabled, tap_timeout_seconds: tapTimeout })
     })
     .then(r => r.json())
     .then(function() { showToast('NFC locations saved.', 'success'); })
