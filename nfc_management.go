@@ -561,29 +561,92 @@ func nfcTagStubList(tags []NFCTag) []nfcTagStub {
 	return out
 }
 
-// nfcTagResolveHandler renders the mobile page opened when a /tag/{tag_id} URL is tapped.
-// Stage 3: filament tags show a "view in Spoolman / create new spool" dialog; spool tags
-// show the bound spool. The full tap-tap pairing engine arrives in Stage 5.
+// nfcTagResolveHandler is the tap-tap engine entry point for every NFC scan.
+// Every physical tag scan opens GET /tag/:tag_id in iPhone Safari (plain URL, no Web NFC).
+// ProcessTap handles the stateful first-tap / second-tap / expiry logic.
 // GET /tag/:tag_id
 func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 	tagID := c.Param("tag_id")
-	tag, err := ws.bridge.GetNFCTag(tagID)
+
+	result, err := ws.bridge.ProcessTap(tagID)
 	if err != nil {
-		c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Failed to look up this tag."})
-		return
-	}
-	if tag == nil {
-		c.HTML(http.StatusNotFound, "nfc_error.html", gin.H{"Error": "This NFC tag is not registered. Add it in The Moment's NFCs tab."})
+		c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Failed to process NFC tap."})
 		return
 	}
 
 	spoolmanURL := ws.bridge.config.SpoolmanURL
+
+	switch result.Action {
+	case TapUnknown:
+		c.HTML(http.StatusNotFound, "nfc_error.html", gin.H{"Error": "This NFC tag is not registered. Add it in The Moment's NFCs tab."})
+
+	case TapStored, TapReplaced:
+		tag, _ := ws.bridge.GetNFCTag(tagID)
+		data := ws.buildPendingPageData(tag, result, c.Request.Host)
+		c.HTML(http.StatusOK, "tag_pending.html", data)
+
+	case TapAssigned:
+		kind := "location_spool"
+		if result.ToolheadIdx < 0 {
+			kind = "location_storage"
+		}
+		c.HTML(http.StatusOK, "tag_assigned.html", gin.H{
+			"Kind":          kind,
+			"PrinterName":   result.PrinterName,
+			"ToolheadIdx":   result.ToolheadIdx,
+			"SpoolID":       result.SpoolID,
+			"SpoolName":     result.SpoolName,
+			"SpoolmanURL":   spoolmanURL,
+		})
+
+	case TapBound:
+		c.HTML(http.StatusOK, "tag_assigned.html", gin.H{
+			"Kind":         "spool_filament",
+			"SpoolID":      result.SpoolID,
+			"SpoolName":    result.SpoolName,
+			"FilamentID":   result.FilamentID,
+			"FilamentName": result.FilamentName,
+			"Message":      result.Message,
+			"SpoolmanURL":  spoolmanURL,
+		})
+
+	case TapConflict:
+		c.HTML(http.StatusOK, "tag_conflict.html", gin.H{
+			"SpoolTagID":      result.SpoolTagID,
+			"FilamentTagID":   result.FilamentTagID,
+			"SpoolID":         result.SpoolID,
+			"SpoolName":       result.SpoolName,
+			"OldFilamentID":   result.OldFilamentID,
+			"OldFilamentName": result.OldFilamentName,
+			"NewFilamentID":   result.NewFilamentID,
+			"NewFilamentName": result.NewFilamentName,
+		})
+
+	default: // TapError or unexpected
+		msg := result.Message
+		if msg == "" {
+			msg = "Unexpected tap result."
+		}
+		c.HTML(http.StatusOK, "nfc_error.html", gin.H{"Error": msg})
+	}
+}
+
+// buildPendingPageData enriches the tag with Spoolman display data for tag_pending.html.
+func (ws *WebServer) buildPendingPageData(tag *NFCTag, result TapResult, host string) gin.H {
+	data := gin.H{
+		"Action":      result.Action,
+		"TagType":     tag.TagType,
+		"TagURL":      nfcTagURL(host, tag.TagID),
+		"SpoolmanURL": ws.bridge.config.SpoolmanURL,
+	}
+	if tag.Label != nil {
+		data["Label"] = *tag.Label
+	}
 	switch tag.TagType {
 	case "filament":
-		data := gin.H{"Kind": "filament", "TagID": tag.TagID, "SpoolmanURL": spoolmanURL, "ColorHex": "#888888"}
 		if tag.BoundEntityID != nil {
 			data["FilamentID"] = *tag.BoundEntityID
-			if fils, e := ws.bridge.spoolman.GetAllFilaments(); e == nil {
+			if fils, err := ws.bridge.spoolman.GetAllFilaments(); err == nil {
 				for _, f := range fils {
 					if f.ID == *tag.BoundEntityID {
 						data["FilamentName"] = f.Name
@@ -599,12 +662,10 @@ func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 				}
 			}
 		}
-		c.HTML(http.StatusOK, "tag_page.html", data)
 	case "spool":
-		data := gin.H{"Kind": "spool", "TagID": tag.TagID, "SpoolmanURL": spoolmanURL, "ColorHex": "#888888"}
 		if tag.BoundEntityID != nil {
 			data["SpoolID"] = *tag.BoundEntityID
-			if s, e := ws.bridge.spoolman.GetSpoolByID(*tag.BoundEntityID); e == nil && s != nil {
+			if s, err := ws.bridge.spoolman.GetSpoolByID(*tag.BoundEntityID); err == nil && s != nil {
 				data["SpoolName"] = s.Name
 				data["Material"] = s.Material
 				data["Location"] = s.Location
@@ -614,10 +675,46 @@ func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 				}
 			}
 		}
-		c.HTML(http.StatusOK, "tag_page.html", data)
-	default:
-		c.HTML(http.StatusOK, "tag_page.html", gin.H{"Kind": tag.TagType, "TagID": tag.TagID})
+	case "location":
+		if tag.LocationKind != nil {
+			data["LocationKind"] = *tag.LocationKind
+		}
 	}
+	return data
+}
+
+// nfcTagTapPostHandler handles POST /tag/tap — conflict resolution for spool↔filament taps.
+// The tag_conflict.html page submits here with the user's choice.
+func (ws *WebServer) nfcTagTapPostHandler(c *gin.Context) {
+	spoolTagID := c.PostForm("spool_tag_id")
+	filamentTagID := c.PostForm("filament_tag_id")
+	choice := c.PostForm("choice")
+
+	if spoolTagID == "" || filamentTagID == "" || choice == "" {
+		c.HTML(http.StatusBadRequest, "nfc_error.html", gin.H{"Error": "Missing required fields."})
+		return
+	}
+
+	result, err := ws.bridge.ResolveTapConflict(spoolTagID, filamentTagID, choice)
+	if err != nil {
+		c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Failed to resolve conflict."})
+		return
+	}
+
+	if result.Action == TapError {
+		c.HTML(http.StatusOK, "nfc_error.html", gin.H{"Error": result.Message})
+		return
+	}
+
+	c.HTML(http.StatusOK, "tag_assigned.html", gin.H{
+		"Kind":         "spool_filament",
+		"SpoolID":      result.SpoolID,
+		"SpoolName":    result.SpoolName,
+		"FilamentID":   result.FilamentID,
+		"FilamentName": result.FilamentName,
+		"Message":      result.Message,
+		"SpoolmanURL":  ws.bridge.config.SpoolmanURL,
+	})
 }
 
 // encodeTagQR renders the tag URL as a base64 PNG QR code, or "" on error.

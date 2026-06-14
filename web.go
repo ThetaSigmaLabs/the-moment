@@ -158,7 +158,9 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.POST("/nfc/spool/:uuid/complete", ws.nfcSpoolCompleteHandler)
 
 	// Unified NFC tag resolver — every /tag/{tag_id} sticker opens here (Stage 3+).
+	// POST /tag/tap handles filament-conflict resolution posted from tag_conflict.html.
 	ws.router.GET("/tag/:tag_id", ws.nfcTagResolveHandler)
+	ws.router.POST("/tag/tap", ws.nfcTagTapPostHandler)
 
 	// API routes
 	api := ws.router.Group("/api")

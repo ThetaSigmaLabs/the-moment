@@ -219,25 +219,39 @@
 
                 <!-- Details tab -->
                 <div id="nfcs-loc-tab-details">
-                    <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Kind</label>
-                    <select id="nfcs-edit-loc-kind" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsKindChange()">
-                        <option value="toolhead">🖨️ Toolhead</option>
-                        <option value="inventory">📦 Inventory</option>
-                        <option value="archive">🗄️ Archive</option>
-                        <option value="trash">🗑️ Trash</option>
-                    </select>
-                    <div id="nfcs-edit-loc-toolhead-section" style="display:none;margin-top:8px;">
-                        <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Printer</label>
-                        <select id="nfcs-edit-loc-printer" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsPrinterChange()">
-                            <option value="">Loading…</option>
-                        </select>
-                        <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-top:8px;margin-bottom:4px;">Toolhead</label>
-                        <select id="nfcs-edit-loc-toolhead-idx" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsToolheadChange()">
-                            <option value="0">T0</option>
-                        </select>
-                        <p class="help-text" style="margin-top:4px;font-size:0.78em;">Selection updates the label above — click away to save.</p>
+                    <!-- Summary (default view) -->
+                    <div id="nfcs-loc-summary">
+                        <div style="display:flex;align-items:center;justify-content:space-between;">
+                            <div id="nfcs-loc-summary-text" style="font-size:0.88em;color:var(--text-secondary);"></div>
+                            <button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="nfcsLocChangeToggle()">Change…</button>
+                        </div>
                     </div>
-                    <div id="nfcs-edit-loc-kind-state" style="font-size:0.78em;min-height:1.1em;margin-top:6px;"></div>
+                    <!-- Change form (revealed by Change button) -->
+                    <div id="nfcs-loc-change-form" style="display:none;margin-top:8px;">
+                        <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Kind</label>
+                        <select id="nfcs-edit-loc-kind" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocChangeFormKindChange()">
+                            <option value="toolhead">🖨️ Toolhead</option>
+                            <option value="inventory">📦 Inventory</option>
+                            <option value="archive">🗄️ Archive</option>
+                            <option value="trash">🗑️ Trash</option>
+                        </select>
+                        <div id="nfcs-edit-loc-toolhead-section" style="display:none;margin-top:8px;">
+                            <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Printer</label>
+                            <select id="nfcs-edit-loc-printer" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsPrinterChange()">
+                                <option value="">Loading…</option>
+                            </select>
+                            <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-top:8px;margin-bottom:4px;">Toolhead</label>
+                            <select id="nfcs-edit-loc-toolhead-idx" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsToolheadChange()">
+                                <option value="0">T0</option>
+                            </select>
+                            <p class="help-text" style="margin-top:4px;font-size:0.78em;">Selection auto-fills the label above.</p>
+                        </div>
+                        <div id="nfcs-edit-loc-kind-state" style="font-size:0.78em;min-height:1.1em;margin-top:6px;"></div>
+                        <div style="display:flex;gap:8px;margin-top:10px;">
+                            <button class="btn" style="flex:1;" onclick="nfcsLocChangeSave()">Save</button>
+                            <button class="btn btn-secondary" style="flex:1;" onclick="nfcsLocChangeToggle()">Cancel</button>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Spools tab -->
@@ -288,6 +302,7 @@
     <div id="nfcs-payload-overlay" class="nfcs-overlay">
         <div class="nfcs-modal">
             <h3 style="margin-top:0;">🏷️ Write to NFC</h3>
+            <div id="nfcs-payload-subject" style="font-size:1em;font-weight:600;color:var(--text-primary);text-align:center;margin-bottom:6px;min-height:1.2em;"></div>
             <p id="nfcs-payload-note" class="help-text"></p>
             <img id="nfcs-payload-qr" class="nfcs-qr" src="" alt="QR code">
             <div id="nfcs-payload-url" class="nfcs-url"></div>

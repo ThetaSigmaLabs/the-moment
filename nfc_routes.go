@@ -731,6 +731,11 @@ func (ws *WebServer) nfcSpoolTrashHandler(c *gin.Context) {
 		return
 	}
 
+	// Free any NFC tag bound to this spool so it enters the available pool for reuse.
+	if err := ws.bridge.ArchiveSpoolNFCForSpool(spoolID); err != nil {
+		log.Printf("nfcSpoolTrash: ArchiveSpoolNFCForSpool %d: %v", spoolID, err)
+	}
+
 	ws.BroadcastStatus()
 	c.JSON(http.StatusOK, gin.H{"archived": true, "location": trashLoc})
 }

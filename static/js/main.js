@@ -53,6 +53,17 @@ function switchTab(tabName) {
         }
     }
 
+    // When the NFCs tab is shown, load whichever sub-tab is currently visible.
+    // switchNfcsSubTab only fires on explicit button clicks, so the initial/return
+    // render would stay blank without this explicit trigger.
+    if (tabName === 'nfcs' && typeof window.nfcsOnSubTabShown === 'function') {
+        const activeSubTab = ['spool', 'location', 'filament'].find(function (n) {
+            const pane = document.getElementById('nfcs-subtab-' + n);
+            return pane && pane.style.display !== 'none';
+        }) || 'spool';
+        window.nfcsOnSubTabShown(activeSubTab);
+    }
+
     if (location.hash !== '#' + tabName) {
         location.hash = tabName;
     }

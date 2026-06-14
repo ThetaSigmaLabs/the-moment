@@ -65,6 +65,9 @@ async function nfcsLoadFilamentTags() {
                 bound = '<span style="color:var(--text-secondary);">filament #' + t.bound_entity_id + ' (not in Spoolman)</span>';
                 boundText = 'filament #' + t.bound_entity_id + ' (not in Spoolman)';
             }
+            const subjectLbl = t.label || '';
+            const subjectBound = (boundText && boundText !== '— unbound —') ? boundText : '';
+            nfcsTagSubjectCache[t.tag_id] = subjectLbl && subjectBound ? subjectLbl + ' - ' + subjectBound : (subjectLbl || subjectBound);
             const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
             tr.innerHTML =
                 '<td><input type="checkbox" class="nfcs-fil-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
@@ -118,6 +121,9 @@ async function nfcsLoadSpoolTags() {
                 bound = '<span style="color:var(--text-secondary);">spool #' + t.bound_entity_id + ' (not in Spoolman)</span>';
                 boundText = 'spool #' + t.bound_entity_id + ' (not in Spoolman)';
             }
+            const spSubjectLbl = t.label || '';
+            const spSubjectBound = (boundText && boundText !== '— unbound —') ? boundText : '';
+            nfcsTagSubjectCache[t.tag_id] = spSubjectLbl && spSubjectBound ? spSubjectLbl + ' - ' + spSubjectBound : (spSubjectLbl || spSubjectBound);
             const archived = t.spool && t.spool.archived;
             const statusTxt = archived ? 'spool archived' : t.status;
             const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
@@ -280,8 +286,9 @@ async function nfcsSubmitAddFilament() {
         if (!res.ok) { nfcsToast('Create failed: ' + (data.error || res.statusText)); return; }
         nfcsCloseModal('nfcs-add-filament-overlay');
         await nfcsLoadFilamentTags();
-        // Immediately show the write-to-NFC payload for the new tag.
-        if (data.tag && data.tag.tag_id) nfcsRenderPayload(data.tag.tag_id, data.tag_url, data.qr_code_base64, data.note);
+        if (data.tag && data.tag.tag_id) {
+            nfcsRenderPayload(data.tag.tag_id, data.tag_url, data.qr_code_base64, data.note, nfcsTagSubjectCache[data.tag.tag_id] || '');
+        }
     } catch (e) {
         nfcsToast('Create error: ' + e.message);
     }
@@ -290,7 +297,7 @@ async function nfcsSubmitAddFilament() {
 // ─── Edit tag (inline label, blur-to-save, rebind) ────────────────────────────
 
 // Tracks the tag being edited so blur-to-save, Write/Delete, rebind, and location-kind act on it.
-let nfcsEditState = { tagId: null, tagType: null, orig: '', boundEntityId: null, locationKind: null, locationData: null };
+let nfcsEditState = { tagId: null, tagType: null, orig: '', boundDesc: '', boundEntityId: null, locationKind: null, locationData: null };
 
 // Open the Edit dialog.
 // boundDesc: plain-text binding summary (spool/filament) or ignored (location).
@@ -298,7 +305,7 @@ let nfcsEditState = { tagId: null, tagType: null, orig: '', boundEntityId: null,
 // locationKind: current location_kind string or null (location tags only).
 // locationData: nfcLocationSummary object or null (location tags only).
 function nfcsOpenEdit(tagId, tagType, label, boundDesc, boundEntityId, locationKind, locationData) {
-    nfcsEditState = { tagId: tagId, tagType: tagType, orig: label || '', boundEntityId: boundEntityId || null, locationKind: locationKind || null, locationData: locationData || null };
+    nfcsEditState = { tagId: tagId, tagType: tagType, orig: label || '', boundDesc: boundDesc || '', boundEntityId: boundEntityId || null, locationKind: locationKind || null, locationData: locationData || null };
     const titles = { spool: '🧵 Spool tag', filament: '🧪 Filament tag', location: '📍 Location tag' };
     document.getElementById('nfcs-edit-title').textContent = titles[tagType] || '🏷️ Tag';
     document.getElementById('nfcs-edit-tagid').textContent = tagId;
@@ -313,11 +320,13 @@ function nfcsOpenEdit(tagId, tagType, label, boundDesc, boundEntityId, locationK
     if (locTabs) locTabs.style.display = isLocation ? '' : 'none';
     if (isLocation) nfcsLocOpenDetails(locationKind, locationData);
 
-    // Rebind section: show for spool/filament, hide for location.
+    // Rebind section: hidden for location tags (Details tab owns the binding UX).
     const rebindSection = document.getElementById('nfcs-rebind-section');
     if (rebindSection) {
-        rebindSection.style.display = isLocation ? 'none' : '';
-        if (!isLocation) {
+        if (isLocation) {
+            rebindSection.style.display = 'none';
+        } else {
+            rebindSection.style.display = '';
             document.getElementById('nfcs-rebind-current').textContent = boundDesc || '— unbound —';
             document.getElementById('nfcs-rebind-unbind-btn').style.display = boundEntityId ? '' : 'none';
             document.getElementById('nfcs-rebind-spool-picker').style.display = 'none';
@@ -376,51 +385,84 @@ function nfcsLocShowTab(tab) {
 
 // Populate the location edit tabs when opening the edit modal for a location tag.
 async function nfcsLocOpenDetails(kind, locationData) {
+    // Reset to summary view (change form closed).
+    document.getElementById('nfcs-loc-change-form').style.display = 'none';
+    document.getElementById('nfcs-loc-summary').style.display = '';
     document.getElementById('nfcs-edit-loc-kind-state').textContent = '';
-    document.getElementById('nfcs-edit-loc-kind').value = kind || 'toolhead';
 
-    const toolheadSec = document.getElementById('nfcs-edit-loc-toolhead-section');
-    toolheadSec.style.display = kind === 'toolhead' ? '' : 'none';
-
-    if (kind === 'toolhead') {
-        const printerSel = document.getElementById('nfcs-edit-loc-printer');
-        printerSel.innerHTML = '<option value="">Loading…</option>';
-        try {
-            const res = await fetch('/api/printers');
-            if (!res.ok) throw new Error('HTTP ' + res.status);
-            const data = await res.json();
-            nfcsPrinterList = [];
-            Object.entries(data.printers || {}).forEach(function ([id, p]) {
-                if (p) nfcsPrinterList.push({ id: id, name: p.name, toolheads: p.toolheads || 1 });
-            });
-            nfcsPrinterList.sort(function (a, b) { return a.name.localeCompare(b.name); });
-            printerSel.innerHTML = nfcsPrinterList.length
-                ? nfcsPrinterList.map(function (p) {
-                    return '<option value="' + nfcsEscape(p.id) + '" data-name="' + nfcsEscape(p.name) + '" data-toolheads="' + p.toolheads + '">' + nfcsEscape(p.name) + '</option>';
-                  }).join('')
-                : '<option value="">No printers configured</option>';
-        } catch (e) {
-            printerSel.innerHTML = '<option value="">Failed to load printers</option>';
-        }
-
-        // Pre-select printer + toolhead from the existing label (no auto-fill of label field).
-        const parsed = nfcsParseToolheadLabel(nfcsEditState.orig);
-        if (parsed) {
-            Array.from(printerSel.options).forEach(function (o) {
-                if (o.dataset.name === parsed.printerName) o.selected = true;
-            });
-        }
-        const selOpt = printerSel.options[printerSel.selectedIndex];
-        const toolheads = selOpt ? parseInt(selOpt.dataset.toolheads, 10) || 1 : 1;
-        const idxSel = document.getElementById('nfcs-edit-loc-toolhead-idx');
-        idxSel.innerHTML = Array.from({ length: toolheads }, function (_, i) {
-            return '<option value="' + i + '">T' + i + '</option>';
-        }).join('');
-        if (parsed) idxSel.value = String(parsed.toolheadIdx);
-    }
-
-    nfcsLocRenderSpoolsTab(locationData);
+    nfcsLocRenderSummary(kind);
+    await nfcsLocRenderSpoolsTab(locationData);
     nfcsLocShowTab('details');
+}
+
+// Populate summary text from current state.
+function nfcsLocRenderSummary(kind) {
+    const el = document.getElementById('nfcs-loc-summary-text');
+    if (!el) return;
+    const label = nfcsEditState.orig || '— no label —';
+    const emoji = { toolhead: '🖨️', inventory: '📦', archive: '🗄️', trash: '🗑️' }[kind] || '📍';
+    el.textContent = emoji + ' ' + label;
+}
+
+// Toggle the change form open/closed. Also serves as Cancel handler.
+async function nfcsLocChangeToggle() {
+    const form = document.getElementById('nfcs-loc-change-form');
+    const summary = document.getElementById('nfcs-loc-summary');
+    if (form.style.display !== 'none') {
+        form.style.display = 'none';
+        summary.style.display = '';
+        return;
+    }
+    summary.style.display = 'none';
+    document.getElementById('nfcs-edit-loc-kind-state').textContent = '';
+    document.getElementById('nfcs-edit-loc-kind').value = nfcsEditState.locationKind || 'toolhead';
+    nfcsLocChangeFormKindChange();
+    if ((nfcsEditState.locationKind || 'toolhead') === 'toolhead') {
+        await nfcsLocLoadPrinters();
+    }
+    form.style.display = '';
+}
+
+// Load printers into the edit-modal printer select and pre-select from current label.
+async function nfcsLocLoadPrinters() {
+    const printerSel = document.getElementById('nfcs-edit-loc-printer');
+    printerSel.innerHTML = '<option value="">Loading…</option>';
+    try {
+        const res = await fetch('/api/printers');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        nfcsPrinterList = [];
+        Object.entries(data.printers || {}).forEach(function ([id, p]) {
+            if (p) nfcsPrinterList.push({ id: id, name: p.name, toolheads: p.toolheads || 1 });
+        });
+        nfcsPrinterList.sort(function (a, b) { return a.name.localeCompare(b.name); });
+        printerSel.innerHTML = nfcsPrinterList.length
+            ? nfcsPrinterList.map(function (p) {
+                return '<option value="' + nfcsEscape(p.id) + '" data-name="' + nfcsEscape(p.name) + '" data-toolheads="' + p.toolheads + '">' + nfcsEscape(p.name) + '</option>';
+              }).join('')
+            : '<option value="">No printers configured</option>';
+    } catch (e) {
+        printerSel.innerHTML = '<option value="">Failed to load printers</option>';
+    }
+    const parsed = nfcsParseToolheadLabel(nfcsEditState.orig);
+    if (parsed) {
+        Array.from(printerSel.options).forEach(function (o) {
+            if (o.dataset.name === parsed.printerName) o.selected = true;
+        });
+    }
+    const selOpt = printerSel.options[printerSel.selectedIndex];
+    const toolheads = selOpt ? parseInt(selOpt.dataset.toolheads, 10) || 1 : 1;
+    const idxSel = document.getElementById('nfcs-edit-loc-toolhead-idx');
+    idxSel.innerHTML = Array.from({ length: toolheads }, function (_, i) {
+        return '<option value="' + i + '">T' + i + '</option>';
+    }).join('');
+    if (parsed) idxSel.value = String(parsed.toolheadIdx);
+}
+
+// Show/hide toolhead section when Kind changes in the change form (no auto-save).
+function nfcsLocChangeFormKindChange() {
+    const kind = document.getElementById('nfcs-edit-loc-kind').value;
+    document.getElementById('nfcs-edit-loc-toolhead-section').style.display = kind === 'toolhead' ? '' : 'none';
 }
 
 // Called when the Printer select changes in the edit modal — rebuilds toolhead idx and auto-fills label.
@@ -445,25 +487,17 @@ function nfcsLocDetailsToolheadChange() {
     if (printerName) document.getElementById('nfcs-edit-label').value = printerName + ' - T' + idx;
 }
 
-// Called when the Kind select changes. Confirms + unmaps if changing away from toolhead with a spool.
-async function nfcsLocDetailsKindChange() {
+// Save button handler for the location change form.
+async function nfcsLocChangeSave() {
     if (!nfcsEditState.tagId) return;
     const newKind = document.getElementById('nfcs-edit-loc-kind').value;
     const prevKind = nfcsEditState.locationKind;
     const stateEl = document.getElementById('nfcs-edit-loc-kind-state');
 
-    // Show/hide toolhead section.
-    document.getElementById('nfcs-edit-loc-toolhead-section').style.display = newKind === 'toolhead' ? '' : 'none';
-    if (newKind === 'toolhead') await nfcsLocOpenDetails('toolhead', nfcsEditState.locationData);
-
-    // If changing away from toolhead and a spool is assigned, confirm + unmap.
+    // Changing away from toolhead with a spool assigned: confirm + unmap first.
     if (prevKind === 'toolhead' && newKind !== 'toolhead' && nfcsEditState.locationData && nfcsEditState.locationData.spool_id > 0) {
         const spoolName = nfcsEditState.locationData.spool_name || ('Spool #' + nfcsEditState.locationData.spool_id);
-        if (!confirm('Changing kind will send "' + spoolName + '" to inventory. Proceed?')) {
-            document.getElementById('nfcs-edit-loc-kind').value = prevKind || 'toolhead';
-            document.getElementById('nfcs-edit-loc-toolhead-section').style.display = '';
-            return;
-        }
+        if (!confirm('Changing kind will send "' + spoolName + '" to inventory. Proceed?')) return;
         const parsed = nfcsParseToolheadLabel(nfcsEditState.orig);
         if (parsed) {
             const r = await fetch('/api/map_toolhead', {
@@ -473,51 +507,119 @@ async function nfcsLocDetailsKindChange() {
             });
             if (!r.ok) {
                 stateEl.style.color = '#ef4444';
-                stateEl.textContent = '⚠ Unmap failed — kind not changed';
-                document.getElementById('nfcs-edit-loc-kind').value = prevKind || 'toolhead';
-                document.getElementById('nfcs-edit-loc-toolhead-section').style.display = '';
+                stateEl.textContent = '⚠ Unmap failed';
                 return;
             }
             nfcsEditState.locationData = null;
         }
     }
 
-    // Save the new kind.
-    stateEl.style.color = 'var(--text-secondary)';
-    stateEl.textContent = 'Saving…';
-    try {
-        const res = await fetch('/api/nfc/tags/' + encodeURIComponent(nfcsEditState.tagId) + '/location-kind', {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ location_kind: newKind })
-        });
-        const d = await res.json().catch(function () { return {}; });
-        if (!res.ok) {
+    // For toolhead kind: save the label derived from printer+toolhead selection if it changed.
+    if (newKind === 'toolhead') {
+        const printerSel = document.getElementById('nfcs-edit-loc-printer');
+        const opt = printerSel && printerSel.options[printerSel.selectedIndex];
+        const printerName = opt ? opt.dataset.name : '';
+        const idx = document.getElementById('nfcs-edit-loc-toolhead-idx').value;
+        const newLabel = printerName ? printerName + ' - T' + idx : '';
+        if (newLabel && newLabel !== nfcsEditState.orig) {
+            stateEl.style.color = 'var(--text-secondary)';
+            stateEl.textContent = 'Saving…';
+            try {
+                const lr = await fetch('/api/nfc/tags/' + encodeURIComponent(nfcsEditState.tagId) + '/label', {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ label: newLabel })
+                });
+                if (!lr.ok) {
+                    const ld = await lr.json().catch(function () { return {}; });
+                    stateEl.style.color = '#ef4444';
+                    stateEl.textContent = '⚠ ' + (ld.error || 'Label save failed');
+                    return;
+                }
+                nfcsEditState.orig = newLabel;
+                document.getElementById('nfcs-edit-label').value = newLabel;
+            } catch (e) {
+                stateEl.style.color = '#ef4444';
+                stateEl.textContent = '⚠ ' + e.message;
+                return;
+            }
+        }
+    }
+
+    // Save kind if changed.
+    if (newKind !== prevKind) {
+        stateEl.style.color = 'var(--text-secondary)';
+        stateEl.textContent = 'Saving…';
+        try {
+            const res = await fetch('/api/nfc/tags/' + encodeURIComponent(nfcsEditState.tagId) + '/location-kind', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ location_kind: newKind })
+            });
+            const d = await res.json().catch(function () { return {}; });
+            if (!res.ok) {
+                stateEl.style.color = '#ef4444';
+                stateEl.textContent = '⚠ ' + (d.error || 'Save failed');
+                return;
+            }
+            nfcsEditState.locationKind = newKind;
+        } catch (e) {
             stateEl.style.color = '#ef4444';
-            stateEl.textContent = '⚠ ' + (d.error || 'Save failed');
+            stateEl.textContent = '⚠ ' + e.message;
             return;
         }
-        nfcsEditState.locationKind = newKind;
-        stateEl.style.color = 'var(--text-secondary)';
-        stateEl.textContent = '✓ Saved';
-        nfcsLocRenderSpoolsTab(nfcsEditState.locationData);
-        nfcsReloadActive();
-    } catch (e) {
-        stateEl.style.color = '#ef4444';
-        stateEl.textContent = '⚠ ' + e.message;
     }
+
+    // Success: collapse form, update summary, refresh spools.
+    document.getElementById('nfcs-loc-change-form').style.display = 'none';
+    document.getElementById('nfcs-loc-summary').style.display = '';
+    nfcsLocRenderSummary(nfcsEditState.locationKind);
+    await nfcsLocRenderSpoolsTab(nfcsEditState.locationData);
+    nfcsReloadActive();
 }
 
 // Render the Spools tab content for the edit modal.
-function nfcsLocRenderSpoolsTab(locationData) {
+async function nfcsLocRenderSpoolsTab(locationData) {
     const el = document.getElementById('nfcs-loc-spools-content');
     if (!el) return;
-    const kind = nfcsEditState.locationKind || (document.getElementById('nfcs-edit-loc-kind') || {}).value;
+    const kind = nfcsEditState.locationKind || 'toolhead';
 
     if (kind !== 'toolhead') {
-        el.innerHTML = '<p class="help-text" style="margin:8px 0;">Spool assignment for this kind is handled by tap-tap (Stage 5).</p>';
+        // For inventory/archive/trash: show spools from Spoolman whose location matches this tag's label.
+        const label = nfcsEditState.orig;
+        if (!label) {
+            el.innerHTML = '<p class="help-text" style="margin:8px 0;">Set a label first to see spools at this location.</p>';
+            return;
+        }
+        el.innerHTML = '<p class="help-text" style="margin:8px 0;">Loading…</p>';
+        try {
+            const res = await fetch('/api/spools');
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            const spools = await res.json();
+            const here = Array.isArray(spools) ? spools.filter(function (s) {
+                return s.location && s.location.toLowerCase() === label.toLowerCase();
+            }) : [];
+            if (here.length === 0) {
+                el.innerHTML = '<p class="help-text" style="margin:8px 0;">No spools at this location.</p>';
+                return;
+            }
+            el.innerHTML = here.map(function (s) {
+                const colorHex = (s.filament && s.filament.color_hex) ? ('#' + String(s.filament.color_hex).replace(/^#/, '')) : '#888';
+                const name = s.name || ('Spool #' + s.id);
+                const material = s.material || '';
+                return '<div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--surface-secondary);border-radius:6px;margin-bottom:4px;">' +
+                    '<span class="nfcs-swatch" style="background:' + colorHex + ';flex-shrink:0;"></span>' +
+                    '<div style="flex:1;">' +
+                    '<div style="font-size:0.9em;">' + nfcsEscape(name) + '</div>' +
+                    (material ? '<div style="font-size:0.78em;color:var(--text-secondary);">' + nfcsEscape(material) + '</div>' : '') +
+                    '</div></div>';
+            }).join('');
+        } catch (e) {
+            el.innerHTML = '<p class="help-text" style="margin:8px 0;color:#ef4444;">Failed to load: ' + nfcsEscape(e.message) + '</p>';
+        }
         return;
     }
+
     if (!locationData || !locationData.spool_id) {
         el.innerHTML = '<p class="help-text" style="margin:8px 0;">No spool assigned to this toolhead location.</p>';
         return;
@@ -555,7 +657,7 @@ async function nfcsLocUnbind() {
             return;
         }
         nfcsEditState.locationData = null;
-        nfcsLocRenderSpoolsTab(null);
+        await nfcsLocRenderSpoolsTab(null);
         nfcsReloadActive();
     } catch (e) {
         alert('Error: ' + e.message);
@@ -585,6 +687,10 @@ async function nfcsEditDelete() {
 // ─── Rebind / unbind (Edit modal binding section) ─────────────────────────────
 
 let nfcsRebindPickerData = [];
+
+// Subject string cache: tag_id → "<Label> - <Bound/Kind>" — populated at list render time.
+// Used by list-row Write buttons so they don't read stale nfcsEditState.
+let nfcsTagSubjectCache = {};
 
 // Toggle the appropriate picker open/closed; loads Spoolman data on first open.
 async function nfcsRebindToggle() {
@@ -712,11 +818,19 @@ async function nfcsRebindRequest(entityId) {
         document.getElementById('nfcs-rebind-filament-picker').style.display = 'none';
 
         // Update in-modal binding display.
-        const newDesc = entityId === 0 ? '— unbound —'
-            : (nfcsEditState.tagType === 'spool' ? 'Spool #' + entityId : 'Filament #' + entityId);
+        let newDesc = '— unbound —';
+        if (entityId) {
+            const entity = nfcsRebindPickerData.find(function (e) { return e.id === entityId; });
+            if (entity) {
+                newDesc = (nfcsEditState.tagType === 'spool') ? nfcsSpoolOptionText(entity) : nfcsFilamentOptionText(entity);
+            } else {
+                newDesc = (nfcsEditState.tagType === 'spool') ? 'Spool #' + entityId : 'Filament #' + entityId;
+            }
+        }
         document.getElementById('nfcs-rebind-current').textContent = newDesc;
         document.getElementById('nfcs-rebind-unbind-btn').style.display = entityId ? '' : 'none';
         nfcsEditState.boundEntityId = entityId || null;
+        nfcsEditState.boundDesc = newDesc;
 
         nfcsToast(entityId === 0 ? 'Tag unbound.' : 'Binding updated.');
         nfcsReloadActive();
@@ -858,7 +972,9 @@ async function nfcsSubmitAddSpool() {
         if (!res.ok) { nfcsToast('Create failed: ' + (data.error || res.statusText)); return; }
         nfcsCloseModal('nfcs-add-spool-overlay');
         await nfcsLoadSpoolTags();
-        if (data.tag && data.tag.tag_id) nfcsRenderPayload(data.tag.tag_id, data.tag_url, data.qr_code_base64, data.note);
+        if (data.tag && data.tag.tag_id) {
+            nfcsRenderPayload(data.tag.tag_id, data.tag_url, data.qr_code_base64, data.note, nfcsTagSubjectCache[data.tag.tag_id] || '');
+        }
     } catch (e) {
         nfcsToast('Create error: ' + e.message);
     }
@@ -871,14 +987,35 @@ async function nfcsShowPayload(tagId) {
         const res = await fetch('/api/nfc/tags/' + encodeURIComponent(tagId) + '/payload');
         const data = await res.json();
         if (!res.ok) { nfcsToast(data.error || 'Failed to load payload'); return; }
-        nfcsRenderPayload(tagId, data.tag_url, data.qr_code_base64, data.note);
+        // Use live editState when this tag is open in the Edit modal; else use list-render cache.
+        const subject = (nfcsEditState.tagId === tagId) ? nfcsBuildPayloadSubject() : (nfcsTagSubjectCache[tagId] || '');
+        nfcsRenderPayload(tagId, data.tag_url, data.qr_code_base64, data.note, subject);
     } catch (e) {
         nfcsToast('Payload error: ' + e.message);
     }
 }
 
-function nfcsRenderPayload(tagId, url, qrBase64, note) {
+function nfcsBuildPayloadSubject() {
+    const label = nfcsEditState.orig || '';
+    const type = nfcsEditState.tagType;
+    if (type === 'location') {
+        const kind = nfcsEditState.locationKind || 'toolhead';
+        const emoji = { toolhead: '🖨️', inventory: '📦', archive: '🗄️', trash: '🗑️' }[kind] || '📍';
+        const kindName = { toolhead: 'Toolhead', inventory: 'Inventory', archive: 'Archive', trash: 'Trash' }[kind] || kind;
+        const kindStr = emoji + ' ' + kindName;
+        return label ? label + ' - ' + kindStr : kindStr;
+    }
+    const bound = nfcsEditState.boundDesc;
+    if (bound && bound !== '— unbound —') {
+        return label ? label + ' - ' + bound : bound;
+    }
+    return label;
+}
+
+function nfcsRenderPayload(tagId, url, qrBase64, note, subject) {
     nfcsCurrentPayloadTagId = tagId;
+    const subjectEl = document.getElementById('nfcs-payload-subject');
+    if (subjectEl) subjectEl.textContent = subject || '';
     document.getElementById('nfcs-payload-note').textContent = note || '';
     document.getElementById('nfcs-payload-url').textContent = url || '';
     const img = document.getElementById('nfcs-payload-qr');
@@ -918,6 +1055,11 @@ async function nfcsLoadLocationTags() {
             const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
             const kindKey = t.location && t.location.kind ? t.location.kind : '';
             const kindBadge = kindKey ? nfcsEscape(nfcsLocKindLabel[kindKey] || kindKey) : '<span style="color:var(--text-secondary);">—</span>';
+            const locKindEmoji = { toolhead: '🖨️', inventory: '📦', archive: '🗄️', trash: '🗑️' }[kindKey] || '📍';
+            const locKindName = { toolhead: 'Toolhead', inventory: 'Inventory', archive: 'Archive', trash: 'Trash' }[kindKey] || kindKey || '—';
+            const locSubjectLbl = t.label || '';
+            const locKindStr = locKindEmoji + ' ' + locKindName;
+            nfcsTagSubjectCache[t.tag_id] = locSubjectLbl ? locSubjectLbl + ' - ' + locKindStr : locKindStr;
             tr.innerHTML =
                 '<td><input type="checkbox" class="nfcs-loc-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
                 '<td class="nfcs-tagid" title="' + nfcsEscape(t.tag_id) + '">' + nfcsEscape(shortId) + '…</td>' +
@@ -1012,7 +1154,9 @@ async function nfcsSubmitAddLocation() {
         if (!res.ok) { nfcsToast('Create failed: ' + (data.error || res.statusText)); return; }
         nfcsCloseModal('nfcs-add-location-overlay');
         await nfcsLoadLocationTags();
-        if (data.tag && data.tag.tag_id) nfcsRenderPayload(data.tag.tag_id, data.tag_url, data.qr_code_base64, data.note);
+        if (data.tag && data.tag.tag_id) {
+            nfcsRenderPayload(data.tag.tag_id, data.tag_url, data.qr_code_base64, data.note, nfcsTagSubjectCache[data.tag.tag_id] || '');
+        }
     } catch (e) {
         nfcsToast('Create error: ' + e.message);
     }
