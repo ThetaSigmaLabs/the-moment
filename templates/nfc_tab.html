@@ -49,12 +49,17 @@
                 <input type="text" id="nfcs-spool-search" class="nfc-search-input" placeholder="Search spool tags..." oninput="nfcsFilterTable('spool')">
                 <button class="btn btn-small" onclick="nfcsOpenAddSpool()">➕ Add Spool NFC</button>
                 <button class="btn btn-small btn-danger" onclick="nfcsDeleteSelected('spool')">🗑️ Delete selected</button>
-                <label style="font-size:0.85em;color:var(--text-secondary);"><input type="checkbox" id="nfcs-spool-unbound-only" onchange="nfcsLoadSpoolTags()"> Unbound only</label>
+                <label style="font-size:0.85em;color:var(--text-secondary);"><input type="checkbox" id="nfcs-spool-unbound-only" onchange="nfcsRenderKind('spool')"> Unbound only</label>
             </div>
             <table class="nfcs-table">
                 <thead><tr>
                     <th><input type="checkbox" onclick="nfcsToggleAll('spool', this.checked)"></th>
-                    <th>Tag ID</th><th>Label</th><th>Bound spool</th><th>Status</th><th>Actions</th>
+                    <th data-sort="tag_id" onclick="nfcsSortTable('spool','tag_id')" style="cursor:pointer;">Tag ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="label" onclick="nfcsSortTable('spool','label')" style="cursor:pointer;">Label<span class="nfcs-sort-arrow"> ▲</span></th>
+                    <th data-sort="spoolman_id" onclick="nfcsSortTable('spool','spoolman_id')" style="cursor:pointer;">Spoolman ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="bound" onclick="nfcsSortTable('spool','bound')" style="cursor:pointer;">Bound spool<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="status" onclick="nfcsSortTable('spool','status')" style="cursor:pointer;">Status<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th>Actions</th>
                 </tr></thead>
                 <tbody id="nfcs-spool-rows"></tbody>
             </table>
@@ -70,7 +75,10 @@
             <table class="nfcs-table">
                 <thead><tr>
                     <th><input type="checkbox" onclick="nfcsToggleAll('location', this.checked)"></th>
-                    <th>Tag ID</th><th>Label</th><th>Kind</th><th>Actions</th>
+                    <th data-sort="tag_id" onclick="nfcsSortTable('location','tag_id')" style="cursor:pointer;">Tag ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="label" onclick="nfcsSortTable('location','label')" style="cursor:pointer;">Label<span class="nfcs-sort-arrow"> ▲</span></th>
+                    <th data-sort="kind" onclick="nfcsSortTable('location','kind')" style="cursor:pointer;">Kind<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th>Actions</th>
                 </tr></thead>
                 <tbody id="nfcs-location-rows"></tbody>
             </table>
@@ -86,7 +94,10 @@
             <table class="nfcs-table">
                 <thead><tr>
                     <th><input type="checkbox" onclick="nfcsToggleAll('filament', this.checked)"></th>
-                    <th>Tag ID</th><th>Label</th><th>Bound filament</th><th>Actions</th>
+                    <th data-sort="tag_id" onclick="nfcsSortTable('filament','tag_id')" style="cursor:pointer;">Tag ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="label" onclick="nfcsSortTable('filament','label')" style="cursor:pointer;">Label<span class="nfcs-sort-arrow"> ▲</span></th>
+                    <th data-sort="bound" onclick="nfcsSortTable('filament','bound')" style="cursor:pointer;">Bound filament<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th>Actions</th>
                 </tr></thead>
                 <tbody id="nfcs-filament-rows"></tbody>
             </table>
@@ -147,6 +158,10 @@
                 <button class="nfcs-subtab active" id="nfcs-spmode-link" onclick="nfcsSetSpoolAddMode('link')">Link existing spool</button>
                 <button class="nfcs-subtab" id="nfcs-spmode-unbound" onclick="nfcsSetSpoolAddMode('unbound')">Add unbound</button>
             </div>
+
+            <label>Label (optional nickname)</label>
+            <input type="text" id="nfcs-sp-label" placeholder="e.g. Red PLA reel #2">
+
             <div id="nfcs-spool-link-section">
                 <label>Find a Spoolman spool</label>
                 <input type="text" id="nfcs-sp-search" placeholder='Search — e.g. white  ·  PLA white  ·  "PLA White"' autocomplete="off" oninput="nfcsFilterSpoolPicker()">

@@ -7,6 +7,81 @@
 
 let nfcsCurrentPayloadTagId = null;
 
+// ─── Sort state & data caches ─────────────────────────────────────────────────
+
+let nfcsSortState = {
+    filament: { field: 'label', asc: true },
+    spool:    { field: 'label', asc: true },
+    location: { field: 'label', asc: true }
+};
+let nfcsFilamentData = [];
+let nfcsSpoolData    = [];
+let nfcsLocationData = [];
+
+function nfcsSortTable(kind, field) {
+    const s = nfcsSortState[kind];
+    if (s.field === field) { s.asc = !s.asc; } else { s.field = field; s.asc = true; }
+    nfcsRenderKind(kind);
+}
+
+function nfcsSortKeyFor(kind, t, field) {
+    switch (field) {
+        case 'tag_id': return (t.tag_id || '').toLowerCase();
+        case 'label':  return (t.label || '').toLowerCase();
+        case 'bound':
+            if (kind === 'filament') {
+                if (t.filament) return ((t.filament.vendor || '') + ' ' + (t.filament.name || '') + ' ' + (t.filament.material || '')).toLowerCase();
+                if (t.bound_entity_id) return 'filament #' + t.bound_entity_id;
+                return '';
+            }
+            if (kind === 'spool') {
+                if (t.spool) return ((t.spool.vendor || '') + ' ' + (t.spool.name || '')).toLowerCase();
+                if (t.bound_entity_id) return 'spool #' + t.bound_entity_id;
+                return '';
+            }
+            return '';
+        case 'spoolman_id':
+            const sid = (t.spool && t.spool.id) ? t.spool.id : (t.bound_entity_id || 0);
+            return sid;
+        case 'status':
+            if (t.spool && t.spool.archived) return 'spool archived';
+            return (t.status || '').toLowerCase();
+        case 'kind':
+            return ((t.location && t.location.kind) || '').toLowerCase();
+        default: return '';
+    }
+}
+
+function nfcsSortData(kind, data) {
+    const s = nfcsSortState[kind];
+    return data.slice().sort(function (a, b) {
+        const va = nfcsSortKeyFor(kind, a, s.field);
+        const vb = nfcsSortKeyFor(kind, b, s.field);
+        const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+        return s.asc ? cmp : -cmp;
+    });
+}
+
+function nfcsUpdateSortHeaders(kind) {
+    const s = nfcsSortState[kind];
+    const table = document.querySelector('#nfcs-subtab-' + kind + ' .nfcs-table');
+    if (!table) return;
+    table.querySelectorAll('th[data-sort]').forEach(function (th) {
+        const arrow = th.querySelector('.nfcs-sort-arrow');
+        if (!arrow) return;
+        arrow.textContent = th.dataset.sort === s.field ? (s.asc ? ' ▲' : ' ▼') : ' ↕';
+    });
+}
+
+function nfcsRenderKind(kind) {
+    if (kind === 'filament') nfcsRenderFilamentRows(nfcsFilamentData);
+    else if (kind === 'spool') nfcsRenderSpoolRows(nfcsSpoolData);
+    else if (kind === 'location') nfcsRenderLocationRows(nfcsLocationData);
+    nfcsUpdateSortHeaders(kind);
+    const searchEl = document.getElementById('nfcs-' + kind + '-search');
+    if (searchEl && searchEl.value) nfcsFilterTable(kind);
+}
+
 // Lazy-load hook called by switchNfcsSubTab when a sub-tab is shown.
 window.nfcsOnSubTabShown = function (name) {
     if (name === 'filament') nfcsLoadFilamentTags();
@@ -35,118 +110,131 @@ function nfcsReloadActive() {
 }
 
 async function nfcsLoadFilamentTags() {
-    const tbody = document.getElementById('nfcs-filament-rows');
-    const empty = document.getElementById('nfcs-filament-empty');
-    if (!tbody) return;
+    if (!document.getElementById('nfcs-filament-rows')) return;
     try {
         const res = await fetch('/api/nfc/tags?type=filament');
         const tags = await res.json();
-        tbody.innerHTML = '';
-        if (!Array.isArray(tags) || tags.length === 0) {
-            empty.style.display = '';
-            return;
-        }
-        empty.style.display = 'none';
-        tags.forEach(function (t) {
-            const tr = document.createElement('tr');
-            tr.className = 'nfcs-row-clickable';
-            const shortId = t.tag_id.slice(0, 8);
-            let bound = '<span style="color:var(--text-secondary);">— unbound —</span>';
-            let boundText = '— unbound —';
-            if (t.filament) {
-                const hex = t.filament.color_hex ? ('#' + String(t.filament.color_hex).replace(/^#/, '')) : '#888';
-                const vend = t.filament.vendor ? (nfcsEscape(t.filament.vendor) + ' · ') : '';
-                bound = '<span class="nfcs-swatch" style="background:' + hex + '"></span>' +
-                    vend + nfcsEscape(t.filament.name || ('Filament #' + t.filament.id)) +
-                    ' <span style="color:var(--text-secondary);">(' + nfcsEscape(t.filament.material || '') + ')</span>';
-                boundText = (t.filament.vendor ? t.filament.vendor + ' · ' : '') +
-                    (t.filament.name || ('Filament #' + t.filament.id)) + ' (' + (t.filament.material || '') + ')';
-            } else if (t.bound_entity_id) {
-                bound = '<span style="color:var(--text-secondary);">filament #' + t.bound_entity_id + ' (not in Spoolman)</span>';
-                boundText = 'filament #' + t.bound_entity_id + ' (not in Spoolman)';
-            }
-            const subjectLbl = t.label || '';
-            const subjectBound = (boundText && boundText !== '— unbound —') ? boundText : '';
-            nfcsTagSubjectCache[t.tag_id] = subjectLbl && subjectBound ? subjectLbl + ' - ' + subjectBound : (subjectLbl || subjectBound);
-            const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
-            tr.innerHTML =
-                '<td><input type="checkbox" class="nfcs-fil-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
-                '<td class="nfcs-tagid" title="' + nfcsEscape(t.tag_id) + '">' + nfcsEscape(shortId) + '…</td>' +
-                '<td>' + label + '</td>' +
-                '<td>' + bound + '</td>' +
-                '<td style="white-space:nowrap;">' +
-                '<button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="event.stopPropagation(); nfcsShowPayload(\'' + nfcsEscape(t.tag_id) + '\')">Write</button>' +
-                '<button class="nfcs-rowbtn" style="background:#ef4444;color:#fff;" onclick="event.stopPropagation(); nfcsDeleteTag(\'' + nfcsEscape(t.tag_id) + '\')">Delete</button>' +
-                '</td>';
-            tr.title = 'Click to edit';
-            tr.addEventListener('click', function () { nfcsOpenEdit(t.tag_id, 'filament', t.label || '', boundText, t.bound_entity_id); });
-            tbody.appendChild(tr);
-        });
+        nfcsFilamentData = Array.isArray(tags) ? tags : [];
+        nfcsRenderKind('filament');
     } catch (e) {
         nfcsToast('Failed to load filament tags: ' + e.message);
     }
 }
 
+function nfcsRenderFilamentRows(data) {
+    const tbody = document.getElementById('nfcs-filament-rows');
+    const empty = document.getElementById('nfcs-filament-empty');
+    if (!tbody) return;
+    const sorted = nfcsSortData('filament', data);
+    tbody.innerHTML = '';
+    if (sorted.length === 0) { empty.style.display = ''; return; }
+    empty.style.display = 'none';
+    sorted.forEach(function (t) {
+        const tr = document.createElement('tr');
+        tr.className = 'nfcs-row-clickable';
+        const shortId = t.tag_id.slice(0, 8);
+        let bound = '<span style="color:var(--text-secondary);">— unbound —</span>';
+        let boundText = '— unbound —';
+        if (t.filament) {
+            const hex = t.filament.color_hex ? ('#' + String(t.filament.color_hex).replace(/^#/, '')) : '#888';
+            const vend = t.filament.vendor ? (nfcsEscape(t.filament.vendor) + ' · ') : '';
+            bound = '<span class="nfcs-swatch" style="background:' + hex + '"></span>' +
+                vend + nfcsEscape(t.filament.name || ('Filament #' + t.filament.id)) +
+                ' <span style="color:var(--text-secondary);">(' + nfcsEscape(t.filament.material || '') + ')</span>';
+            boundText = (t.filament.vendor ? t.filament.vendor + ' · ' : '') +
+                (t.filament.name || ('Filament #' + t.filament.id)) + ' (' + (t.filament.material || '') + ')';
+        } else if (t.bound_entity_id) {
+            bound = '<span style="color:var(--text-secondary);">filament #' + t.bound_entity_id + ' (not in Spoolman)</span>';
+            boundText = 'filament #' + t.bound_entity_id + ' (not in Spoolman)';
+        }
+        const subjectLbl = t.label || '';
+        const subjectBound = (boundText && boundText !== '— unbound —') ? boundText : '';
+        nfcsTagSubjectCache[t.tag_id] = subjectLbl && subjectBound ? subjectLbl + ' - ' + subjectBound : (subjectLbl || subjectBound);
+        const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
+        tr.innerHTML =
+            '<td><input type="checkbox" class="nfcs-fil-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
+            '<td class="nfcs-tagid" title="' + nfcsEscape(t.tag_id) + '">' + nfcsEscape(shortId) + '…</td>' +
+            '<td>' + label + '</td>' +
+            '<td>' + bound + '</td>' +
+            '<td style="white-space:nowrap;">' +
+            '<button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="event.stopPropagation(); nfcsShowPayload(\'' + nfcsEscape(t.tag_id) + '\')">Write</button>' +
+            '<button class="nfcs-rowbtn" style="background:#ef4444;color:#fff;" onclick="event.stopPropagation(); nfcsDeleteTag(\'' + nfcsEscape(t.tag_id) + '\')">Delete</button>' +
+            '</td>';
+        tr.title = 'Click to edit';
+        tr.addEventListener('click', function () { nfcsOpenEdit(t.tag_id, 'filament', t.label || '', boundText, t.bound_entity_id); });
+        tbody.appendChild(tr);
+    });
+}
+
 async function nfcsLoadSpoolTags() {
+    if (!document.getElementById('nfcs-spool-rows')) return;
+    try {
+        const res = await fetch('/api/nfc/tags?type=spool');
+        const tags = await res.json();
+        nfcsSpoolData = Array.isArray(tags) ? tags : [];
+        nfcsRenderKind('spool');
+    } catch (e) {
+        nfcsToast('Failed to load spool tags: ' + e.message);
+    }
+}
+
+function nfcsRenderSpoolRows(data) {
     const tbody = document.getElementById('nfcs-spool-rows');
     const empty = document.getElementById('nfcs-spool-empty');
     if (!tbody) return;
     const unboundOnly = document.getElementById('nfcs-spool-unbound-only') && document.getElementById('nfcs-spool-unbound-only').checked;
-    try {
-        const res = await fetch('/api/nfc/tags?type=spool');
-        let tags = await res.json();
-        if (!Array.isArray(tags)) tags = [];
-        if (unboundOnly) tags = tags.filter(function (t) { return !t.bound_entity_id; });
-        tbody.innerHTML = '';
-        if (tags.length === 0) { empty.style.display = ''; return; }
-        empty.style.display = 'none';
-        tags.forEach(function (t) {
-            const tr = document.createElement('tr');
-            tr.className = 'nfcs-row-clickable';
-            const shortId = t.tag_id.slice(0, 8);
-            let bound = '<span style="color:var(--text-secondary);">— unbound —</span>';
-            let boundText = '— unbound —';
-            if (t.spool) {
-                const hex = t.spool.color_hex ? ('#' + String(t.spool.color_hex).replace(/^#/, '')) : '#888';
-                const vend = t.spool.vendor ? (nfcsEscape(t.spool.vendor) + ' · ') : '';
-                const loc = t.spool.location ? (' · 📍 ' + nfcsEscape(t.spool.location)) : '';
-                const wt = (t.spool.remaining_weight != null) ? (' · ' + Math.round(t.spool.remaining_weight) + 'g') : '';
-                bound = '<span class="nfcs-swatch" style="background:' + hex + '"></span>' +
-                    '[' + t.spool.id + '] ' + vend + nfcsEscape(t.spool.name || ('Spool #' + t.spool.id)) +
-                    ' <span style="color:var(--text-secondary);">(' + nfcsEscape(t.spool.material || '') + wt + loc + ')</span>';
-                boundText = '[' + t.spool.id + '] ' + (t.spool.vendor ? t.spool.vendor + ' · ' : '') +
-                    (t.spool.name || ('Spool #' + t.spool.id)) + ' (' + (t.spool.material || '') +
-                    (t.spool.location ? ' · ' + t.spool.location : '') + ')';
-            } else if (t.bound_entity_id) {
-                bound = '<span style="color:var(--text-secondary);">spool #' + t.bound_entity_id + ' (not in Spoolman)</span>';
-                boundText = 'spool #' + t.bound_entity_id + ' (not in Spoolman)';
-            }
-            const spSubjectLbl = t.label || '';
-            const spSubjectBound = (boundText && boundText !== '— unbound —') ? boundText : '';
-            nfcsTagSubjectCache[t.tag_id] = spSubjectLbl && spSubjectBound ? spSubjectLbl + ' - ' + spSubjectBound : (spSubjectLbl || spSubjectBound);
-            const archived = t.spool && t.spool.archived;
-            const statusTxt = archived ? 'spool archived' : t.status;
-            const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
-            let actions =
-                '<button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="event.stopPropagation(); nfcsShowPayload(\'' + nfcsEscape(t.tag_id) + '\')">Write</button>';
-            if (t.spool && !archived) {
-                actions += '<button class="nfcs-rowbtn" style="background:#b45309;color:#fff;" onclick="event.stopPropagation(); nfcsArchiveSpool(' + t.spool.id + ')" title="Zero remaining weight and move the Spoolman spool to Trash">Archive spool</button>';
-            }
-            actions += '<button class="nfcs-rowbtn" style="background:#ef4444;color:#fff;" onclick="event.stopPropagation(); nfcsDeleteTag(\'' + nfcsEscape(t.tag_id) + '\')">Delete</button>';
-            tr.innerHTML =
-                '<td><input type="checkbox" class="nfcs-spo-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
-                '<td class="nfcs-tagid" title="' + nfcsEscape(t.tag_id) + '">' + nfcsEscape(shortId) + '…</td>' +
-                '<td>' + label + '</td>' +
-                '<td>' + bound + '</td>' +
-                '<td>' + nfcsEscape(statusTxt) + '</td>' +
-                '<td style="white-space:nowrap;">' + actions + '</td>';
-            tr.title = 'Click to edit';
-            tr.addEventListener('click', function () { nfcsOpenEdit(t.tag_id, 'spool', t.label || '', boundText, t.bound_entity_id); });
-            tbody.appendChild(tr);
-        });
-    } catch (e) {
-        nfcsToast('Failed to load spool tags: ' + e.message);
-    }
+    let filtered = unboundOnly ? data.filter(function (t) { return !t.bound_entity_id; }) : data;
+    const sorted = nfcsSortData('spool', filtered);
+    tbody.innerHTML = '';
+    if (sorted.length === 0) { empty.style.display = ''; return; }
+    empty.style.display = 'none';
+    sorted.forEach(function (t) {
+        const tr = document.createElement('tr');
+        tr.className = 'nfcs-row-clickable';
+        const shortId = t.tag_id.slice(0, 8);
+        let bound = '<span style="color:var(--text-secondary);">— unbound —</span>';
+        let boundText = '— unbound —';
+        if (t.spool) {
+            const hex = t.spool.color_hex ? ('#' + String(t.spool.color_hex).replace(/^#/, '')) : '#888';
+            const vend = t.spool.vendor ? (nfcsEscape(t.spool.vendor) + ' · ') : '';
+            const loc = t.spool.location ? (' · 📍 ' + nfcsEscape(t.spool.location)) : '';
+            const wt = (t.spool.remaining_weight != null) ? (' · ' + Math.round(t.spool.remaining_weight) + 'g') : '';
+            bound = '<span class="nfcs-swatch" style="background:' + hex + '"></span>' +
+                '[' + t.spool.id + '] ' + vend + nfcsEscape(t.spool.name || ('Spool #' + t.spool.id)) +
+                ' <span style="color:var(--text-secondary);">(' + nfcsEscape(t.spool.material || '') + wt + loc + ')</span>';
+            boundText = '[' + t.spool.id + '] ' + (t.spool.vendor ? t.spool.vendor + ' · ' : '') +
+                (t.spool.name || ('Spool #' + t.spool.id)) + ' (' + (t.spool.material || '') +
+                (t.spool.location ? ' · ' + t.spool.location : '') + ')';
+        } else if (t.bound_entity_id) {
+            bound = '<span style="color:var(--text-secondary);">spool #' + t.bound_entity_id + ' (not in Spoolman)</span>';
+            boundText = 'spool #' + t.bound_entity_id + ' (not in Spoolman)';
+        }
+        const spSubjectLbl = t.label || '';
+        const spSubjectBound = (boundText && boundText !== '— unbound —') ? boundText : '';
+        nfcsTagSubjectCache[t.tag_id] = spSubjectLbl && spSubjectBound ? spSubjectLbl + ' - ' + spSubjectBound : (spSubjectLbl || spSubjectBound);
+        const archived = t.spool && t.spool.archived;
+        const statusTxt = archived ? 'spool archived' : t.status;
+        const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
+        let actions =
+            '<button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="event.stopPropagation(); nfcsShowPayload(\'' + nfcsEscape(t.tag_id) + '\')">Write</button>';
+        if (t.spool && !archived) {
+            actions += '<button class="nfcs-rowbtn" style="background:#b45309;color:#fff;" onclick="event.stopPropagation(); nfcsArchiveSpool(' + t.spool.id + ')" title="Zero remaining weight and move the Spoolman spool to Trash">Archive spool</button>';
+        }
+        actions += '<button class="nfcs-rowbtn" style="background:#ef4444;color:#fff;" onclick="event.stopPropagation(); nfcsDeleteTag(\'' + nfcsEscape(t.tag_id) + '\')">Delete</button>';
+        const spoolmanId = (t.spool && t.spool.id) ? t.spool.id : (t.bound_entity_id || null);
+        const spoolmanIdCell = spoolmanId != null ? String(spoolmanId) : '<span style="color:var(--text-secondary);">—</span>';
+        tr.innerHTML =
+            '<td><input type="checkbox" class="nfcs-spo-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
+            '<td class="nfcs-tagid" title="' + nfcsEscape(t.tag_id) + '">' + nfcsEscape(shortId) + '…</td>' +
+            '<td>' + label + '</td>' +
+            '<td>' + spoolmanIdCell + '</td>' +
+            '<td>' + bound + '</td>' +
+            '<td>' + nfcsEscape(statusTxt) + '</td>' +
+            '<td style="white-space:nowrap;">' + actions + '</td>';
+        tr.title = 'Click to edit';
+        tr.addEventListener('click', function () { nfcsOpenEdit(t.tag_id, 'spool', t.label || '', boundText, t.bound_entity_id); });
+        tbody.appendChild(tr);
+    });
 }
 
 function nfcsFilterTable(kind) {
@@ -937,6 +1025,7 @@ function nfcsSelectSpool(id) {
 
 async function nfcsOpenAddSpool() {
     nfcsSetSpoolAddMode('link');
+    document.getElementById('nfcs-sp-label').value = '';
     document.getElementById('nfcs-sp-link-select').value = '';
     document.getElementById('nfcs-sp-selected').textContent = '';
     document.getElementById('nfcs-sp-search').value = '';
@@ -957,6 +1046,8 @@ async function nfcsOpenAddSpool() {
 async function nfcsSubmitAddSpool() {
     const linking = document.getElementById('nfcs-spool-link-section').style.display !== 'none';
     const body = { tag_type: 'spool' };
+    const label = document.getElementById('nfcs-sp-label').value.trim();
+    if (label) body.label = label;
     if (linking) {
         const sid = parseInt(document.getElementById('nfcs-sp-link-select').value, 10);
         if (!sid) { nfcsToast('Choose a Spoolman spool to link.'); return; }
@@ -1036,48 +1127,52 @@ const nfcsLocKindLabel = {
 };
 
 async function nfcsLoadLocationTags() {
-    const tbody = document.getElementById('nfcs-location-rows');
-    const empty = document.getElementById('nfcs-location-empty');
-    if (!tbody) return;
+    if (!document.getElementById('nfcs-location-rows')) return;
     try {
         const res = await fetch('/api/nfc/tags?type=location');
         const tags = await res.json();
-        tbody.innerHTML = '';
-        if (!Array.isArray(tags) || tags.length === 0) {
-            empty.style.display = '';
-            return;
-        }
-        empty.style.display = 'none';
-        tags.forEach(function (t) {
-            const tr = document.createElement('tr');
-            tr.className = 'nfcs-row-clickable';
-            const shortId = t.tag_id.slice(0, 8);
-            const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
-            const kindKey = t.location && t.location.kind ? t.location.kind : '';
-            const kindBadge = kindKey ? nfcsEscape(nfcsLocKindLabel[kindKey] || kindKey) : '<span style="color:var(--text-secondary);">—</span>';
-            const locKindEmoji = { toolhead: '🖨️', inventory: '📦', archive: '🗄️', trash: '🗑️' }[kindKey] || '📍';
-            const locKindName = { toolhead: 'Toolhead', inventory: 'Inventory', archive: 'Archive', trash: 'Trash' }[kindKey] || kindKey || '—';
-            const locSubjectLbl = t.label || '';
-            const locKindStr = locKindEmoji + ' ' + locKindName;
-            nfcsTagSubjectCache[t.tag_id] = locSubjectLbl ? locSubjectLbl + ' - ' + locKindStr : locKindStr;
-            tr.innerHTML =
-                '<td><input type="checkbox" class="nfcs-loc-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
-                '<td class="nfcs-tagid" title="' + nfcsEscape(t.tag_id) + '">' + nfcsEscape(shortId) + '…</td>' +
-                '<td>' + label + '</td>' +
-                '<td>' + kindBadge + '</td>' +
-                '<td style="white-space:nowrap;">' +
-                '<button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="event.stopPropagation(); nfcsShowPayload(\'' + nfcsEscape(t.tag_id) + '\')">Write</button>' +
-                '<button class="nfcs-rowbtn" style="background:#ef4444;color:#fff;" onclick="event.stopPropagation(); nfcsDeleteTag(\'' + nfcsEscape(t.tag_id) + '\')">Delete</button>' +
-                '</td>';
-            tr.title = 'Click to edit';
-            tr.addEventListener('click', function () {
-                nfcsOpenEdit(t.tag_id, 'location', t.label || '', '', null, kindKey, t.location || null);
-            });
-            tbody.appendChild(tr);
-        });
+        nfcsLocationData = Array.isArray(tags) ? tags : [];
+        nfcsRenderKind('location');
     } catch (e) {
         nfcsToast('Failed to load location tags: ' + e.message);
     }
+}
+
+function nfcsRenderLocationRows(data) {
+    const tbody = document.getElementById('nfcs-location-rows');
+    const empty = document.getElementById('nfcs-location-empty');
+    if (!tbody) return;
+    const sorted = nfcsSortData('location', data);
+    tbody.innerHTML = '';
+    if (sorted.length === 0) { empty.style.display = ''; return; }
+    empty.style.display = 'none';
+    sorted.forEach(function (t) {
+        const tr = document.createElement('tr');
+        tr.className = 'nfcs-row-clickable';
+        const shortId = t.tag_id.slice(0, 8);
+        const label = t.label ? nfcsEscape(t.label) : '<span style="color:var(--text-secondary);">—</span>';
+        const kindKey = t.location && t.location.kind ? t.location.kind : '';
+        const kindBadge = kindKey ? nfcsEscape(nfcsLocKindLabel[kindKey] || kindKey) : '<span style="color:var(--text-secondary);">—</span>';
+        const locKindEmoji = { toolhead: '🖨️', inventory: '📦', archive: '🗄️', trash: '🗑️' }[kindKey] || '📍';
+        const locKindName = { toolhead: 'Toolhead', inventory: 'Inventory', archive: 'Archive', trash: 'Trash' }[kindKey] || kindKey || '—';
+        const locSubjectLbl = t.label || '';
+        const locKindStr = locKindEmoji + ' ' + locKindName;
+        nfcsTagSubjectCache[t.tag_id] = locSubjectLbl ? locSubjectLbl + ' - ' + locKindStr : locKindStr;
+        tr.innerHTML =
+            '<td><input type="checkbox" class="nfcs-loc-check" data-tag-id="' + nfcsEscape(t.tag_id) + '" onclick="event.stopPropagation()"></td>' +
+            '<td class="nfcs-tagid" title="' + nfcsEscape(t.tag_id) + '">' + nfcsEscape(shortId) + '…</td>' +
+            '<td>' + label + '</td>' +
+            '<td>' + kindBadge + '</td>' +
+            '<td style="white-space:nowrap;">' +
+            '<button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="event.stopPropagation(); nfcsShowPayload(\'' + nfcsEscape(t.tag_id) + '\')">Write</button>' +
+            '<button class="nfcs-rowbtn" style="background:#ef4444;color:#fff;" onclick="event.stopPropagation(); nfcsDeleteTag(\'' + nfcsEscape(t.tag_id) + '\')">Delete</button>' +
+            '</td>';
+        tr.title = 'Click to edit';
+        tr.addEventListener('click', function () {
+            nfcsOpenEdit(t.tag_id, 'location', t.label || '', '', null, kindKey, t.location || null);
+        });
+        tbody.appendChild(tr);
+    });
 }
 
 // nfcsPrinterList caches the printer list for the Add Location dialog.

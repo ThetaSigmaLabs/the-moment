@@ -318,6 +318,27 @@
             </div>
         </div>
 
+        <!-- Spool Displacement Section -->
+        <div class="config-section" style="margin-top: 30px;">
+            <h3>🔄 Spool Displacement</h3>
+            <div class="help-text">
+                Covers one specific scenario: assigning a spool to a toolhead that already has one.
+                When enabled, the displaced spool is automatically moved to the <strong>Inventory</strong> location.
+                Works independently of bidirectional location sync.
+            </div>
+            <div class="spool-assignment-settings">
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                        <input type="checkbox" id="autoAssignPreviousSpoolEnabled" style="width: auto; cursor: pointer;">
+                        <span>Move displaced spool to Inventory when replaced</span>
+                    </label>
+                </div>
+                <div style="margin-top: 20px; text-align: center;">
+                    <button class="btn" onclick="saveAutoAssignSettings()">💾 Save Spool Displacement Settings</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Backup & Restore Section -->
         <div class="config-section" style="margin-top: 30px;">
             <h3>💾 Backup &amp; Restore</h3>
@@ -387,27 +408,6 @@
                         <button class="btn btn-secondary" onclick="closeRestoreModal()">Cancel</button>
                         <button class="btn btn-danger" id="restoreConfirmBtn" onclick="confirmRestore()" disabled>Restore</button>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Spool Displacement Section -->
-        <div class="config-section" style="margin-top: 30px;">
-            <h3>🔄 Spool Displacement</h3>
-            <div class="help-text">
-                Covers one specific scenario: assigning a spool to a toolhead that already has one.
-                When enabled, the displaced spool is automatically moved to the <strong>Inventory</strong> location.
-                Works independently of bidirectional location sync.
-            </div>
-            <div class="spool-assignment-settings">
-                <div class="form-group">
-                    <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-                        <input type="checkbox" id="autoAssignPreviousSpoolEnabled" style="width: auto; cursor: pointer;">
-                        <span>Move displaced spool to Inventory when replaced</span>
-                    </label>
-                </div>
-                <div style="margin-top: 20px; text-align: center;">
-                    <button class="btn" onclick="saveAutoAssignSettings()">💾 Save Spool Displacement Settings</button>
                 </div>
             </div>
         </div>
