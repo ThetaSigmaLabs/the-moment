@@ -1236,8 +1236,32 @@ function _sourceLabel(source) {
 
 // ─── Filament segment reassignment ───────────────────────────────────────────
 
-var _reassignSegmentID = 0;
-var _reassignPrintID   = 0;
+var _reassignSegmentID  = 0;
+var _reassignPrintID    = 0;
+var _reassignSpoolOptions = [];
+
+function _parseReassignTokens(query) {
+    var tokens = [];
+    var re = /"([^"]+)"|(\S+)/g, m;
+    while ((m = re.exec(query)) !== null) tokens.push((m[1] || m[2]).toLowerCase());
+    return tokens;
+}
+
+function filterReassignSpools(query) {
+    var sel = document.getElementById('reassignSpoolSelect');
+    if (!sel) return;
+    var tokens = _parseReassignTokens((query || '').trim());
+    sel.innerHTML = '<option value="0">— no spool (clear) —</option>';
+    _reassignSpoolOptions.forEach(function(o) {
+        var low = o.label.toLowerCase();
+        if (!tokens.length || tokens.every(function(t) { return low.indexOf(t) !== -1; })) {
+            var el = document.createElement('option');
+            el.value = o.id;
+            el.textContent = o.label;
+            sel.appendChild(el);
+        }
+    });
+}
 
 function openReassignPicker(segmentID, printID, gramsUsed) {
     _reassignSegmentID = segmentID;
@@ -1251,6 +1275,8 @@ function openReassignPicker(segmentID, printID, gramsUsed) {
     if (gramsInput) gramsInput.value = (gramsUsed || 0).toFixed(2);
 
     sel.innerHTML = '<option value="">Loading…</option>';
+    var searchEl = document.getElementById('reassignSpoolSearch');
+    if (searchEl) searchEl.value = '';
     picker.style.display = 'block';
 
     fetch('/api/spools')
@@ -1258,13 +1284,11 @@ function openReassignPicker(segmentID, printID, gramsUsed) {
         .then(function(data) {
             var spools = data.spools || data || [];
             spools.forEach(function(s) { _spoolMap[s.id] = s; });
-            sel.innerHTML = '<option value="0">— no spool (clear) —</option>';
-            spools.forEach(function(s) {
-                var opt = document.createElement('option');
-                opt.value = s.id;
-                opt.textContent = _formatSpoolLabel(s.id);
-                sel.appendChild(opt);
+            _reassignSpoolOptions = spools.map(function(s) {
+                return { id: s.id, label: _formatSpoolLabel(s.id) };
             });
+            if (searchEl) searchEl.value = '';
+            filterReassignSpools('');
         })
         .catch(function() {
             sel.innerHTML = '<option value="">Failed to load spools</option>';

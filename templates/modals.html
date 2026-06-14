@@ -490,6 +490,9 @@
                 <!-- Inline spool reassignment picker -->
                 <div id="reassignPicker" style="display:none;border:1px solid #444;border-radius:8px;padding:12px;margin-top:14px;background:rgba(255,255,255,0.04);">
                     <div style="font-size:0.83em;color:#aaa;margin-bottom:8px;">Reassign segment to a different spool</div>
+                    <input id="reassignSpoolSearch" type="text" placeholder='Search spools… e.g. PETG or "Prusament Black"'
+                           style="width:100%;box-sizing:border-box;padding:7px;background:#1e1e1e;color:#d0d0d0;border:1px solid #444;border-radius:4px;margin-bottom:6px;font-family:inherit;font-size:0.95em;"
+                           oninput="filterReassignSpools(this.value)">
                     <select id="reassignSpoolSelect" style="width:100%;padding:7px;background:#1e1e1e;color:#d0d0d0;border:1px solid #444;border-radius:4px;margin-bottom:10px;font-family:inherit;">
                         <option value="">Loading spools…</option>
                     </select>

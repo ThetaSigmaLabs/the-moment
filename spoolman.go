@@ -964,7 +964,8 @@ func (c *SpoolmanClient) EnsureSpoolmanFields() (created, existed, failed []Spoo
 		switch createResp.StatusCode {
 		case http.StatusCreated:
 			created = append(created, status)
-		case http.StatusConflict, http.StatusUnprocessableEntity:
+		case http.StatusOK, http.StatusConflict, http.StatusUnprocessableEntity:
+			// 200 = upsert (field already exists, Spoolman accepted it)
 			// 409 = already exists, 422 = duplicate key on some Spoolman versions
 			existed = append(existed, status)
 		default:
