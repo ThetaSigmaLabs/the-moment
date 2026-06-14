@@ -287,6 +287,7 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/nfc/tags/:tag_id/payload", ws.nfcTagPayloadHandler)
 		api.POST("/nfc/tags/:tag_id/bind", ws.nfcTagBindHandler)
 		api.PATCH("/nfc/tags/:tag_id/rebind", ws.nfcTagRebindHandler)
+		api.PATCH("/nfc/tags/:tag_id/location-kind", ws.nfcTagLocationKindHandler)
 		// Static paths (kept off the /nfc/tags/:tag_id wildcard to avoid gin route conflicts).
 		api.GET("/nfc/unbound-spool-tags", ws.nfcSpoolTagsUnboundHandler)
 		api.POST("/nfc/create-spool-from-filament", ws.nfcCreateSpoolFromFilamentHandler)

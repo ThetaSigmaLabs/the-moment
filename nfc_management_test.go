@@ -485,3 +485,104 @@ func TestRebindTag(t *testing.T) {
 		t.Errorf("after unbind: bound_entity_type = %v, want nil", got.BoundEntityType)
 	}
 }
+
+// ─── Stage 4: location tags ────────────────────────────────────────────────────
+
+// TestCreateLocationTag_Kinds creates location tags of each kind and checks tag_type,
+// location_kind, and that no Spoolman entity binding is set.
+func TestCreateLocationTag_Kinds(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	cases := []struct {
+		label string
+		kind  string
+	}{
+		{"Core One L - T0", "toolhead"},
+		{"Drybox Shelf A", "inventory"},
+		{"Cold storage", "archive"},
+		{"Empty bin", "trash"},
+	}
+
+	for _, tc := range cases {
+		tag, err := b.CreateLocationTag(nfcStrPtr(tc.label), tc.kind)
+		if err != nil {
+			t.Fatalf("CreateLocationTag(%q, %q): %v", tc.label, tc.kind, err)
+		}
+		if tag.TagType != "location" {
+			t.Errorf("%q: tag_type = %q, want location", tc.label, tag.TagType)
+		}
+		if tag.LocationKind == nil || *tag.LocationKind != tc.kind {
+			t.Errorf("%q: location_kind = %v, want %q", tc.label, tag.LocationKind, tc.kind)
+		}
+		if tag.BoundEntityID != nil || tag.BoundEntityType != nil {
+			t.Errorf("%q: should have no Spoolman binding, got type=%v id=%v", tc.label, tag.BoundEntityType, tag.BoundEntityID)
+		}
+		if tag.Label == nil || *tag.Label != tc.label {
+			t.Errorf("%q: label = %v, want %q", tc.label, tag.Label, tc.label)
+		}
+	}
+}
+
+// TestCreateLocationTag_Unbound creates a location tag with no label (valid).
+func TestCreateLocationTag_Unbound(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	tag, err := b.CreateLocationTag(nil, "inventory")
+	if err != nil {
+		t.Fatalf("CreateLocationTag nil label: %v", err)
+	}
+	if tag.Label != nil {
+		t.Errorf("label = %v, want nil", tag.Label)
+	}
+	if tag.LocationKind == nil || *tag.LocationKind != "inventory" {
+		t.Errorf("location_kind = %v, want inventory", tag.LocationKind)
+	}
+}
+
+// TestSetLocationKind verifies location_kind is updated and can be cleared.
+func TestSetLocationKind(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	tag, _ := b.CreateLocationTag(nfcStrPtr("Storage"), "inventory")
+
+	// Change kind.
+	kind := "archive"
+	if err := b.SetNFCTagLocationKind(tag.TagID, &kind); err != nil {
+		t.Fatalf("SetNFCTagLocationKind: %v", err)
+	}
+	got, _ := b.GetNFCTag(tag.TagID)
+	if got.LocationKind == nil || *got.LocationKind != "archive" {
+		t.Errorf("location_kind = %v, want archive", got.LocationKind)
+	}
+
+	// Clear kind.
+	if err := b.SetNFCTagLocationKind(tag.TagID, nil); err != nil {
+		t.Fatalf("SetNFCTagLocationKind nil: %v", err)
+	}
+	got, _ = b.GetNFCTag(tag.TagID)
+	if got.LocationKind != nil {
+		t.Errorf("location_kind = %v, want nil after clear", got.LocationKind)
+	}
+}
+
+// TestListLocationTags_MultipleKinds inserts location tags and verifies listing.
+func TestListLocationTags_MultipleKinds(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	b.CreateLocationTag(nfcStrPtr("Toolhead A"), "toolhead")
+	b.CreateLocationTag(nfcStrPtr("Shelf B"), "inventory")
+	b.CreateLocationTag(nil, "trash") // unlabeled
+
+	tags, err := b.ListNFCTagsByType("location")
+	if err != nil {
+		t.Fatalf("ListNFCTagsByType: %v", err)
+	}
+	if len(tags) != 3 {
+		t.Fatalf("count = %d, want 3", len(tags))
+	}
+	for _, tag := range tags {
+		if tag.TagType != "location" {
+			t.Errorf("tag_type = %q, want location", tag.TagType)
+		}
+	}
+}

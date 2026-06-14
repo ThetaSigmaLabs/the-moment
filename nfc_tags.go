@@ -232,6 +232,21 @@ func (b *FilamentBridge) SetNFCTagStatus(tagID, status string) error {
 	return nil
 }
 
+// SetNFCTagLocationKind sets or clears the location_kind for a location tag. Pass nil to clear.
+func (b *FilamentBridge) SetNFCTagLocationKind(tagID string, kind *string) error {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+
+	_, err := b.db.Exec(
+		`UPDATE nfc_tags SET location_kind = ?, updated_at = datetime('now') WHERE tag_id = ?`,
+		kind, tagID,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set location_kind on NFC tag %q: %w", tagID, err)
+	}
+	return nil
+}
+
 // DeleteNFCTag removes a tag row. The Spoolman entity it was bound to is untouched.
 func (b *FilamentBridge) DeleteNFCTag(tagID string) error {
 	b.mutex.Lock()

@@ -136,14 +136,23 @@ type nfcSpoolSummary struct {
 	Archived        bool    `json:"archived"`
 }
 
+type nfcLocationSummary struct {
+	Kind      string `json:"kind"`                // toolhead|inventory|archive|trash
+	SpoolID   int    `json:"spool_id,omitempty"`
+	SpoolName string `json:"spool_name,omitempty"`
+	ColorHex  string `json:"color_hex,omitempty"`
+	Material  string `json:"material,omitempty"`
+}
+
 type nfcTagRow struct {
-	TagID    string              `json:"tag_id"`
-	Label    *string             `json:"label"`
-	Status   string              `json:"status"`
-	BoundID  *int                `json:"bound_entity_id"`
-	Filament *nfcFilamentSummary `json:"filament,omitempty"`
-	Spool    *nfcSpoolSummary    `json:"spool,omitempty"`
-	TagURL   string              `json:"tag_url"`
+	TagID    string               `json:"tag_id"`
+	Label    *string              `json:"label"`
+	Status   string               `json:"status"`
+	BoundID  *int                 `json:"bound_entity_id"`
+	Filament *nfcFilamentSummary  `json:"filament,omitempty"`
+	Spool    *nfcSpoolSummary     `json:"spool,omitempty"`
+	Location *nfcLocationSummary  `json:"location,omitempty"`
+	TagURL   string               `json:"tag_url"`
 }
 
 // nfcTagsListHandler returns all tags of a given type (default: filament) enriched with
@@ -168,7 +177,7 @@ func (ws *WebServer) nfcTagsListHandler(c *gin.Context) {
 				filamentByID[f.ID] = f
 			}
 		}
-	case "spool":
+	case "spool", "location":
 		if spools, sErr := ws.bridge.spoolman.GetAllSpools(); sErr == nil {
 			for _, s := range spools {
 				spoolByID[s.ID] = s
@@ -203,21 +212,57 @@ func (ws *WebServer) nfcTagsListHandler(c *gin.Context) {
 				}
 			}
 		}
+		if t.TagType == "location" {
+			kind := ""
+			if t.LocationKind != nil {
+				kind = *t.LocationKind
+			}
+			loc := &nfcLocationSummary{Kind: kind}
+			// For toolhead locations, look up the currently assigned spool.
+			if kind == "toolhead" && t.Label != nil {
+				if printerName, toolheadIdx, ok := ParseToolheadLocation(*t.Label); ok {
+					if spoolID, mErr := ws.bridge.GetToolheadMapping(printerName, toolheadIdx); mErr == nil && spoolID > 0 {
+						if s, sOK := spoolByID[spoolID]; sOK {
+							loc.SpoolID = s.ID
+							loc.SpoolName = s.Name
+							loc.Material = s.Material
+							if s.Filament != nil {
+								loc.ColorHex = s.Filament.ColorHex
+							}
+						}
+					}
+				}
+			}
+			row.Location = loc
+		}
 		rows = append(rows, row)
 	}
 	c.JSON(http.StatusOK, rows)
 }
 
-// nfcTagCreateHandler creates a tag. Stage 2 supports filament tags only.
+// CreateLocationTag creates a location-type nfc_tags row with the given kind.
+func (b *FilamentBridge) CreateLocationTag(label *string, locationKind string) (*NFCTag, error) {
+	tag := NFCTag{TagID: uuid.New().String(), TagType: "location", Label: label}
+	if locationKind != "" {
+		tag.LocationKind = &locationKind
+	}
+	if err := b.InsertNFCTag(tag); err != nil {
+		return nil, err
+	}
+	return b.GetNFCTag(tag.TagID)
+}
+
+// nfcTagCreateHandler creates a tag.
 // POST /api/nfc/tags
-// Body: {"tag_type":"filament","label":"...","filament_id":7,"spec":{...}}
+// Body: {"tag_type":"filament|spool|location","label":"...","filament_id":7,"spool_id":3,"location_kind":"toolhead","spec":{...}}
 func (ws *WebServer) nfcTagCreateHandler(c *gin.Context) {
 	var body struct {
-		TagType    string           `json:"tag_type"`
-		Label      string           `json:"label"`
-		FilamentID int              `json:"filament_id"`
-		SpoolID    int              `json:"spool_id"`
-		Spec       *TagFilamentSpec `json:"spec"`
+		TagType      string           `json:"tag_type"`
+		Label        string           `json:"label"`
+		FilamentID   int              `json:"filament_id"`
+		SpoolID      int              `json:"spool_id"`
+		LocationKind string           `json:"location_kind"`
+		Spec         *TagFilamentSpec `json:"spec"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -237,8 +282,10 @@ func (ws *WebServer) nfcTagCreateHandler(c *gin.Context) {
 		tag, err = ws.bridge.CreateFilamentTag(label, body.FilamentID, body.Spec)
 	case "spool":
 		tag, err = ws.bridge.CreateSpoolTag(label, body.SpoolID)
+	case "location":
+		tag, err = ws.bridge.CreateLocationTag(label, body.LocationKind)
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported tag_type (expected filament or spool)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported tag_type (expected filament, spool, or location)"})
 		return
 	}
 	if err != nil {
@@ -256,6 +303,30 @@ func (ws *WebServer) nfcTagCreateHandler(c *gin.Context) {
 		"qr_code_base64": encodeTagQR(c.Request.Host, tag.TagID),
 		"note":           nfcTagWriteNote(tag.TagType),
 	})
+}
+
+// nfcTagLocationKindHandler updates a location tag's location_kind field.
+// Empty kind clears it.
+// PATCH /api/nfc/tags/:tag_id/location-kind
+func (ws *WebServer) nfcTagLocationKindHandler(c *gin.Context) {
+	tagID := c.Param("tag_id")
+	var body struct {
+		LocationKind string `json:"location_kind"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var kind *string
+	if strings.TrimSpace(body.LocationKind) != "" {
+		k := strings.TrimSpace(body.LocationKind)
+		kind = &k
+	}
+	if err := ws.bridge.SetNFCTagLocationKind(tagID, kind); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // nfcTagRebindHandler changes or clears a tag's Spoolman binding.

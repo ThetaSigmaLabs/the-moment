@@ -64,15 +64,17 @@
         <div id="nfcs-subtab-location" class="nfcs-subtab-content" style="display:none;">
             <div class="nfcs-toolbar">
                 <input type="text" id="nfcs-location-search" class="nfc-search-input" placeholder="Search location tags..." oninput="nfcsFilterTable('location')">
-                <button class="btn btn-small" disabled title="Location tag management arrives in Stage 4">➕ Add Location NFC</button>
+                <button class="btn btn-small" onclick="nfcsOpenAddLocation()">➕ Add Location NFC</button>
+                <button class="btn btn-small btn-danger" onclick="nfcsDeleteSelected('location')">🗑️ Delete selected</button>
             </div>
             <table class="nfcs-table">
                 <thead><tr>
-                    <th></th><th>Tag ID</th><th>Label</th><th>Kind</th><th>Spools here</th><th>Actions</th>
+                    <th><input type="checkbox" onclick="nfcsToggleAll('location', this.checked)"></th>
+                    <th>Tag ID</th><th>Label</th><th>Kind</th><th>Actions</th>
                 </tr></thead>
                 <tbody id="nfcs-location-rows"></tbody>
             </table>
-            <p class="nfcs-empty" id="nfcs-location-empty">No location tags yet. <span style="opacity:0.7;">(Location tag management arrives in Stage 4.)</span></p>
+            <p class="nfcs-empty" id="nfcs-location-empty">No location tags yet.</p>
         </div>
 
         <div id="nfcs-subtab-filament" class="nfcs-subtab-content" style="display:none;">
@@ -163,6 +165,40 @@
         </div>
     </div>
 
+    <!-- Add Location NFC modal -->
+    <div id="nfcs-add-location-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;">➕ Add Location NFC</h3>
+            <label>Kind</label>
+            <select id="nfcs-loc-kind" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocationKindChange()">
+                <option value="toolhead">🖨️ Toolhead (printer toolhead)</option>
+                <option value="inventory">📦 Inventory (storage location)</option>
+                <option value="archive">🗄️ Archive (long-term storage)</option>
+                <option value="trash">🗑️ Trash (empty / discarded)</option>
+            </select>
+
+            <div id="nfcs-loc-toolhead-section" style="margin-top:8px;">
+                <label>Printer</label>
+                <select id="nfcs-loc-printer" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocationPrinterChange()">
+                    <option value="">Loading printers…</option>
+                </select>
+                <label>Toolhead index</label>
+                <select id="nfcs-loc-toolhead-idx" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocationToolheadChange()">
+                    <option value="0">T0</option>
+                </select>
+                <p class="help-text" style="margin-top:6px;">Label auto-filled from selection; override below if needed.</p>
+            </div>
+
+            <label>Label (optional)</label>
+            <input type="text" id="nfcs-loc-label" placeholder="e.g. Core One L - T0  or  Drybox Shelf A">
+
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn" style="flex:1;" onclick="nfcsSubmitAddLocation()">Create</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-add-location-overlay')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Edit tag modal — inline label editing, save-on-blur, rebind section -->
     <div id="nfcs-edit-overlay" class="nfcs-overlay">
         <div class="nfcs-modal">
@@ -174,7 +210,43 @@
                    onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}else if(event.key==='Escape'){this.value=nfcsEditState.orig;this.blur();}">
             <div id="nfcs-edit-savestate" style="font-size:0.78em;min-height:1.1em;margin-top:4px;"></div>
 
-            <!-- Binding section — hidden for location tags (Stage 4) -->
+            <!-- Location tag tabs — only shown for location tags -->
+            <div id="nfcs-loc-tabs" style="display:none;margin-top:14px;border-top:1px solid var(--surface-border);padding-top:12px;">
+                <div style="display:flex;gap:4px;margin-bottom:8px;">
+                    <button id="nfcs-loc-tab-det-btn" class="nfcs-subtab active" style="flex:1;" onclick="nfcsLocShowTab('details')">📝 Details</button>
+                    <button id="nfcs-loc-tab-sp-btn" class="nfcs-subtab" style="flex:1;" onclick="nfcsLocShowTab('spools')">📦 Spools here</button>
+                </div>
+
+                <!-- Details tab -->
+                <div id="nfcs-loc-tab-details">
+                    <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Kind</label>
+                    <select id="nfcs-edit-loc-kind" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsKindChange()">
+                        <option value="toolhead">🖨️ Toolhead</option>
+                        <option value="inventory">📦 Inventory</option>
+                        <option value="archive">🗄️ Archive</option>
+                        <option value="trash">🗑️ Trash</option>
+                    </select>
+                    <div id="nfcs-edit-loc-toolhead-section" style="display:none;margin-top:8px;">
+                        <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Printer</label>
+                        <select id="nfcs-edit-loc-printer" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsPrinterChange()">
+                            <option value="">Loading…</option>
+                        </select>
+                        <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-top:8px;margin-bottom:4px;">Toolhead</label>
+                        <select id="nfcs-edit-loc-toolhead-idx" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsToolheadChange()">
+                            <option value="0">T0</option>
+                        </select>
+                        <p class="help-text" style="margin-top:4px;font-size:0.78em;">Selection updates the label above — click away to save.</p>
+                    </div>
+                    <div id="nfcs-edit-loc-kind-state" style="font-size:0.78em;min-height:1.1em;margin-top:6px;"></div>
+                </div>
+
+                <!-- Spools tab -->
+                <div id="nfcs-loc-tab-spools" style="display:none;">
+                    <div id="nfcs-loc-spools-content" style="padding:4px 0;"></div>
+                </div>
+            </div>
+
+            <!-- Binding section — hidden for location tags -->
             <div id="nfcs-rebind-section" style="margin-top:14px;border-top:1px solid var(--surface-border);padding-top:12px;">
                 <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
                     <span style="font-size:0.82em;color:var(--text-secondary);">Binding</span>
