@@ -29,10 +29,9 @@ import (
 // authored spec is stored in tag_filament_spec. Spoolman HTTP happens outside any held mutex.
 func (b *FilamentBridge) CreateFilamentTag(label *string, filamentID int, spec *TagFilamentSpec) (*NFCTag, error) {
 	boundID := filamentID
-	if boundID <= 0 {
-		if spec == nil {
-			return nil, fmt.Errorf("spec required to author a new filament")
-		}
+	// filamentID<=0 with no spec creates an unbound filament tag — a filament type that may
+	// not exist in Spoolman yet. With a spec, author a new Spoolman filament and bind to it.
+	if boundID <= 0 && spec != nil {
 		if strings.TrimSpace(spec.Material) == "" && strings.TrimSpace(spec.ColorName) == "" {
 			return nil, fmt.Errorf("material or color is required to author a new filament")
 		}
@@ -78,14 +77,13 @@ func (b *FilamentBridge) CreateFilamentTag(label *string, filamentID int, spec *
 	}
 
 	tagID := uuid.New().String()
-	entityType := "spoolman_filament"
-	if err := b.InsertNFCTag(NFCTag{
-		TagID:           tagID,
-		TagType:         "filament",
-		Label:           label,
-		BoundEntityType: &entityType,
-		BoundEntityID:   &boundID,
-	}); err != nil {
+	tag := NFCTag{TagID: tagID, TagType: "filament", Label: label}
+	if boundID > 0 {
+		entityType := "spoolman_filament"
+		tag.BoundEntityType = &entityType
+		tag.BoundEntityID = &boundID
+	}
+	if err := b.InsertNFCTag(tag); err != nil {
 		return nil, err
 	}
 
@@ -119,9 +117,38 @@ func nfcTagURL(host, tagID string) string {
 	return fmt.Sprintf("http://%s/tag/%s", host, tagID)
 }
 
+type nfcFilamentSummary struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Material string `json:"material"`
+	ColorHex string `json:"color_hex"`
+	Vendor   string `json:"vendor"`
+}
+
+type nfcSpoolSummary struct {
+	ID              int     `json:"id"`
+	Name            string  `json:"name"`
+	Material        string  `json:"material"`
+	ColorHex        string  `json:"color_hex"`
+	Vendor          string  `json:"vendor"`
+	Location        string  `json:"location"`
+	RemainingWeight float64 `json:"remaining_weight"`
+	Archived        bool    `json:"archived"`
+}
+
+type nfcTagRow struct {
+	TagID    string              `json:"tag_id"`
+	Label    *string             `json:"label"`
+	Status   string              `json:"status"`
+	BoundID  *int                `json:"bound_entity_id"`
+	Filament *nfcFilamentSummary `json:"filament,omitempty"`
+	Spool    *nfcSpoolSummary    `json:"spool,omitempty"`
+	TagURL   string              `json:"tag_url"`
+}
+
 // nfcTagsListHandler returns all tags of a given type (default: filament) enriched with
 // their current Spoolman binding.
-// GET /api/nfc/tags?type=filament
+// GET /api/nfc/tags?type=filament|spool|location
 func (ws *WebServer) nfcTagsListHandler(c *gin.Context) {
 	tagType := c.DefaultQuery("type", "filament")
 
@@ -131,43 +158,49 @@ func (ws *WebServer) nfcTagsListHandler(c *gin.Context) {
 		return
 	}
 
-	// Build a filament lookup for binding enrichment (best effort).
+	// Build Spoolman lookups for binding enrichment (best effort).
 	filamentByID := map[int]SpoolmanFilament{}
-	if tagType == "filament" {
+	spoolByID := map[int]SpoolmanSpool{}
+	switch tagType {
+	case "filament":
 		if filaments, fErr := ws.bridge.spoolman.GetAllFilaments(); fErr == nil {
 			for _, f := range filaments {
 				filamentByID[f.ID] = f
 			}
 		}
-	}
-
-	type filamentSummary struct {
-		ID       int    `json:"id"`
-		Name     string `json:"name"`
-		Material string `json:"material"`
-		ColorHex string `json:"color_hex"`
-		Vendor   string `json:"vendor"`
-	}
-	type tagRow struct {
-		TagID    string           `json:"tag_id"`
-		Label    *string          `json:"label"`
-		Status   string           `json:"status"`
-		BoundID  *int             `json:"bound_entity_id"`
-		Filament *filamentSummary `json:"filament"`
-		TagURL   string           `json:"tag_url"`
+	case "spool":
+		if spools, sErr := ws.bridge.spoolman.GetAllSpools(); sErr == nil {
+			for _, s := range spools {
+				spoolByID[s.ID] = s
+			}
+		}
 	}
 
 	host := c.Request.Host
-	rows := make([]tagRow, 0, len(tags))
+	rows := make([]nfcTagRow, 0, len(tags))
 	for _, t := range tags {
-		row := tagRow{TagID: t.TagID, Label: t.Label, Status: t.Status, BoundID: t.BoundEntityID, TagURL: nfcTagURL(host, t.TagID)}
+		row := nfcTagRow{TagID: t.TagID, Label: t.Label, Status: t.Status, BoundID: t.BoundEntityID, TagURL: nfcTagURL(host, t.TagID)}
 		if t.BoundEntityID != nil {
 			if f, ok := filamentByID[*t.BoundEntityID]; ok {
 				vendor := ""
 				if f.Vendor != nil {
 					vendor = f.Vendor.Name
 				}
-				row.Filament = &filamentSummary{ID: f.ID, Name: f.Name, Material: f.Material, ColorHex: f.ColorHex, Vendor: vendor}
+				row.Filament = &nfcFilamentSummary{ID: f.ID, Name: f.Name, Material: f.Material, ColorHex: f.ColorHex, Vendor: vendor}
+			}
+			if s, ok := spoolByID[*t.BoundEntityID]; ok {
+				vendor := ""
+				colorHex := ""
+				if s.Filament != nil {
+					colorHex = s.Filament.ColorHex
+					if s.Filament.Vendor != nil {
+						vendor = s.Filament.Vendor.Name
+					}
+				}
+				row.Spool = &nfcSpoolSummary{
+					ID: s.ID, Name: s.Name, Material: s.Material, ColorHex: colorHex, Vendor: vendor,
+					Location: s.Location, RemainingWeight: s.RemainingWeight, Archived: s.Archived,
+				}
 			}
 		}
 		rows = append(rows, row)
@@ -183,14 +216,11 @@ func (ws *WebServer) nfcTagCreateHandler(c *gin.Context) {
 		TagType    string           `json:"tag_type"`
 		Label      string           `json:"label"`
 		FilamentID int              `json:"filament_id"`
+		SpoolID    int              `json:"spool_id"`
 		Spec       *TagFilamentSpec `json:"spec"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	if body.TagType != "filament" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "only filament tags are supported in this stage"})
 		return
 	}
 
@@ -200,10 +230,20 @@ func (ws *WebServer) nfcTagCreateHandler(c *gin.Context) {
 		label = &l
 	}
 
-	tag, err := ws.bridge.CreateFilamentTag(label, body.FilamentID, body.Spec)
+	var tag *NFCTag
+	var err error
+	switch body.TagType {
+	case "filament":
+		tag, err = ws.bridge.CreateFilamentTag(label, body.FilamentID, body.Spec)
+	case "spool":
+		tag, err = ws.bridge.CreateSpoolTag(label, body.SpoolID)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported tag_type (expected filament or spool)"})
+		return
+	}
 	if err != nil {
 		if isLabelConflict(err) {
-			c.JSON(http.StatusConflict, gin.H{"error": "a filament tag with that label already exists"})
+			c.JSON(http.StatusConflict, gin.H{"error": "a tag with that label already exists for this type"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -216,6 +256,54 @@ func (ws *WebServer) nfcTagCreateHandler(c *gin.Context) {
 		"qr_code_base64": encodeTagQR(c.Request.Host, tag.TagID),
 		"note":           nfcTagWriteNote(tag.TagType),
 	})
+}
+
+// nfcTagRebindHandler changes or clears a tag's Spoolman binding.
+// entity_id=0 or absent → unbind (clears bound_entity_type and bound_entity_id).
+// The previously bound Spoolman record is not modified.
+// PATCH /api/nfc/tags/:tag_id/rebind
+func (ws *WebServer) nfcTagRebindHandler(c *gin.Context) {
+	tagID := c.Param("tag_id")
+	var body struct {
+		EntityID int `json:"entity_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	tag, err := ws.bridge.GetNFCTag(tagID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if tag == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tag not found"})
+		return
+	}
+
+	var entityType *string
+	var entityID *int
+	if body.EntityID > 0 {
+		var et string
+		switch tag.TagType {
+		case "spool":
+			et = "spoolman_spool"
+		case "filament":
+			et = "spoolman_filament"
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "rebind not supported for tag type " + tag.TagType})
+			return
+		}
+		entityType = &et
+		entityID = &body.EntityID
+	}
+
+	if err := ws.bridge.SetNFCTagBinding(tagID, entityType, entityID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // nfcTagLabelHandler updates a tag's display nickname. An empty label clears it.
@@ -279,6 +367,186 @@ func (ws *WebServer) nfcTagPayloadHandler(c *gin.Context) {
 		"qr_code_base64": encodeTagQR(c.Request.Host, tag.TagID),
 		"note":           nfcTagWriteNote(tag.TagType),
 	})
+}
+
+// ─── Spool tags (Stage 3) ──────────────────────────────────────────────────────
+
+// CreateSpoolTag creates a spool-type nfc_tags row. spoolID>0 binds to that Spoolman
+// spool; spoolID<=0 leaves the tag unbound (added to the available pool for later binding).
+func (b *FilamentBridge) CreateSpoolTag(label *string, spoolID int) (*NFCTag, error) {
+	tag := NFCTag{TagID: uuid.New().String(), TagType: "spool", Label: label}
+	if spoolID > 0 {
+		et := "spoolman_spool"
+		tag.BoundEntityType = &et
+		tag.BoundEntityID = &spoolID
+	}
+	if err := b.InsertNFCTag(tag); err != nil {
+		return nil, err
+	}
+	return b.GetNFCTag(tag.TagID)
+}
+
+// CreateSpoolFromFilament creates a new Spoolman spool of the given filament via the
+// Spoolman create-spool API. The new spool then appears everywhere existing spools do.
+func (b *FilamentBridge) CreateSpoolFromFilament(filamentID int) (*SpoolmanSpool, error) {
+	if filamentID <= 0 {
+		return nil, fmt.Errorf("filament_id is required")
+	}
+	return b.spoolman.CreateSpool(map[string]interface{}{"filament_id": filamentID})
+}
+
+// ListUnboundSpoolTags returns active spool tags with no Spoolman binding — the pool of
+// "available" Spool NFCs that can be linked to a newly created spool.
+func (b *FilamentBridge) ListUnboundSpoolTags() ([]NFCTag, error) {
+	all, err := b.ListNFCTagsByType("spool")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]NFCTag, 0)
+	for _, t := range all {
+		if t.Status == "active" && t.BoundEntityID == nil {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// BindSpoolTag binds an existing spool tag to a Spoolman spool (link dropdown / tap-to-bind).
+func (b *FilamentBridge) BindSpoolTag(tagID string, spoolID int) error {
+	if spoolID <= 0 {
+		return fmt.Errorf("spool_id is required")
+	}
+	tag, err := b.GetNFCTag(tagID)
+	if err != nil {
+		return err
+	}
+	if tag == nil || tag.TagType != "spool" {
+		return fmt.Errorf("spool tag %q not found", tagID)
+	}
+	entityType := "spoolman_spool"
+	return b.SetNFCTagBinding(tagID, &entityType, &spoolID)
+}
+
+// nfcSpoolTagsUnboundHandler returns the available (active, unbound) spool tags.
+// GET /api/nfc/unbound-spool-tags
+func (ws *WebServer) nfcSpoolTagsUnboundHandler(c *gin.Context) {
+	tags, err := ws.bridge.ListUnboundSpoolTags()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, nfcTagStubList(tags))
+}
+
+// nfcTagBindHandler binds a spool tag to a Spoolman spool.
+// POST /api/nfc/tags/:tag_id/bind  Body: {"spool_id": N}
+func (ws *WebServer) nfcTagBindHandler(c *gin.Context) {
+	tagID := c.Param("tag_id")
+	var body struct {
+		SpoolID int `json:"spool_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := ws.bridge.BindSpoolTag(tagID, body.SpoolID); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// nfcCreateSpoolFromFilamentHandler creates a new Spoolman spool of a filament and returns
+// it with the current pool of unbound spool tags (for the link dropdown).
+// POST /api/nfc/create-spool-from-filament  Body: {"filament_id": N}
+func (ws *WebServer) nfcCreateSpoolFromFilamentHandler(c *gin.Context) {
+	var body struct {
+		FilamentID int `json:"filament_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	spool, err := ws.bridge.CreateSpoolFromFilament(body.FilamentID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	unbound, _ := ws.bridge.ListUnboundSpoolTags()
+	c.JSON(http.StatusCreated, gin.H{"spool": spool, "unbound_spool_tags": nfcTagStubList(unbound)})
+}
+
+// nfcTagStub is the minimal tag shape used in dropdowns (tag id + nickname).
+type nfcTagStub struct {
+	TagID string  `json:"tag_id"`
+	Label *string `json:"label"`
+}
+
+func nfcTagStubList(tags []NFCTag) []nfcTagStub {
+	out := make([]nfcTagStub, 0, len(tags))
+	for _, t := range tags {
+		out = append(out, nfcTagStub{TagID: t.TagID, Label: t.Label})
+	}
+	return out
+}
+
+// nfcTagResolveHandler renders the mobile page opened when a /tag/{tag_id} URL is tapped.
+// Stage 3: filament tags show a "view in Spoolman / create new spool" dialog; spool tags
+// show the bound spool. The full tap-tap pairing engine arrives in Stage 5.
+// GET /tag/:tag_id
+func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
+	tagID := c.Param("tag_id")
+	tag, err := ws.bridge.GetNFCTag(tagID)
+	if err != nil {
+		c.HTML(http.StatusInternalServerError, "nfc_error.html", gin.H{"Error": "Failed to look up this tag."})
+		return
+	}
+	if tag == nil {
+		c.HTML(http.StatusNotFound, "nfc_error.html", gin.H{"Error": "This NFC tag is not registered. Add it in The Moment's NFCs tab."})
+		return
+	}
+
+	spoolmanURL := ws.bridge.config.SpoolmanURL
+	switch tag.TagType {
+	case "filament":
+		data := gin.H{"Kind": "filament", "TagID": tag.TagID, "SpoolmanURL": spoolmanURL, "ColorHex": "#888888"}
+		if tag.BoundEntityID != nil {
+			data["FilamentID"] = *tag.BoundEntityID
+			if fils, e := ws.bridge.spoolman.GetAllFilaments(); e == nil {
+				for _, f := range fils {
+					if f.ID == *tag.BoundEntityID {
+						data["FilamentName"] = f.Name
+						data["Material"] = f.Material
+						if f.ColorHex != "" {
+							data["ColorHex"] = "#" + f.ColorHex
+						}
+						if f.Vendor != nil {
+							data["Vendor"] = f.Vendor.Name
+						}
+						break
+					}
+				}
+			}
+		}
+		c.HTML(http.StatusOK, "tag_page.html", data)
+	case "spool":
+		data := gin.H{"Kind": "spool", "TagID": tag.TagID, "SpoolmanURL": spoolmanURL, "ColorHex": "#888888"}
+		if tag.BoundEntityID != nil {
+			data["SpoolID"] = *tag.BoundEntityID
+			if s, e := ws.bridge.spoolman.GetSpoolByID(*tag.BoundEntityID); e == nil && s != nil {
+				data["SpoolName"] = s.Name
+				data["Material"] = s.Material
+				data["Location"] = s.Location
+				data["RemainingWeight"] = fmt.Sprintf("%.0f", s.RemainingWeight)
+				if s.Filament != nil && s.Filament.ColorHex != "" {
+					data["ColorHex"] = "#" + s.Filament.ColorHex
+				}
+			}
+		}
+		c.HTML(http.StatusOK, "tag_page.html", data)
+	default:
+		c.HTML(http.StatusOK, "tag_page.html", gin.H{"Kind": tag.TagType, "TagID": tag.TagID})
+	}
 }
 
 // encodeTagQR renders the tag URL as a base64 PNG QR code, or "" on error.

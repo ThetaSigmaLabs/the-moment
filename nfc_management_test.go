@@ -59,6 +59,29 @@ func TestCreateFilamentTag_Link(t *testing.T) {
 	}
 }
 
+// TestCreateFilamentTag_Unbound creates a filament tag with no Spoolman binding (a filament
+// type that may not exist yet). No Spoolman call is made (client left nil — any call panics).
+func TestCreateFilamentTag_Unbound(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	tag, err := b.CreateFilamentTag(nfcStrPtr("Future PLA"), 0, nil)
+	if err != nil {
+		t.Fatalf("CreateFilamentTag unbound: %v", err)
+	}
+	if tag.TagType != "filament" {
+		t.Errorf("tag_type = %q, want 'filament'", tag.TagType)
+	}
+	if tag.BoundEntityType != nil {
+		t.Errorf("bound_entity_type = %v, want nil (unbound)", *tag.BoundEntityType)
+	}
+	if tag.BoundEntityID != nil {
+		t.Errorf("bound_entity_id = %v, want nil (unbound)", *tag.BoundEntityID)
+	}
+	if tag.TagID == "" {
+		t.Error("tag_id should be generated")
+	}
+}
+
 // TestCreateFilamentTag_AuthorFullSpec authors a new Spoolman filament from a full spec,
 // mapping the manufacturer to an existing vendor, then binds the tag and stores the spec.
 func TestCreateFilamentTag_AuthorFullSpec(t *testing.T) {
@@ -264,6 +287,142 @@ func TestCreateFilament_Client(t *testing.T) {
 	}
 }
 
+// ─── Stage 3: spool tags ────────────────────────────────────────────────────────
+
+func TestCreateSpool_Client(t *testing.T) {
+	var postBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/spool" {
+			postBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":77,"filament":{"id":3,"name":"PLA Black","material":"PLA"}}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	client := NewSpoolmanClient(srv.URL, 5)
+	s, err := client.CreateSpool(map[string]interface{}{"filament_id": 3})
+	if err != nil {
+		t.Fatalf("CreateSpool: %v", err)
+	}
+	if s.ID != 77 {
+		t.Errorf("created spool ID = %d, want 77", s.ID)
+	}
+	var body map[string]interface{}
+	json.Unmarshal(postBody, &body)
+	if fmt.Sprintf("%v", body["filament_id"]) != "3" {
+		t.Errorf("forwarded filament_id = %v, want 3", body["filament_id"])
+	}
+}
+
+func TestCreateSpoolTag_UnboundAndLink(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	// Unbound (pool) tag.
+	u, err := b.CreateSpoolTag(nfcStrPtr("Reel A"), 0)
+	if err != nil {
+		t.Fatalf("unbound: %v", err)
+	}
+	if u.TagType != "spool" || u.BoundEntityID != nil {
+		t.Errorf("unbound spool tag wrong: %+v", u)
+	}
+
+	// Linked tag.
+	l, err := b.CreateSpoolTag(nfcStrPtr("Reel B"), 5)
+	if err != nil {
+		t.Fatalf("link: %v", err)
+	}
+	if l.BoundEntityID == nil || *l.BoundEntityID != 5 || l.BoundEntityType == nil || *l.BoundEntityType != "spoolman_spool" {
+		t.Errorf("linked spool tag wrong: %+v", l)
+	}
+}
+
+func TestListUnboundSpoolTags_FiltersBoundAndArchived(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	u1, _ := b.CreateSpoolTag(nfcStrPtr("free1"), 0)
+	_, _ = b.CreateSpoolTag(nfcStrPtr("free2"), 0)
+	_, _ = b.CreateSpoolTag(nfcStrPtr("bound"), 9) // bound → excluded
+	arch, _ := b.CreateSpoolTag(nfcStrPtr("archived"), 0)
+	if err := b.SetNFCTagStatus(arch.TagID, "archived"); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+
+	unbound, err := b.ListUnboundSpoolTags()
+	if err != nil {
+		t.Fatalf("list unbound: %v", err)
+	}
+	if len(unbound) != 2 {
+		t.Fatalf("unbound count = %d, want 2 (free1, free2)", len(unbound))
+	}
+
+	// Binding free1 removes it from the available pool.
+	if err := b.BindSpoolTag(u1.TagID, 12); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	unbound, _ = b.ListUnboundSpoolTags()
+	if len(unbound) != 1 {
+		t.Errorf("after bind, unbound count = %d, want 1", len(unbound))
+	}
+	got, _ := b.GetNFCTag(u1.TagID)
+	if got.BoundEntityID == nil || *got.BoundEntityID != 12 {
+		t.Errorf("bound_entity_id = %v, want 12", got.BoundEntityID)
+	}
+}
+
+func TestBindSpoolTag_Errors(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	if err := b.BindSpoolTag("nonexistent", 5); err == nil {
+		t.Error("binding a nonexistent tag should error")
+	}
+	// A filament tag cannot be bound as a spool.
+	fil, _ := b.CreateFilamentTag(nfcStrPtr("F"), 1, nil)
+	if err := b.BindSpoolTag(fil.TagID, 5); err == nil {
+		t.Error("binding a filament tag as a spool should error")
+	}
+	// spool_id must be > 0.
+	sp, _ := b.CreateSpoolTag(nfcStrPtr("S"), 0)
+	if err := b.BindSpoolTag(sp.TagID, 0); err == nil {
+		t.Error("binding with spool_id 0 should error")
+	}
+}
+
+func TestCreateSpoolFromFilament(t *testing.T) {
+	var postBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/spool" {
+			postBody, _ = io.ReadAll(r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":88,"filament":{"id":4,"name":"PETG","material":"PETG"}}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	b := newNFCMgmtTestBridge(t, srv.URL)
+	spool, err := b.CreateSpoolFromFilament(4)
+	if err != nil {
+		t.Fatalf("CreateSpoolFromFilament: %v", err)
+	}
+	if spool.ID != 88 {
+		t.Errorf("spool ID = %d, want 88", spool.ID)
+	}
+	var body map[string]interface{}
+	json.Unmarshal(postBody, &body)
+	if fmt.Sprintf("%v", body["filament_id"]) != "4" {
+		t.Errorf("filament_id forwarded = %v, want 4", body["filament_id"])
+	}
+	if _, err := b.CreateSpoolFromFilament(0); err == nil {
+		t.Error("filament_id 0 should error without a Spoolman call")
+	}
+}
+
 // TestFindVendorByName covers case-insensitive matching and the not-found / empty cases.
 func TestFindVendorByName(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -284,5 +443,45 @@ func TestFindVendorByName(t *testing.T) {
 	v, err = client.FindVendorByName("   ")
 	if err != nil || v != nil {
 		t.Errorf("empty name should be (nil,nil), got v=%v err=%v", v, err)
+	}
+}
+
+// TestRebindTag verifies bind → rebind → unbind via SetNFCTagBinding directly.
+func TestRebindTag(t *testing.T) {
+	b := newNFCMgmtTestBridge(t, "")
+
+	// Create a spool tag bound to spool #10.
+	tag, err := b.CreateSpoolTag(nfcStrPtr("rebind-me"), 10)
+	if err != nil {
+		t.Fatalf("CreateSpoolTag: %v", err)
+	}
+	if tag.BoundEntityID == nil || *tag.BoundEntityID != 10 {
+		t.Fatalf("initial bound_entity_id = %v, want 10", tag.BoundEntityID)
+	}
+
+	// Rebind to spool #20.
+	et := "spoolman_spool"
+	id20 := 20
+	if err := b.SetNFCTagBinding(tag.TagID, &et, &id20); err != nil {
+		t.Fatalf("SetNFCTagBinding to 20: %v", err)
+	}
+	got, _ := b.GetNFCTag(tag.TagID)
+	if got.BoundEntityID == nil || *got.BoundEntityID != 20 {
+		t.Errorf("after rebind: bound_entity_id = %v, want 20", got.BoundEntityID)
+	}
+	if got.BoundEntityType == nil || *got.BoundEntityType != "spoolman_spool" {
+		t.Errorf("after rebind: bound_entity_type = %v, want spoolman_spool", got.BoundEntityType)
+	}
+
+	// Unbind (nil, nil).
+	if err := b.SetNFCTagBinding(tag.TagID, nil, nil); err != nil {
+		t.Fatalf("SetNFCTagBinding unbind: %v", err)
+	}
+	got, _ = b.GetNFCTag(tag.TagID)
+	if got.BoundEntityID != nil {
+		t.Errorf("after unbind: bound_entity_id = %v, want nil", got.BoundEntityID)
+	}
+	if got.BoundEntityType != nil {
+		t.Errorf("after unbind: bound_entity_type = %v, want nil", got.BoundEntityType)
 	}
 }

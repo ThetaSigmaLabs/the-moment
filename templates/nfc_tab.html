@@ -29,6 +29,13 @@
             .nfcs-modal input, .nfcs-modal select { width: 100%; padding: 7px; box-sizing: border-box; }
             .nfcs-qr { display:block; margin: 12px auto; width: 220px; height: 220px; background:#fff; padding:6px; border-radius:6px; }
             .nfcs-url { font-family: monospace; font-size: 0.82em; word-break: break-all; background: rgba(0,0,0,0.25); padding: 8px; border-radius: 6px; }
+            .nfcs-row-clickable { cursor: pointer; }
+            .nfcs-row-clickable:hover { background: rgba(255,255,255,0.04); }
+            .nfcs-picker { max-height: 230px; overflow-y: auto; border: 1px solid var(--surface-border); border-radius: 6px; margin-top: 4px; }
+            .nfcs-pick { padding: 7px 9px; cursor: pointer; border-bottom: 1px solid var(--surface-border); font-size: 0.88em; display: flex; align-items: center; gap: 8px; }
+            .nfcs-pick:last-child { border-bottom: none; }
+            .nfcs-pick:hover { background: rgba(255,255,255,0.06); }
+            .nfcs-pick.selected { background: rgba(124,58,237,0.28); }
         </style>
 
         <div class="nfcs-subtabs">
@@ -40,15 +47,18 @@
         <div id="nfcs-subtab-spool" class="nfcs-subtab-content">
             <div class="nfcs-toolbar">
                 <input type="text" id="nfcs-spool-search" class="nfc-search-input" placeholder="Search spool tags..." oninput="nfcsFilterTable('spool')">
-                <button class="btn btn-small" disabled title="Spool tag management arrives in Stage 3">➕ Add Spool NFC</button>
+                <button class="btn btn-small" onclick="nfcsOpenAddSpool()">➕ Add Spool NFC</button>
+                <button class="btn btn-small btn-danger" onclick="nfcsDeleteSelected('spool')">🗑️ Delete selected</button>
+                <label style="font-size:0.85em;color:var(--text-secondary);"><input type="checkbox" id="nfcs-spool-unbound-only" onchange="nfcsLoadSpoolTags()"> Unbound only</label>
             </div>
             <table class="nfcs-table">
                 <thead><tr>
-                    <th></th><th>Tag ID</th><th>Label</th><th>Bound spool</th><th>Status</th><th>Actions</th>
+                    <th><input type="checkbox" onclick="nfcsToggleAll('spool', this.checked)"></th>
+                    <th>Tag ID</th><th>Label</th><th>Bound spool</th><th>Status</th><th>Actions</th>
                 </tr></thead>
                 <tbody id="nfcs-spool-rows"></tbody>
             </table>
-            <p class="nfcs-empty" id="nfcs-spool-empty">No spool tags yet. <span style="opacity:0.7;">(Spool tag management arrives in Stage 3.)</span></p>
+            <p class="nfcs-empty" id="nfcs-spool-empty">No spool tags yet.</p>
         </div>
 
         <div id="nfcs-subtab-location" class="nfcs-subtab-content" style="display:none;">
@@ -89,14 +99,24 @@
             <div style="display:flex;gap:6px;margin-bottom:6px;">
                 <button class="nfcs-subtab active" id="nfcs-mode-link" onclick="nfcsSetAddMode('link')">Link existing</button>
                 <button class="nfcs-subtab" id="nfcs-mode-author" onclick="nfcsSetAddMode('author')">Author new</button>
+                <button class="nfcs-subtab" id="nfcs-mode-unbound" onclick="nfcsSetAddMode('unbound')">Add unbound</button>
             </div>
 
             <label>Label (optional nickname)</label>
             <input type="text" id="nfcs-fil-label" placeholder="e.g. Black PLA reel #3">
 
             <div id="nfcs-add-link-section">
-                <label>Spoolman filament</label>
-                <select id="nfcs-fil-link-select"><option value="">Loading…</option></select>
+                <label>Find a Spoolman filament</label>
+                <input type="text" id="nfcs-fil-search" placeholder='Search — e.g. black  ·  PLA black  ·  "PLA Black"' autocomplete="off" oninput="nfcsFilterFilamentPicker()">
+                <div id="nfcs-fil-options" class="nfcs-picker"></div>
+                <input type="hidden" id="nfcs-fil-link-select" value="">
+                <div id="nfcs-fil-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+            </div>
+
+            <div id="nfcs-add-unbound-section" style="display:none;">
+                <p class="help-text">Creates a Filament NFC with no binding yet — for a filament type
+                    that may not exist in Spoolman yet. Bind it later by authoring/looking it up, or
+                    via tap-to-bind (Stage 5).</p>
             </div>
 
             <div id="nfcs-add-author-section" style="display:none;">
@@ -113,6 +133,81 @@
             <div style="display:flex;gap:8px;margin-top:16px;">
                 <button class="btn" style="flex:1;" onclick="nfcsSubmitAddFilament()">Create</button>
                 <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-add-filament-overlay')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Spool NFC modal -->
+    <div id="nfcs-add-spool-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;">➕ Add Spool NFC</h3>
+            <div style="display:flex;gap:6px;margin-bottom:6px;">
+                <button class="nfcs-subtab active" id="nfcs-spmode-link" onclick="nfcsSetSpoolAddMode('link')">Link existing spool</button>
+                <button class="nfcs-subtab" id="nfcs-spmode-unbound" onclick="nfcsSetSpoolAddMode('unbound')">Add unbound</button>
+            </div>
+            <div id="nfcs-spool-link-section">
+                <label>Find a Spoolman spool</label>
+                <input type="text" id="nfcs-sp-search" placeholder='Search — e.g. white  ·  PLA white  ·  "PLA White"' autocomplete="off" oninput="nfcsFilterSpoolPicker()">
+                <div id="nfcs-sp-options" class="nfcs-picker"></div>
+                <input type="hidden" id="nfcs-sp-link-select" value="">
+                <div id="nfcs-sp-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+            </div>
+            <div id="nfcs-spool-unbound-note" style="display:none;">
+                <p class="help-text">Creates a Spool NFC with no binding yet. Bind it later by tapping a
+                    filament tag → "Create new spool", or via tap-to-bind (Stage 5).</p>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn" style="flex:1;" onclick="nfcsSubmitAddSpool()">Create</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-add-spool-overlay')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit tag modal — inline label editing, save-on-blur, rebind section -->
+    <div id="nfcs-edit-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;" id="nfcs-edit-title">Edit tag</h3>
+            <div class="nfcs-tagid" id="nfcs-edit-tagid" style="margin-bottom:12px;"></div>
+            <label>Label (nickname) — saves when you click away</label>
+            <input type="text" id="nfcs-edit-label" placeholder="e.g. Black PLA reel #3"
+                   onblur="nfcsEditLabelSave()"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}else if(event.key==='Escape'){this.value=nfcsEditState.orig;this.blur();}">
+            <div id="nfcs-edit-savestate" style="font-size:0.78em;min-height:1.1em;margin-top:4px;"></div>
+
+            <!-- Binding section — hidden for location tags (Stage 4) -->
+            <div id="nfcs-rebind-section" style="margin-top:14px;border-top:1px solid var(--surface-border);padding-top:12px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                    <span style="font-size:0.82em;color:var(--text-secondary);">Binding</span>
+                    <div>
+                        <button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="nfcsRebindToggle()">Change…</button>
+                        <button class="nfcs-rowbtn" style="background:#6b7280;color:#fff;" id="nfcs-rebind-unbind-btn" onclick="nfcsRebindUnbind()">Unbind</button>
+                    </div>
+                </div>
+                <div id="nfcs-rebind-current" style="font-size:0.88em;color:var(--text-secondary);margin-bottom:6px;"></div>
+
+                <!-- Spool picker (shown when editing a spool tag) -->
+                <div id="nfcs-rebind-spool-picker" style="display:none;">
+                    <input type="text" id="nfcs-rebind-sp-search" placeholder='Search spools…' autocomplete="off" oninput="nfcsRenderRebindSpoolPicker(this.value)" style="margin-bottom:4px;">
+                    <div id="nfcs-rebind-sp-options" class="nfcs-picker"></div>
+                    <input type="hidden" id="nfcs-rebind-sp-select" value="">
+                    <div id="nfcs-rebind-sp-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+                    <button class="btn" style="margin-top:8px;width:100%;" onclick="nfcsRebindSave()">Save binding</button>
+                </div>
+
+                <!-- Filament picker (shown when editing a filament tag) -->
+                <div id="nfcs-rebind-filament-picker" style="display:none;">
+                    <input type="text" id="nfcs-rebind-fil-search" placeholder='Search filaments…' autocomplete="off" oninput="nfcsRenderRebindFilamentPicker(this.value)" style="margin-bottom:4px;">
+                    <div id="nfcs-rebind-fil-options" class="nfcs-picker"></div>
+                    <input type="hidden" id="nfcs-rebind-fil-select" value="">
+                    <div id="nfcs-rebind-fil-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+                    <button class="btn" style="margin-top:8px;width:100%;" onclick="nfcsRebindSave()">Save binding</button>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn" style="flex:1;" onclick="nfcsEditWrite()">🏷️ Write</button>
+                <button class="btn btn-danger" style="flex:1;" onclick="nfcsEditDelete()">Delete</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-edit-overlay')">Done</button>
             </div>
         </div>
     </div>

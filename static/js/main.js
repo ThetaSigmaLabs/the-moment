@@ -26,7 +26,6 @@ function switchTab(tabName) {
     // Spoolman are reflected immediately rather than waiting for the 5-min poll.
     if (tabName === 'spools') {
         fetch('/api/nfc/sync-locations-now', { method: 'POST' }).catch(() => {});
-        loadSpoolTags();
     }
 
     if (tabName === 'filament') {

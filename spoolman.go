@@ -1093,6 +1093,35 @@ func (c *SpoolmanClient) CreateFilament(data map[string]interface{}) (*SpoolmanF
 	return &created, nil
 }
 
+// CreateSpool creates a new spool in Spoolman and returns it. data holds the Spoolman
+// spool fields — at minimum {"filament_id": N}; Spoolman derives the full weight from the
+// filament. Mirrors CreateFilament.
+func (c *SpoolmanClient) CreateSpool(data map[string]interface{}) (*SpoolmanSpool, error) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling new spool: %w", err)
+	}
+	req, err := http.NewRequest("POST", c.baseURL+"/api/v1/spool", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, fmt.Errorf("creating spool request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("posting new spool: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		return nil, c.handleAPIError(resp)
+	}
+	var created SpoolmanSpool
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		return nil, fmt.Errorf("decoding new spool: %w", err)
+	}
+	s := c.normalizeSpoolData(created)
+	return &s, nil
+}
+
 // FindVendorByName returns the non-archived vendor matching name (case-insensitive),
 // or (nil, nil) when none matches. Used to map a filament tag's manufacturer field to an
 // existing Spoolman vendor without creating one.

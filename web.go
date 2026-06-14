@@ -157,6 +157,9 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.GET("/nfc/spool/:uuid/displaced", ws.nfcSpoolDisplacedHandler)
 	ws.router.POST("/nfc/spool/:uuid/complete", ws.nfcSpoolCompleteHandler)
 
+	// Unified NFC tag resolver — every /tag/{tag_id} sticker opens here (Stage 3+).
+	ws.router.GET("/tag/:tag_id", ws.nfcTagResolveHandler)
+
 	// API routes
 	api := ws.router.Group("/api")
 	{
@@ -276,12 +279,17 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/nfc/spoolman-setup-status", ws.nfcSetupStatusHandler)
 		api.POST("/nfc/spoolman-setup", ws.nfcSetupHandler)
 
-		// NFCs tab — tag registry CRUD (nfc_tags). Filament sub-tab activated in Stage 2.
+		// NFCs tab — tag registry CRUD (nfc_tags). Filament: Stage 2; Spool: Stage 3.
 		api.GET("/nfc/tags", ws.nfcTagsListHandler)
 		api.POST("/nfc/tags", ws.nfcTagCreateHandler)
 		api.PATCH("/nfc/tags/:tag_id/label", ws.nfcTagLabelHandler)
 		api.DELETE("/nfc/tags/:tag_id", ws.nfcTagDeleteHandler)
 		api.GET("/nfc/tags/:tag_id/payload", ws.nfcTagPayloadHandler)
+		api.POST("/nfc/tags/:tag_id/bind", ws.nfcTagBindHandler)
+		api.PATCH("/nfc/tags/:tag_id/rebind", ws.nfcTagRebindHandler)
+		// Static paths (kept off the /nfc/tags/:tag_id wildcard to avoid gin route conflicts).
+		api.GET("/nfc/unbound-spool-tags", ws.nfcSpoolTagsUnboundHandler)
+		api.POST("/nfc/create-spool-from-filament", ws.nfcCreateSpoolFromFilamentHandler)
 		api.GET("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsGetHandler)
 		api.POST("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsPostHandler)
 		api.POST("/nfc/spools/:spoolman_id/trash", ws.nfcSpoolTrashHandler)
@@ -2762,80 +2770,9 @@ func (ws *WebServer) nfcAssignHandler(c *gin.Context) {
 func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 	var urls []gin.H
 
-	// Get all spools
-	spools, err := ws.bridge.spoolman.GetAllSpools()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Generate spool URLs
-	for _, spool := range spools {
-		url := fmt.Sprintf("http://%s/api/nfc/assign?spool=%d", c.Request.Host, spool.ID)
-
-		// Safely get color hex
-		colorHex := ""
-		if spool.Filament != nil && spool.Filament.ColorHex != "" {
-			colorHex = spool.Filament.ColorHex
-			if !strings.HasPrefix(colorHex, "#") {
-				colorHex = "#" + colorHex
-			}
-		}
-
-		// Extract NFC UUID if one has been assigned.
-		nfcID := ""
-		tagURL := ""
-		if spool.Extra != nil {
-			if v, ok := spool.Extra[nfcIDKey]; ok {
-				if s, ok := v.(string); ok && s != "" {
-					nfcID = s
-					tagURL = fmt.Sprintf("http://%s/nfc/spool/%s", c.Request.Host, s)
-				}
-			}
-		}
-
-		// Generate QR code (use UUID tag URL when available, otherwise the legacy assign URL).
-		qrTarget := url
-		if tagURL != "" {
-			qrTarget = tagURL
-		}
-		qrCode, err := qrcode.Encode(qrTarget, qrcode.Medium, 256)
-		if err != nil {
-			log.Printf("Error generating QR code for spool %d: %v", spool.ID, err)
-			urls = append(urls, gin.H{
-				"type":             "spool",
-				"spool_id":         spool.ID,
-				"spool_name":       spool.Name,
-				"material":         spool.Material,
-				"brand":            spool.Brand,
-				"color_hex":        colorHex,
-				"remaining_weight": spool.RemainingWeight,
-				"url":              url,
-				"nfc_id":           nfcID,
-				"tag_url":          tagURL,
-				"qr_code_base64":   "",
-			})
-			continue
-		}
-
-		qrCodeBase64 := base64.StdEncoding.EncodeToString(qrCode)
-		urls = append(urls, gin.H{
-			"type":             "spool",
-			"spool_id":         spool.ID,
-			"spool_name":       spool.Name,
-			"material":         spool.Material,
-			"brand":            spool.Brand,
-			"color_hex":        colorHex,
-			"remaining_weight": spool.RemainingWeight,
-			"url":              url,
-			"nfc_id":           nfcID,
-			"tag_url":          tagURL,
-			"qr_code_base64":   qrCodeBase64,
-		})
-	}
-
-	// Filament tags are managed in the NFCs tab via /api/nfc/tags (nfc_tags registry).
-	// The legacy read-only filament deep-link list was removed in Stage 2.
+	// Spool and filament tags are managed in the NFCs tab via /api/nfc/tags (nfc_tags
+	// registry). This endpoint now returns only location entries, consumed by the
+	// Printers-tab location list. Spool/filament generation was removed in Stages 2-3.
 
 	// Get Spoolman locations
 	spoolmanLocations, err := ws.bridge.spoolman.GetLocations()

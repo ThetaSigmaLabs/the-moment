@@ -112,52 +112,6 @@
         {{end}}
     </div>
 
-    <!-- NFC Spool Tags -->
-    <div class="config-section" style="margin-top:20px;border-top:1px solid var(--surface-border);padding-top:20px;">
-        <h4 style="margin-top:0;">🏷️ NFC Spool Tags</h4>
-        <p class="help-text">Select a spool to generate its NFC URL and QR code. Scan the QR code with NFC Tools Pro to program your tags.</p>
-
-        <div class="nfc-side-by-side">
-            <!-- Left: Spool List -->
-            <div class="nfc-list-panel">
-                <div class="nfc-search-container">
-                    <input type="text" id="spool-search" class="nfc-search-input" placeholder="Search spools..." autocomplete="off">
-                </div>
-                <div class="nfc-list-container" id="spool-list-container">
-                    <p>Loading spools...</p>
-                </div>
-            </div>
-
-            <!-- Right: QR Code Display -->
-            <div class="nfc-display-panel">
-                <div id="spool-qr-display" class="nfc-qr-display" style="display: none;">
-                    <div class="nfc-selected-info">
-                        <h4 id="spool-selected-name">Selected Spool</h4>
-                        <div id="spool-selected-details"></div>
-                    </div>
-                    <div class="nfc-qr-large-container">
-                        <img id="spool-qr-large" src="" alt="QR Code" class="nfc-qr-large">
-                        <div class="nfc-url-container">
-                            <div id="spool-url-text" class="nfc-url-large"></div>
-                            <button class="nfc-copy-btn" onclick="copyUrlToClipboard('spool-url-text', this)" title="Copy URL">
-                                <span class="nfc-copy-icon">📋</span>
-                            </button>
-                        </div>
-                    </div>
-                    <div style="margin-top:14px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.1);">
-                        <button id="spool-bin-btn" class="btn" onclick="openSpoolTagEditor()" style="width:100%; background:#7c3aed;">
-                            📲 Edit OpenPrintTag Fields &amp; Download .bin
-                        </button>
-                        <p style="font-size:0.78em; color:#888; margin:6px 0 0; text-align:center;">For ICODE SLIX2 tags — use NFC Tools "Write Dump"</p>
-                    </div>
-                </div>
-                <div id="spool-no-selection" class="nfc-no-selection">
-                    <div class="nfc-no-selection-icon">🏷️</div>
-                    <h4>Select a Spool</h4>
-                    <p>Choose a spool from the list to generate its QR code</p>
-                </div>
-            </div>
-        </div>
-    </div>
+    <!-- NFC spool tags moved to the NFCs tab → Spool sub-tab (nfc_tags registry) in Stage 3. -->
 
 </div>
