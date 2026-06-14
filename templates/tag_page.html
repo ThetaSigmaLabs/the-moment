@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>The Moment — NFC Tag</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; background: #11151c; color: #e6e6e6; margin: 0; padding: 18px; }
+        .card { max-width: 460px; margin: 0 auto; background: #1b212c; border-radius: 14px; padding: 22px; }
+        .swatch { width: 56px; height: 56px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.15); }
+        h1 { font-size: 1.4em; margin: 14px 0 2px; }
+        .sub { color: #9aa4b2; margin: 2px 0; }
+        .btn { display: block; width: 100%; box-sizing: border-box; padding: 13px; margin-top: 12px; border: none; border-radius: 9px; font-size: 1em; cursor: pointer; background: #7c3aed; color: #fff; text-align: center; text-decoration: none; }
+        .btn-secondary { background: #2c3442; color: #e6e6e6; }
+        .btn:disabled { opacity: 0.6; }
+        label { display: block; margin: 14px 0 4px; color: #9aa4b2; font-size: 0.85em; }
+        select { width: 100%; padding: 11px; box-sizing: border-box; border-radius: 8px; }
+        hr { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 18px 0; }
+        .ok { color: #4ade80; }
+        .warn { color: #fbbf24; }
+        .hint { color: #6b7280; font-size: 0.82em; margin-top: 10px; }
+    </style>
+</head>
+<body>
+<div class="card" id="tag-card"
+     data-kind="{{.Kind}}"
+     data-tag-id="{{.TagID}}"
+     data-filament-id="{{if .FilamentID}}{{.FilamentID}}{{end}}">
+
+    {{if eq .Kind "filament"}}
+        <div class="swatch" style="background:{{.ColorHex}}"></div>
+        <h1>{{if .FilamentName}}{{.FilamentName}}{{else}}Filament tag{{end}}</h1>
+        <p class="sub">{{.Material}}{{if .Vendor}} · {{.Vendor}}{{end}}</p>
+        {{if .FilamentID}}
+            <a class="btn btn-secondary" href="{{.SpoolmanURL}}/filament/show/{{.FilamentID}}" target="_blank" rel="noopener">View filament in Spoolman</a>
+            <button class="btn" id="create-spool-btn" onclick="tagCreateSpool()">Create new spool of this filament</button>
+            <div id="link-section" style="display:none;">
+                <hr>
+                <p id="created-msg" class="ok"></p>
+                <label>Link a Spool NFC to the new spool</label>
+                <select id="link-select"></select>
+                <button class="btn" onclick="tagLinkSpoolNfc()">Link this Spool NFC</button>
+                <p class="hint">Or tap a Spool NFC now to bind it — tap-to-bind arrives in Stage 5.</p>
+            </div>
+        {{else}}
+            <p class="warn">This filament tag isn't linked to a Spoolman filament.</p>
+        {{end}}
+
+    {{else if eq .Kind "spool"}}
+        <div class="swatch" style="background:{{.ColorHex}}"></div>
+        <h1>{{if .SpoolName}}{{.SpoolName}}{{else}}Spool tag{{end}}</h1>
+        {{if .SpoolID}}
+            <p class="sub">{{.Material}}{{if .RemainingWeight}} · {{.RemainingWeight}}g left{{end}}</p>
+            {{if .Location}}<p class="sub">📍 {{.Location}}</p>{{end}}
+            <a class="btn btn-secondary" href="{{.SpoolmanURL}}/spool/show/{{.SpoolID}}" target="_blank" rel="noopener">View spool in Spoolman</a>
+            <p class="hint">Tap a Location NFC next to assign this spool — tap-tap arrives in Stage 5.</p>
+        {{else}}
+            <p class="warn">This spool tag isn't linked to a Spoolman spool yet. Link it in The Moment's NFCs tab.</p>
+        {{end}}
+
+    {{else}}
+        <h1>NFC tag</h1>
+        <p class="sub">Tag type: {{.Kind}}</p>
+    {{end}}
+</div>
+
+<script>
+    var tagCard = document.getElementById('tag-card');
+    var tagNewSpoolId = null;
+
+    async function tagCreateSpool() {
+        var fid = parseInt(tagCard.dataset.filamentId, 10);
+        var btn = document.getElementById('create-spool-btn');
+        btn.disabled = true;
+        btn.textContent = 'Creating…';
+        try {
+            var res = await fetch('/api/nfc/create-spool-from-filament', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filament_id: fid })
+            });
+            var data = await res.json();
+            if (!res.ok) {
+                alert(data.error || 'Create failed');
+                btn.disabled = false; btn.textContent = 'Create new spool of this filament';
+                return;
+            }
+            tagNewSpoolId = data.spool && data.spool.id;
+            document.getElementById('created-msg').textContent = 'Created Spoolman spool #' + tagNewSpoolId + '.';
+            var sel = document.getElementById('link-select');
+            sel.innerHTML = '';
+            var tags = data.unbound_spool_tags || [];
+            if (tags.length === 0) {
+                var o = document.createElement('option');
+                o.value = ''; o.textContent = 'No unbound Spool NFCs available';
+                sel.appendChild(o);
+            } else {
+                tags.forEach(function (t) {
+                    var opt = document.createElement('option');
+                    opt.value = t.tag_id;
+                    opt.textContent = t.label || (t.tag_id.slice(0, 8) + '…');
+                    sel.appendChild(opt);
+                });
+            }
+            document.getElementById('link-section').style.display = '';
+            btn.textContent = 'Spool created';
+        } catch (e) {
+            alert('Error: ' + e.message);
+            btn.disabled = false; btn.textContent = 'Create new spool of this filament';
+        }
+    }
+
+    async function tagLinkSpoolNfc() {
+        var sel = document.getElementById('link-select');
+        var tagId = sel.value;
+        if (!tagId) { alert('No Spool NFC selected.'); return; }
+        if (!tagNewSpoolId) { alert('Create a spool first.'); return; }
+        try {
+            var res = await fetch('/api/nfc/tags/' + encodeURIComponent(tagId) + '/bind', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ spool_id: tagNewSpoolId })
+            });
+            var data = await res.json();
+            if (!res.ok) { alert(data.error || 'Link failed'); return; }
+            document.getElementById('created-msg').textContent = 'Linked Spool NFC to spool #' + tagNewSpoolId + '. ✅';
+            sel.disabled = true;
+        } catch (e) {
+            alert('Error: ' + e.message);
+        }
+    }
+</script>
+</body>
+</html>

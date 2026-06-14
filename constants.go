@@ -48,6 +48,10 @@ const (
 	ConfigKeyNFCTrashLocation    = "nfc_trash_location"
 	ConfigKeyNFCInventoryLocation = "nfc_inventory_location"
 
+	// NFC tap-tap engine (Stage 5): seconds a first tap stays pending before a second
+	// tap is treated as a fresh first tap. Default 15. Boundary semantics decided in Stage 5.
+	ConfigKeyNFCTapTimeoutSeconds = "nfc_tap_timeout_seconds"
+
 	// Spoolman location sync: keeps Spoolman spool location fields in sync with The Moment toolhead assignments.
 	// Format written to Spoolman: "{printer_name} - T{toolhead_index}" (e.g. "Roci - T0").
 	ConfigKeySpoolmanLocationSyncEnabled = "spoolman_location_sync_enabled"

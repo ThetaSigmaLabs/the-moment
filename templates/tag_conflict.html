@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>The Moment — Filament Conflict</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; background: #11151c; color: #e6e6e6; margin: 0; padding: 18px; }
+        .card { max-width: 460px; margin: 0 auto; background: #1b212c; border-radius: 14px; padding: 22px; }
+        h1 { font-size: 1.3em; margin: 0 0 14px; color: #fbbf24; }
+        .detail { color: #9aa4b2; margin: 4px 0; font-size: 0.9em; }
+        .detail strong { color: #e6e6e6; }
+        .choice { background: #242c39; border-radius: 10px; padding: 16px; margin-top: 16px; }
+        .choice h2 { font-size: 1em; margin: 0 0 6px; }
+        .choice p { font-size: 0.85em; color: #9aa4b2; margin: 0 0 12px; line-height: 1.5; }
+        .btn { display: block; width: 100%; box-sizing: border-box; padding: 13px; border: none; border-radius: 8px; font-size: 1em; cursor: pointer; text-align: center; }
+        .btn-a { background: #7c3aed; color: #fff; }
+        .btn-b { background: #2c3442; color: #e6e6e6; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <h1>⚠️ Filament conflict</h1>
+    <p class="detail"><strong>{{if .SpoolName}}{{.SpoolName}}{{else}}Spool #{{.SpoolID}}{{end}}</strong> already has filament:</p>
+    <p class="detail">{{if .OldFilamentName}}{{.OldFilamentName}}{{else}}ID {{.OldFilamentID}}{{end}}</p>
+    <p class="detail" style="margin-top:10px;">You tapped:</p>
+    <p class="detail"><strong>{{if .NewFilamentName}}{{.NewFilamentName}}{{else}}ID {{.NewFilamentID}}{{end}}</strong></p>
+
+    <div class="choice">
+        <h2>Option A — Edit existing spool</h2>
+        <p>Change this spool's filament to the new one. Same Spoolman spool record, updated filament.</p>
+        <form method="post" action="/tag/tap">
+            <input type="hidden" name="spool_tag_id" value="{{.SpoolTagID}}">
+            <input type="hidden" name="filament_tag_id" value="{{.FilamentTagID}}">
+            <input type="hidden" name="choice" value="edit_existing">
+            <button type="submit" class="btn btn-a">Edit existing spool</button>
+        </form>
+    </div>
+
+    <div class="choice">
+        <h2>Option B — Create new spool</h2>
+        <p>Create a new Spoolman spool of the new filament and rebind this NFC tag to it. Old spool stays in Spoolman (history preserved).</p>
+        <form method="post" action="/tag/tap">
+            <input type="hidden" name="spool_tag_id" value="{{.SpoolTagID}}">
+            <input type="hidden" name="filament_tag_id" value="{{.FilamentTagID}}">
+            <input type="hidden" name="choice" value="create_new">
+            <button type="submit" class="btn btn-b">Create new spool &amp; rebind tag</button>
+        </form>
+    </div>
+</div>
+</body>
+</html>

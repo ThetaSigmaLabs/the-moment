@@ -4,7 +4,7 @@
 
 // The Moment Dashboard - Main JavaScript Functions
 
-const VALID_TABS = ['dashboard', 'history', 'spools', 'filament', 'printers', 'settings'];
+const VALID_TABS = ['dashboard', 'history', 'spools', 'filament', 'printers', 'nfcs', 'settings'];
 
 // Tab switching functionality
 function switchTab(tabName) {
@@ -26,7 +26,6 @@ function switchTab(tabName) {
     // Spoolman are reflected immediately rather than waiting for the 5-min poll.
     if (tabName === 'spools') {
         fetch('/api/nfc/sync-locations-now', { method: 'POST' }).catch(() => {});
-        loadSpoolTags();
     }
 
     if (tabName === 'filament') {
@@ -52,6 +51,17 @@ function switchTab(tabName) {
                 loadAutoAssignSettings();
             }
         }
+    }
+
+    // When the NFCs tab is shown, load whichever sub-tab is currently visible.
+    // switchNfcsSubTab only fires on explicit button clicks, so the initial/return
+    // render would stay blank without this explicit trigger.
+    if (tabName === 'nfcs' && typeof window.nfcsOnSubTabShown === 'function') {
+        const activeSubTab = ['spool', 'location', 'filament'].find(function (n) {
+            const pane = document.getElementById('nfcs-subtab-' + n);
+            return pane && pane.style.display !== 'none';
+        }) || 'spool';
+        window.nfcsOnSubTabShown(activeSubTab);
     }
 
     if (location.hash !== '#' + tabName) {
@@ -304,6 +314,8 @@ function loadAdvancedSettings() {
                 syncToggle.checked = !!data.spoolman_location_sync_enabled;
                 if (syncRow) syncRow.style.display = syncToggle.checked ? '' : 'none';
             }
+            var tapTimeout = document.getElementById('nfcTapTimeout');
+            if (tapTimeout) tapTimeout.value = data.tap_timeout_seconds || 15;
         })
         .catch(function() {});
 }
@@ -312,10 +324,11 @@ function saveNFCConfig() {
     var inv   = (document.getElementById('nfcInventoryLocation')  || {}).value || '';
     var trash = (document.getElementById('nfcTrashLocation')       || {}).value || '';
     var syncEnabled = !!(document.getElementById('spoolmanLocationSyncEnabled') || {}).checked;
+    var tapTimeout = parseInt((document.getElementById('nfcTapTimeout') || {value: '15'}).value, 10) || 15;
     fetch('/api/nfc/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inventory_location: inv, trash_location: trash, spoolman_location_sync_enabled: syncEnabled })
+        body: JSON.stringify({ inventory_location: inv, trash_location: trash, spoolman_location_sync_enabled: syncEnabled, tap_timeout_seconds: tapTimeout })
     })
     .then(r => r.json())
     .then(function() { showToast('NFC locations saved.', 'success'); })

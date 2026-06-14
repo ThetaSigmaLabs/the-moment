@@ -157,6 +157,11 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.GET("/nfc/spool/:uuid/displaced", ws.nfcSpoolDisplacedHandler)
 	ws.router.POST("/nfc/spool/:uuid/complete", ws.nfcSpoolCompleteHandler)
 
+	// Unified NFC tag resolver — every /tag/{tag_id} sticker opens here (Stage 3+).
+	// POST /tag/tap handles filament-conflict resolution posted from tag_conflict.html.
+	ws.router.GET("/tag/:tag_id", ws.nfcTagResolveHandler)
+	ws.router.POST("/tag/tap", ws.nfcTagTapPostHandler)
+
 	// API routes
 	api := ws.router.Group("/api")
 	{
@@ -275,6 +280,19 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/nfc/prints/:print_history_id/spool-swap", ws.nfcSpoolSwapHandler)
 		api.GET("/nfc/spoolman-setup-status", ws.nfcSetupStatusHandler)
 		api.POST("/nfc/spoolman-setup", ws.nfcSetupHandler)
+
+		// NFCs tab — tag registry CRUD (nfc_tags). Filament: Stage 2; Spool: Stage 3.
+		api.GET("/nfc/tags", ws.nfcTagsListHandler)
+		api.POST("/nfc/tags", ws.nfcTagCreateHandler)
+		api.PATCH("/nfc/tags/:tag_id/label", ws.nfcTagLabelHandler)
+		api.DELETE("/nfc/tags/:tag_id", ws.nfcTagDeleteHandler)
+		api.GET("/nfc/tags/:tag_id/payload", ws.nfcTagPayloadHandler)
+		api.POST("/nfc/tags/:tag_id/bind", ws.nfcTagBindHandler)
+		api.PATCH("/nfc/tags/:tag_id/rebind", ws.nfcTagRebindHandler)
+		api.PATCH("/nfc/tags/:tag_id/location-kind", ws.nfcTagLocationKindHandler)
+		// Static paths (kept off the /nfc/tags/:tag_id wildcard to avoid gin route conflicts).
+		api.GET("/nfc/unbound-spool-tags", ws.nfcSpoolTagsUnboundHandler)
+		api.POST("/nfc/create-spool-from-filament", ws.nfcCreateSpoolFromFilamentHandler)
 		api.GET("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsGetHandler)
 		api.POST("/nfc/spools/:spoolman_id/fields", ws.nfcSpoolFieldsPostHandler)
 		api.POST("/nfc/spools/:spoolman_id/trash", ws.nfcSpoolTrashHandler)
@@ -2755,143 +2773,9 @@ func (ws *WebServer) nfcAssignHandler(c *gin.Context) {
 func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 	var urls []gin.H
 
-	// Get all spools
-	spools, err := ws.bridge.spoolman.GetAllSpools()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	// Generate spool URLs
-	for _, spool := range spools {
-		url := fmt.Sprintf("http://%s/api/nfc/assign?spool=%d", c.Request.Host, spool.ID)
-
-		// Safely get color hex
-		colorHex := ""
-		if spool.Filament != nil && spool.Filament.ColorHex != "" {
-			colorHex = spool.Filament.ColorHex
-			if !strings.HasPrefix(colorHex, "#") {
-				colorHex = "#" + colorHex
-			}
-		}
-
-		// Extract NFC UUID if one has been assigned.
-		nfcID := ""
-		tagURL := ""
-		if spool.Extra != nil {
-			if v, ok := spool.Extra[nfcIDKey]; ok {
-				if s, ok := v.(string); ok && s != "" {
-					nfcID = s
-					tagURL = fmt.Sprintf("http://%s/nfc/spool/%s", c.Request.Host, s)
-				}
-			}
-		}
-
-		// Generate QR code (use UUID tag URL when available, otherwise the legacy assign URL).
-		qrTarget := url
-		if tagURL != "" {
-			qrTarget = tagURL
-		}
-		qrCode, err := qrcode.Encode(qrTarget, qrcode.Medium, 256)
-		if err != nil {
-			log.Printf("Error generating QR code for spool %d: %v", spool.ID, err)
-			urls = append(urls, gin.H{
-				"type":             "spool",
-				"spool_id":         spool.ID,
-				"spool_name":       spool.Name,
-				"material":         spool.Material,
-				"brand":            spool.Brand,
-				"color_hex":        colorHex,
-				"remaining_weight": spool.RemainingWeight,
-				"url":              url,
-				"nfc_id":           nfcID,
-				"tag_url":          tagURL,
-				"qr_code_base64":   "",
-			})
-			continue
-		}
-
-		qrCodeBase64 := base64.StdEncoding.EncodeToString(qrCode)
-		urls = append(urls, gin.H{
-			"type":             "spool",
-			"spool_id":         spool.ID,
-			"spool_name":       spool.Name,
-			"material":         spool.Material,
-			"brand":            spool.Brand,
-			"color_hex":        colorHex,
-			"remaining_weight": spool.RemainingWeight,
-			"url":              url,
-			"nfc_id":           nfcID,
-			"tag_url":          tagURL,
-			"qr_code_base64":   qrCodeBase64,
-		})
-	}
-
-	// Get all filaments
-	filaments, err := ws.bridge.spoolman.GetAllFilaments()
-	if err != nil {
-		log.Printf("Warning: Failed to get filaments for NFC URLs: %v", err)
-		filaments = []SpoolmanFilament{}
-	}
-
-	// Generate filament URLs
-	for _, filament := range filaments {
-		url := fmt.Sprintf("%s/filament/show/%d", ws.bridge.config.SpoolmanURL, filament.ID)
-
-		// Safely get color hex
-		colorHex := ""
-		if filament.ColorHex != "" {
-			colorHex = filament.ColorHex
-			// Ensure it starts with #
-			if !strings.HasPrefix(colorHex, "#") {
-				colorHex = "#" + colorHex
-			}
-		}
-
-		// Get brand name
-		brand := "Unknown Brand"
-		if filament.Vendor != nil {
-			brand = filament.Vendor.Name
-		}
-
-		// Generate QR code
-		qrCode, err := qrcode.Encode(url, qrcode.Medium, 256)
-		if err != nil {
-			log.Printf("Error generating QR code for filament %d: %v", filament.ID, err)
-			// Continue without QR code if generation fails
-			urls = append(urls, gin.H{
-				"type":           "filament",
-				"filament_id":    filament.ID,
-				"filament_name":  filament.Name,
-				"material":       filament.Material,
-				"brand":          brand,
-				"color_hex":      colorHex,
-				"extruder_temp":  filament.SettingsExtruderTemp,
-				"bed_temp":       filament.SettingsBedTemp,
-				"diameter":       filament.Diameter,
-				"density":        filament.Density,
-				"url":            url,
-				"qr_code_base64": "",
-			})
-			continue
-		}
-
-		qrCodeBase64 := base64.StdEncoding.EncodeToString(qrCode)
-		urls = append(urls, gin.H{
-			"type":           "filament",
-			"filament_id":    filament.ID,
-			"filament_name":  filament.Name,
-			"material":       filament.Material,
-			"brand":          brand,
-			"color_hex":      colorHex,
-			"extruder_temp":  filament.SettingsExtruderTemp,
-			"bed_temp":       filament.SettingsBedTemp,
-			"diameter":       filament.Diameter,
-			"density":        filament.Density,
-			"url":            url,
-			"qr_code_base64": qrCodeBase64,
-		})
-	}
+	// Spool and filament tags are managed in the NFCs tab via /api/nfc/tags (nfc_tags
+	// registry). This endpoint now returns only location entries, consumed by the
+	// Printers-tab location list. Spool/filament generation was removed in Stages 2-3.
 
 	// Get Spoolman locations
 	spoolmanLocations, err := ws.bridge.spoolman.GetLocations()
@@ -3560,10 +3444,16 @@ func (ws *WebServer) nfcConfigHandler(c *gin.Context) {
 	trash, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTrashLocation)
 	inv, _ := ws.bridge.GetConfigValue(ConfigKeyNFCInventoryLocation)
 	syncEnabled, _ := ws.bridge.GetConfigValue(ConfigKeySpoolmanLocationSyncEnabled)
+	tapTimeoutStr, _ := ws.bridge.GetConfigValue(ConfigKeyNFCTapTimeoutSeconds)
+	tapTimeout, _ := strconv.Atoi(tapTimeoutStr)
+	if tapTimeout <= 0 {
+		tapTimeout = 15
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"trash_location":                  trash,
-		"inventory_location":              inv,
-		"spoolman_location_sync_enabled":  syncEnabled == "true",
+		"trash_location":                 trash,
+		"inventory_location":             inv,
+		"spoolman_location_sync_enabled": syncEnabled == "true",
+		"tap_timeout_seconds":            tapTimeout,
 	})
 }
 
@@ -3571,9 +3461,10 @@ func (ws *WebServer) nfcConfigHandler(c *gin.Context) {
 // POST /api/nfc/config
 func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
 	var body struct {
-		TrashLocation              string `json:"trash_location"`
-		InventoryLocation          string `json:"inventory_location"`
-		SpoolmanLocationSyncEnabled bool  `json:"spoolman_location_sync_enabled"`
+		TrashLocation               string `json:"trash_location"`
+		InventoryLocation           string `json:"inventory_location"`
+		SpoolmanLocationSyncEnabled bool   `json:"spoolman_location_sync_enabled"`
+		TapTimeoutSeconds           int    `json:"tap_timeout_seconds"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -3594,6 +3485,19 @@ func (ws *WebServer) nfcSaveConfigHandler(c *gin.Context) {
 	if err := ws.bridge.SetConfigValue(ConfigKeySpoolmanLocationSyncEnabled, syncVal); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	if body.TapTimeoutSeconds > 0 {
+		t := body.TapTimeoutSeconds
+		if t < 5 {
+			t = 5
+		}
+		if t > 120 {
+			t = 120
+		}
+		if err := ws.bridge.SetConfigValue(ConfigKeyNFCTapTimeoutSeconds, strconv.Itoa(t)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "NFC config saved"})
 }

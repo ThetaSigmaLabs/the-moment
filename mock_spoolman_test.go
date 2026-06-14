@@ -28,6 +28,14 @@ type SpoolRecord struct {
 	UsedWeight    float64 `json:"used_weight"`
 	InitialWeight float64 `json:"initial_weight"`
 	Location      string  `json:"location"`
+	// FilamentID is the filament bound to this spool. 0 means no filament (Filament=null in JSON).
+	FilamentID int `json:"filament_id"`
+}
+
+// FilamentIDUpdate records a PATCH call that set a spool's filament_id.
+type FilamentIDUpdate struct {
+	SpoolID    int
+	FilamentID int
 }
 
 // UsageUpdate records a single call The Moment made to update a spool.
@@ -46,11 +54,13 @@ type LocationUpdate struct {
 type MockSpoolman struct {
 	Server *httptest.Server
 
-	mu              sync.RWMutex
-	spools          map[int]*SpoolRecord
-	updates         []UsageUpdate    // All PATCH /api/v1/spool/:id calls with used_weight
-	locationUpdates []LocationUpdate // All PATCH /api/v1/spool/:id calls with location
-	offline         bool             // When true, all requests receive 503
+	mu               sync.RWMutex
+	spools           map[int]*SpoolRecord
+	nextSpoolID      int              // auto-increment for POST /api/v1/spool
+	updates          []UsageUpdate    // PATCH calls with used_weight
+	locationUpdates  []LocationUpdate // PATCH calls with location
+	filamentUpdates  []FilamentIDUpdate // PATCH calls with filament_id
+	offline          bool             // When true, all requests receive 503
 }
 
 // NewMockSpoolman creates and starts a fake Spoolman server pre-loaded with
@@ -59,16 +69,20 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 	t.Helper()
 
 	mock := &MockSpoolman{
-		spools:  make(map[int]*SpoolRecord),
-		updates: nil,
+		spools:      make(map[int]*SpoolRecord),
+		nextSpoolID: 1000,
 	}
 
-	// Pre-load spools
+	// Pre-load spools (default: filament id == spool id, matching existing mock behaviour).
 	for id, weight := range spoolInitialWeights {
 		mock.spools[id] = &SpoolRecord{
 			ID:            id,
 			UsedWeight:    0,
 			InitialWeight: weight,
+			FilamentID:    id, // existing tests expect filament to be present
+		}
+		if id >= mock.nextSpoolID {
+			mock.nextSpoolID = id + 1
 		}
 	}
 
@@ -80,12 +94,41 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 		fmt.Fprint(w, `{"version": "0.20.0"}`)
 	})
 
-	// GET /api/v1/spool — list all spools
+	// GET + POST /api/v1/spool — list all spools (GET) or create a new spool (POST).
 	mux.HandleFunc("/api/v1/spool", func(w http.ResponseWriter, r *http.Request) {
-		// Route PATCH /api/v1/spool/:id here since Go's mux is prefix-based
-		// Only handle the exact /api/v1/spool path for GET
 		if r.URL.Path != "/api/v1/spool" {
 			http.NotFound(w, r)
+			return
+		}
+
+		// POST /api/v1/spool — create spool (used by Stage 5 create_new conflict choice).
+		if r.Method == http.MethodPost {
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "invalid JSON", http.StatusBadRequest)
+				return
+			}
+			mock.mu.Lock()
+			newID := mock.nextSpoolID
+			mock.nextSpoolID++
+			filamentID := 0
+			if fid, ok := body["filament_id"].(float64); ok {
+				filamentID = int(fid)
+			}
+			mock.spools[newID] = &SpoolRecord{
+				ID:            newID,
+				InitialWeight: 1000,
+				FilamentID:    filamentID,
+			}
+			mock.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"id":               newID,
+				"used_weight":      0,
+				"remaining_weight": 1000,
+				"initial_weight":   1000,
+			})
 			return
 		}
 
@@ -95,22 +138,22 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 		var list []map[string]interface{}
 		for _, spool := range mock.spools {
 			remaining := spool.InitialWeight - spool.UsedWeight
-			list = append(list, map[string]interface{}{
+			entry := map[string]interface{}{
 				"id":               spool.ID,
 				"used_weight":      spool.UsedWeight,
 				"initial_weight":   spool.InitialWeight,
 				"remaining_weight": remaining,
 				"location":         spool.Location,
-				"filament": map[string]interface{}{
-					"id":       spool.ID,
-					"name":     fmt.Sprintf("Test PLA %d", spool.ID),
+			}
+			if spool.FilamentID > 0 {
+				entry["filament"] = map[string]interface{}{
+					"id":       spool.FilamentID,
+					"name":     fmt.Sprintf("Test PLA %d", spool.FilamentID),
 					"material": "PLA",
-					"vendor": map[string]interface{}{
-						"id":   1,
-						"name": "TestBrand",
-					},
-				},
-			})
+					"vendor":   map[string]interface{}{"id": 1, "name": "TestBrand"},
+				}
+			}
+			list = append(list, entry)
 		}
 		if list == nil {
 			list = []map[string]interface{}{}
@@ -147,22 +190,23 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 			}
 
 			remaining := spool.InitialWeight - spool.UsedWeight
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			resp := map[string]interface{}{
 				"id":               spool.ID,
 				"used_weight":      spool.UsedWeight,
 				"initial_weight":   spool.InitialWeight,
 				"remaining_weight": remaining,
-				"filament": map[string]interface{}{
-					"id":       spool.ID,
-					"name":     fmt.Sprintf("Test PLA %d", spool.ID),
+				"location":         spool.Location,
+			}
+			if spool.FilamentID > 0 {
+				resp["filament"] = map[string]interface{}{
+					"id":       spool.FilamentID,
+					"name":     fmt.Sprintf("Test PLA %d", spool.FilamentID),
 					"material": "PLA",
-					"vendor": map[string]interface{}{
-						"id":   1,
-						"name": "TestBrand",
-					},
-				},
-			})
+					"vendor":   map[string]interface{}{"id": 1, "name": "TestBrand"},
+				}
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
 
 		case http.MethodPatch:
 			var body map[string]interface{}
@@ -179,7 +223,7 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 				return
 			}
 
-			// Record weight update
+			// Record weight update.
 			if usedWeight, ok := body["used_weight"].(float64); ok {
 				spool.UsedWeight = usedWeight
 				mock.updates = append(mock.updates, UsageUpdate{
@@ -188,12 +232,21 @@ func NewMockSpoolman(t *testing.T, spoolInitialWeights map[int]float64) *MockSpo
 				})
 			}
 
-			// Record and persist location update
+			// Record and persist location update.
 			if loc, ok := body["location"].(string); ok {
 				spool.Location = loc
 				mock.locationUpdates = append(mock.locationUpdates, LocationUpdate{
 					SpoolID:      spoolID,
 					LocationName: loc,
+				})
+			}
+
+			// Record and persist filament_id update.
+			if fid, ok := body["filament_id"].(float64); ok {
+				spool.FilamentID = int(fid)
+				mock.filamentUpdates = append(mock.filamentUpdates, FilamentIDUpdate{
+					SpoolID:    spoolID,
+					FilamentID: int(fid),
 				})
 			}
 
@@ -332,5 +385,25 @@ func (m *MockSpoolman) SetSpoolLocation(spoolID int, location string) {
 	defer m.mu.Unlock()
 	if spool, ok := m.spools[spoolID]; ok {
 		spool.Location = location
+	}
+}
+
+// FilamentIDUpdates returns a copy of all filament_id updates received so far.
+func (m *MockSpoolman) FilamentIDUpdates() []FilamentIDUpdate {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	result := make([]FilamentIDUpdate, len(m.filamentUpdates))
+	copy(result, m.filamentUpdates)
+	return result
+}
+
+// AddSpool adds a custom SpoolRecord to the mock, letting tests configure a spool
+// with no filament (FilamentID=0) or a specific filament ID.
+func (m *MockSpoolman) AddSpool(s SpoolRecord) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.spools[s.ID] = &s
+	if s.ID >= m.nextSpoolID {
+		m.nextSpoolID = s.ID + 1
 	}
 }

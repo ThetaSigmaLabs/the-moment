@@ -1,0 +1,344 @@
+<!-- NFCs Tab — tag inventory (Spool / Location / Filament).
+     Stage 2: Filament sub-tab active. Spool/Location activate in Stages 3/4.
+     Binding lives in nfc_tags; Spoolman remains source of truth for data. -->
+<div id="nfcs-tab" class="tab-content">
+
+    <div class="config-section">
+        <p class="help-text">
+            Inventory of NFC tags. Each tag is a reusable handle that binds to a Spoolman
+            spool, location, or filament — Spoolman remains the source of truth for the data.
+            Tags carry a <code>/tag/{id}</code> URL you write once externally; re-binding a tag
+            never requires re-writing it.
+        </p>
+
+        <style>
+            .nfcs-subtabs { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1px solid var(--surface-border); }
+            .nfcs-subtab { background: none; border: none; padding: 10px 16px; cursor: pointer; color: var(--text-secondary); font-size: 0.95em; border-bottom: 2px solid transparent; }
+            .nfcs-subtab.active { color: var(--brand-light); border-bottom-color: var(--brand-light); font-weight: 600; }
+            .nfcs-toolbar { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
+            .nfcs-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+            .nfcs-table th { text-align: left; padding: 8px; border-bottom: 1px solid var(--surface-border); color: var(--text-secondary); font-size: 0.85em; }
+            .nfcs-table td { padding: 8px; border-bottom: 1px solid var(--surface-border); font-size: 0.9em; vertical-align: middle; }
+            .nfcs-tagid { font-family: monospace; font-size: 0.8em; color: var(--text-secondary); }
+            .nfcs-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: middle; margin-right: 6px; border: 1px solid rgba(0,0,0,0.2); }
+            .nfcs-empty { padding: 24px 8px; text-align: center; color: var(--text-secondary); }
+            .nfcs-rowbtn { padding: 3px 8px; font-size: 0.82em; border: none; border-radius: 4px; cursor: pointer; margin-right: 4px; }
+            .nfcs-overlay { display: none; position: fixed; inset: 0; z-index: 1100; background: rgba(0,0,0,0.7); align-items: center; justify-content: center; padding: 16px; }
+            .nfcs-modal { background: var(--surface, #1f2430); color: var(--text, #e6e6e6); border-radius: 10px; padding: 20px; max-width: 460px; width: 100%; max-height: 90vh; overflow:auto; }
+            .nfcs-modal label { display: block; font-size: 0.82em; color: var(--text-secondary); margin: 10px 0 3px; }
+            .nfcs-modal input, .nfcs-modal select { width: 100%; padding: 7px; box-sizing: border-box; }
+            .nfcs-qr { display:block; margin: 12px auto; width: 220px; height: 220px; background:#fff; padding:6px; border-radius:6px; }
+            .nfcs-url { font-family: monospace; font-size: 0.82em; word-break: break-all; background: rgba(0,0,0,0.25); padding: 8px; border-radius: 6px; }
+            .nfcs-row-clickable { cursor: pointer; }
+            .nfcs-row-clickable:hover { background: rgba(255,255,255,0.04); }
+            .nfcs-picker { max-height: 230px; overflow-y: auto; border: 1px solid var(--surface-border); border-radius: 6px; margin-top: 4px; }
+            .nfcs-pick { padding: 7px 9px; cursor: pointer; border-bottom: 1px solid var(--surface-border); font-size: 0.88em; display: flex; align-items: center; gap: 8px; }
+            .nfcs-pick:last-child { border-bottom: none; }
+            .nfcs-pick:hover { background: rgba(255,255,255,0.06); }
+            .nfcs-pick.selected { background: rgba(124,58,237,0.28); }
+        </style>
+
+        <div class="nfcs-subtabs">
+            <button class="nfcs-subtab active" onclick="switchNfcsSubTab('spool', this)">🧵 Spool</button>
+            <button class="nfcs-subtab" onclick="switchNfcsSubTab('location', this)">📍 Location</button>
+            <button class="nfcs-subtab" onclick="switchNfcsSubTab('filament', this)">🧪 Filament</button>
+        </div>
+
+        <div id="nfcs-subtab-spool" class="nfcs-subtab-content">
+            <div class="nfcs-toolbar">
+                <input type="text" id="nfcs-spool-search" class="nfc-search-input" placeholder="Search spool tags..." oninput="nfcsFilterTable('spool')">
+                <button class="btn btn-small" onclick="nfcsOpenAddSpool()">➕ Add Spool NFC</button>
+                <button class="btn btn-small btn-danger" onclick="nfcsDeleteSelected('spool')">🗑️ Delete selected</button>
+                <label style="font-size:0.85em;color:var(--text-secondary);"><input type="checkbox" id="nfcs-spool-unbound-only" onchange="nfcsRenderKind('spool')"> Unbound only</label>
+            </div>
+            <table class="nfcs-table">
+                <thead><tr>
+                    <th><input type="checkbox" onclick="nfcsToggleAll('spool', this.checked)"></th>
+                    <th data-sort="tag_id" onclick="nfcsSortTable('spool','tag_id')" style="cursor:pointer;">Tag ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="label" onclick="nfcsSortTable('spool','label')" style="cursor:pointer;">Label<span class="nfcs-sort-arrow"> ▲</span></th>
+                    <th data-sort="spoolman_id" onclick="nfcsSortTable('spool','spoolman_id')" style="cursor:pointer;">Spoolman ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="bound" onclick="nfcsSortTable('spool','bound')" style="cursor:pointer;">Bound spool<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="status" onclick="nfcsSortTable('spool','status')" style="cursor:pointer;">Status<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th>Actions</th>
+                </tr></thead>
+                <tbody id="nfcs-spool-rows"></tbody>
+            </table>
+            <p class="nfcs-empty" id="nfcs-spool-empty">No spool tags yet.</p>
+        </div>
+
+        <div id="nfcs-subtab-location" class="nfcs-subtab-content" style="display:none;">
+            <div class="nfcs-toolbar">
+                <input type="text" id="nfcs-location-search" class="nfc-search-input" placeholder="Search location tags..." oninput="nfcsFilterTable('location')">
+                <button class="btn btn-small" onclick="nfcsOpenAddLocation()">➕ Add Location NFC</button>
+                <button class="btn btn-small btn-danger" onclick="nfcsDeleteSelected('location')">🗑️ Delete selected</button>
+            </div>
+            <table class="nfcs-table">
+                <thead><tr>
+                    <th><input type="checkbox" onclick="nfcsToggleAll('location', this.checked)"></th>
+                    <th data-sort="tag_id" onclick="nfcsSortTable('location','tag_id')" style="cursor:pointer;">Tag ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="label" onclick="nfcsSortTable('location','label')" style="cursor:pointer;">Label<span class="nfcs-sort-arrow"> ▲</span></th>
+                    <th data-sort="kind" onclick="nfcsSortTable('location','kind')" style="cursor:pointer;">Kind<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th>Actions</th>
+                </tr></thead>
+                <tbody id="nfcs-location-rows"></tbody>
+            </table>
+            <p class="nfcs-empty" id="nfcs-location-empty">No location tags yet.</p>
+        </div>
+
+        <div id="nfcs-subtab-filament" class="nfcs-subtab-content" style="display:none;">
+            <div class="nfcs-toolbar">
+                <input type="text" id="nfcs-filament-search" class="nfc-search-input" placeholder="Search filament tags..." oninput="nfcsFilterTable('filament')">
+                <button class="btn btn-small" onclick="nfcsOpenAddFilament()">➕ Add Filament NFC</button>
+                <button class="btn btn-small btn-danger" onclick="nfcsDeleteSelected('filament')">🗑️ Delete selected</button>
+            </div>
+            <table class="nfcs-table">
+                <thead><tr>
+                    <th><input type="checkbox" onclick="nfcsToggleAll('filament', this.checked)"></th>
+                    <th data-sort="tag_id" onclick="nfcsSortTable('filament','tag_id')" style="cursor:pointer;">Tag ID<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th data-sort="label" onclick="nfcsSortTable('filament','label')" style="cursor:pointer;">Label<span class="nfcs-sort-arrow"> ▲</span></th>
+                    <th data-sort="bound" onclick="nfcsSortTable('filament','bound')" style="cursor:pointer;">Bound filament<span class="nfcs-sort-arrow"> ↕</span></th>
+                    <th>Actions</th>
+                </tr></thead>
+                <tbody id="nfcs-filament-rows"></tbody>
+            </table>
+            <p class="nfcs-empty" id="nfcs-filament-empty">No filament tags yet.</p>
+        </div>
+    </div>
+
+    <!-- Add Filament NFC modal -->
+    <div id="nfcs-add-filament-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;">➕ Add Filament NFC</h3>
+            <div style="display:flex;gap:6px;margin-bottom:6px;">
+                <button class="nfcs-subtab active" id="nfcs-mode-link" onclick="nfcsSetAddMode('link')">Link existing</button>
+                <button class="nfcs-subtab" id="nfcs-mode-author" onclick="nfcsSetAddMode('author')">Author new</button>
+                <button class="nfcs-subtab" id="nfcs-mode-unbound" onclick="nfcsSetAddMode('unbound')">Add unbound</button>
+            </div>
+
+            <label>Label (optional nickname)</label>
+            <input type="text" id="nfcs-fil-label" placeholder="e.g. Black PLA reel #3">
+
+            <div id="nfcs-add-link-section">
+                <label>Find a Spoolman filament</label>
+                <input type="text" id="nfcs-fil-search" placeholder='Search — e.g. black  ·  PLA black  ·  "PLA Black"' autocomplete="off" oninput="nfcsFilterFilamentPicker()">
+                <div id="nfcs-fil-options" class="nfcs-picker"></div>
+                <input type="hidden" id="nfcs-fil-link-select" value="">
+                <div id="nfcs-fil-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+            </div>
+
+            <div id="nfcs-add-unbound-section" style="display:none;">
+                <p class="help-text">Creates a Filament NFC with no binding yet — for a filament type
+                    that may not exist in Spoolman yet. Bind it later by authoring/looking it up, or
+                    via tap-to-bind (Stage 5).</p>
+            </div>
+
+            <div id="nfcs-add-author-section" style="display:none;">
+                <label>Manufacturer</label><input type="text" id="nfcs-fil-manufacturer" placeholder="e.g. Polymaker">
+                <label>Material</label><input type="text" id="nfcs-fil-material" placeholder="e.g. PLA">
+                <label>Color name</label><input type="text" id="nfcs-fil-colorname" placeholder="e.g. Black">
+                <label>Color hex</label><input type="text" id="nfcs-fil-colorhex" placeholder="#101010">
+                <label>Diameter (mm)</label><input type="number" step="0.01" id="nfcs-fil-diameter" placeholder="1.75">
+                <label>Density (g/cm³)</label><input type="number" step="0.01" id="nfcs-fil-density" placeholder="1.24">
+                <label>Default weight (g)</label><input type="number" step="1" id="nfcs-fil-weight" placeholder="1000">
+                <label>Default price</label><input type="number" step="0.01" id="nfcs-fil-price" placeholder="25.00">
+            </div>
+
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn" style="flex:1;" onclick="nfcsSubmitAddFilament()">Create</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-add-filament-overlay')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Spool NFC modal -->
+    <div id="nfcs-add-spool-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;">➕ Add Spool NFC</h3>
+            <div style="display:flex;gap:6px;margin-bottom:6px;">
+                <button class="nfcs-subtab active" id="nfcs-spmode-link" onclick="nfcsSetSpoolAddMode('link')">Link existing spool</button>
+                <button class="nfcs-subtab" id="nfcs-spmode-unbound" onclick="nfcsSetSpoolAddMode('unbound')">Add unbound</button>
+            </div>
+
+            <label>Label (optional nickname)</label>
+            <input type="text" id="nfcs-sp-label" placeholder="e.g. Red PLA reel #2">
+
+            <div id="nfcs-spool-link-section">
+                <label>Find a Spoolman spool</label>
+                <input type="text" id="nfcs-sp-search" placeholder='Search — e.g. white  ·  PLA white  ·  "PLA White"' autocomplete="off" oninput="nfcsFilterSpoolPicker()">
+                <div id="nfcs-sp-options" class="nfcs-picker"></div>
+                <input type="hidden" id="nfcs-sp-link-select" value="">
+                <div id="nfcs-sp-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+            </div>
+            <div id="nfcs-spool-unbound-note" style="display:none;">
+                <p class="help-text">Creates a Spool NFC with no binding yet. Bind it later by tapping a
+                    filament tag → "Create new spool", or via tap-to-bind (Stage 5).</p>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn" style="flex:1;" onclick="nfcsSubmitAddSpool()">Create</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-add-spool-overlay')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Location NFC modal -->
+    <div id="nfcs-add-location-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;">➕ Add Location NFC</h3>
+            <label>Kind</label>
+            <select id="nfcs-loc-kind" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocationKindChange()">
+                <option value="toolhead">🖨️ Toolhead (printer toolhead)</option>
+                <option value="inventory">📦 Inventory (storage location)</option>
+                <option value="archive">🗄️ Archive (long-term storage)</option>
+                <option value="trash">🗑️ Trash (empty / discarded)</option>
+            </select>
+
+            <div id="nfcs-loc-toolhead-section" style="margin-top:8px;">
+                <label>Printer</label>
+                <select id="nfcs-loc-printer" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocationPrinterChange()">
+                    <option value="">Loading printers…</option>
+                </select>
+                <label>Toolhead index</label>
+                <select id="nfcs-loc-toolhead-idx" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocationToolheadChange()">
+                    <option value="0">T0</option>
+                </select>
+                <p class="help-text" style="margin-top:6px;">Label auto-filled from selection; override below if needed.</p>
+            </div>
+
+            <label>Label (optional)</label>
+            <input type="text" id="nfcs-loc-label" placeholder="e.g. Core One L - T0  or  Drybox Shelf A">
+
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn" style="flex:1;" onclick="nfcsSubmitAddLocation()">Create</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-add-location-overlay')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit tag modal — inline label editing, save-on-blur, rebind section -->
+    <div id="nfcs-edit-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;" id="nfcs-edit-title">Edit tag</h3>
+            <div class="nfcs-tagid" id="nfcs-edit-tagid" style="margin-bottom:12px;"></div>
+            <label>Label (nickname) — saves when you click away</label>
+            <input type="text" id="nfcs-edit-label" placeholder="e.g. Black PLA reel #3"
+                   onblur="nfcsEditLabelSave()"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}else if(event.key==='Escape'){this.value=nfcsEditState.orig;this.blur();}">
+            <div id="nfcs-edit-savestate" style="font-size:0.78em;min-height:1.1em;margin-top:4px;"></div>
+
+            <!-- Location tag tabs — only shown for location tags -->
+            <div id="nfcs-loc-tabs" style="display:none;margin-top:14px;border-top:1px solid var(--surface-border);padding-top:12px;">
+                <div style="display:flex;gap:4px;margin-bottom:8px;">
+                    <button id="nfcs-loc-tab-det-btn" class="nfcs-subtab active" style="flex:1;" onclick="nfcsLocShowTab('details')">📝 Details</button>
+                    <button id="nfcs-loc-tab-sp-btn" class="nfcs-subtab" style="flex:1;" onclick="nfcsLocShowTab('spools')">📦 Spools here</button>
+                </div>
+
+                <!-- Details tab -->
+                <div id="nfcs-loc-tab-details">
+                    <!-- Summary (default view) -->
+                    <div id="nfcs-loc-summary">
+                        <div style="display:flex;align-items:center;justify-content:space-between;">
+                            <div id="nfcs-loc-summary-text" style="font-size:0.88em;color:var(--text-secondary);"></div>
+                            <button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="nfcsLocChangeToggle()">Change…</button>
+                        </div>
+                    </div>
+                    <!-- Change form (revealed by Change button) -->
+                    <div id="nfcs-loc-change-form" style="display:none;margin-top:8px;">
+                        <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Kind</label>
+                        <select id="nfcs-edit-loc-kind" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocChangeFormKindChange()">
+                            <option value="toolhead">🖨️ Toolhead</option>
+                            <option value="inventory">📦 Inventory</option>
+                            <option value="archive">🗄️ Archive</option>
+                            <option value="trash">🗑️ Trash</option>
+                        </select>
+                        <div id="nfcs-edit-loc-toolhead-section" style="display:none;margin-top:8px;">
+                            <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-bottom:4px;">Printer</label>
+                            <select id="nfcs-edit-loc-printer" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsPrinterChange()">
+                                <option value="">Loading…</option>
+                            </select>
+                            <label style="display:block;font-size:0.82em;color:var(--text-secondary);margin-top:8px;margin-bottom:4px;">Toolhead</label>
+                            <select id="nfcs-edit-loc-toolhead-idx" style="width:100%;padding:7px;box-sizing:border-box;" onchange="nfcsLocDetailsToolheadChange()">
+                                <option value="0">T0</option>
+                            </select>
+                            <p class="help-text" style="margin-top:4px;font-size:0.78em;">Selection auto-fills the label above.</p>
+                        </div>
+                        <div id="nfcs-edit-loc-kind-state" style="font-size:0.78em;min-height:1.1em;margin-top:6px;"></div>
+                        <div style="display:flex;gap:8px;margin-top:10px;">
+                            <button class="btn" style="flex:1;" onclick="nfcsLocChangeSave()">Save</button>
+                            <button class="btn btn-secondary" style="flex:1;" onclick="nfcsLocChangeToggle()">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Spools tab -->
+                <div id="nfcs-loc-tab-spools" style="display:none;">
+                    <div id="nfcs-loc-spools-content" style="padding:4px 0;"></div>
+                </div>
+            </div>
+
+            <!-- Binding section — hidden for location tags -->
+            <div id="nfcs-rebind-section" style="margin-top:14px;border-top:1px solid var(--surface-border);padding-top:12px;">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+                    <span style="font-size:0.82em;color:var(--text-secondary);">Binding</span>
+                    <div>
+                        <button class="nfcs-rowbtn" style="background:#7c3aed;color:#fff;" onclick="nfcsRebindToggle()">Change…</button>
+                        <button class="nfcs-rowbtn" style="background:#6b7280;color:#fff;" id="nfcs-rebind-unbind-btn" onclick="nfcsRebindUnbind()">Unbind</button>
+                    </div>
+                </div>
+                <div id="nfcs-rebind-current" style="font-size:0.88em;color:var(--text-secondary);margin-bottom:6px;"></div>
+
+                <!-- Spool picker (shown when editing a spool tag) -->
+                <div id="nfcs-rebind-spool-picker" style="display:none;">
+                    <input type="text" id="nfcs-rebind-sp-search" placeholder='Search spools…' autocomplete="off" oninput="nfcsRenderRebindSpoolPicker(this.value)" style="margin-bottom:4px;">
+                    <div id="nfcs-rebind-sp-options" class="nfcs-picker"></div>
+                    <input type="hidden" id="nfcs-rebind-sp-select" value="">
+                    <div id="nfcs-rebind-sp-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+                    <button class="btn" style="margin-top:8px;width:100%;" onclick="nfcsRebindSave()">Save binding</button>
+                </div>
+
+                <!-- Filament picker (shown when editing a filament tag) -->
+                <div id="nfcs-rebind-filament-picker" style="display:none;">
+                    <input type="text" id="nfcs-rebind-fil-search" placeholder='Search filaments…' autocomplete="off" oninput="nfcsRenderRebindFilamentPicker(this.value)" style="margin-bottom:4px;">
+                    <div id="nfcs-rebind-fil-options" class="nfcs-picker"></div>
+                    <input type="hidden" id="nfcs-rebind-fil-select" value="">
+                    <div id="nfcs-rebind-fil-selected" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+                    <button class="btn" style="margin-top:8px;width:100%;" onclick="nfcsRebindSave()">Save binding</button>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn" style="flex:1;" onclick="nfcsEditWrite()">🏷️ Write</button>
+                <button class="btn btn-danger" style="flex:1;" onclick="nfcsEditDelete()">Delete</button>
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsCloseModal('nfcs-edit-overlay')">Done</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Write to NFC modal -->
+    <div id="nfcs-payload-overlay" class="nfcs-overlay">
+        <div class="nfcs-modal">
+            <h3 style="margin-top:0;">🏷️ Write to NFC</h3>
+            <div id="nfcs-payload-subject" style="font-size:1em;font-weight:600;color:var(--text-primary);text-align:center;margin-bottom:6px;min-height:1.2em;"></div>
+            <p id="nfcs-payload-note" class="help-text"></p>
+            <img id="nfcs-payload-qr" class="nfcs-qr" src="" alt="QR code">
+            <div id="nfcs-payload-url" class="nfcs-url"></div>
+            <div style="display:flex;gap:8px;margin-top:16px;">
+                <button class="btn btn-secondary" style="flex:1;" onclick="nfcsRedoPayload()" title="Refresh the payload to re-write a failed or replacement tag (same tag ID)">↻ Redo / replace</button>
+                <button class="btn" style="flex:1;" onclick="nfcsCloseModal('nfcs-payload-overlay')">Done</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Local sub-tab toggle for the NFCs tab. Scoped to #nfcs-tab; calls into
+    // nfc_management.js (nfcsOnSubTabShown) to lazy-load data when a sub-tab opens.
+    function switchNfcsSubTab(name, el) {
+        ['spool', 'location', 'filament'].forEach(function (n) {
+            var pane = document.getElementById('nfcs-subtab-' + n);
+            if (pane) pane.style.display = (n === name) ? '' : 'none';
+        });
+        document.querySelectorAll('#nfcs-tab .nfcs-subtabs > .nfcs-subtab').forEach(function (b) { b.classList.remove('active'); });
+        if (el) el.classList.add('active');
+        if (typeof window.nfcsOnSubTabShown === 'function') window.nfcsOnSubTabShown(name);
+    }
+</script>

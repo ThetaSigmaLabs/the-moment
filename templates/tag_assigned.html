@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>The Moment — Done</title>
+    <style>
+        body { font-family: -apple-system, system-ui, sans-serif; background: #11151c; color: #e6e6e6; margin: 0; padding: 18px; }
+        .card { max-width: 460px; margin: 0 auto; background: #1b212c; border-radius: 14px; padding: 28px; text-align: center; }
+        .ok { font-size: 64px; margin-bottom: 12px; }
+        h1 { font-size: 1.5em; margin: 4px 0 16px; color: #4ade80; }
+        .detail { color: #9aa4b2; margin: 5px 0; font-size: 0.95em; }
+        .detail strong { color: #e6e6e6; }
+        .btn { display: inline-block; padding: 12px 22px; margin-top: 18px; border: none; border-radius: 9px; font-size: 1em; cursor: pointer; text-decoration: none; }
+        .btn-primary { background: #7c3aed; color: #fff; }
+        .btn-secondary { background: #2c3442; color: #e6e6e6; }
+        .gap { display: inline-block; width: 10px; }
+        .closing { color: #6b7280; font-size: 0.82em; margin-top: 16px; text-align: center; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="ok">✅</div>
+
+    {{if eq .Kind "location_spool"}}
+        <h1>Assigned!</h1>
+        <p class="detail"><strong>{{if .SpoolName}}{{.SpoolName}}{{else}}Spool #{{.SpoolID}}{{end}}</strong></p>
+        <p class="detail">→ {{.PrinterName}} T{{.ToolheadIdx}}</p>
+        {{if .SpoolID}}<a class="btn btn-primary" href="{{.SpoolmanURL}}/spool/show/{{.SpoolID}}" target="_blank" rel="noopener">View spool</a>{{end}}
+        <span class="gap"></span>
+        <a class="btn btn-secondary" href="/">Dashboard</a>
+
+    {{else if eq .Kind "location_storage"}}
+        <h1>Moved!</h1>
+        <p class="detail"><strong>{{if .SpoolName}}{{.SpoolName}}{{else}}Spool #{{.SpoolID}}{{end}}</strong></p>
+        <p class="detail">→ {{.PrinterName}}</p>
+        {{if .SpoolID}}<a class="btn btn-primary" href="{{.SpoolmanURL}}/spool/show/{{.SpoolID}}" target="_blank" rel="noopener">View spool</a>{{end}}
+        <span class="gap"></span>
+        <a class="btn btn-secondary" href="/">Dashboard</a>
+
+    {{else if eq .Kind "spool_filament"}}
+        <h1>Linked!</h1>
+        {{if .Message}}<p class="detail">{{.Message}}</p>{{end}}
+        {{if .SpoolName}}<p class="detail"><strong>{{.SpoolName}}</strong></p>{{end}}
+        {{if .FilamentName}}<p class="detail">Filament: {{.FilamentName}}</p>{{end}}
+        {{if .SpoolID}}<a class="btn btn-primary" href="{{.SpoolmanURL}}/spool/show/{{.SpoolID}}" target="_blank" rel="noopener">View spool</a>{{end}}
+        <span class="gap"></span>
+        <a class="btn btn-secondary" href="/">Dashboard</a>
+
+    {{else}}
+        <h1>Done!</h1>
+        {{if .Message}}<p class="detail">{{.Message}}</p>{{end}}
+        <a class="btn btn-secondary" href="/">Dashboard</a>
+    {{end}}
+    <p class="closing" id="closing-msg">Closing in 3…</p>
+</div>
+<script>
+(function () {
+    var n = 3;
+    var el = document.getElementById('closing-msg');
+    function tick() {
+        if (n <= 0) { window.close(); return; }
+        if (el) el.textContent = 'Closing in ' + n + '…';
+        n--;
+        setTimeout(tick, 1000);
+    }
+    setTimeout(tick, 500);
+}());
+</script>
+</body>
+</html>
