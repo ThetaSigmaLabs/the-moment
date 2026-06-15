@@ -6,4 +6,4 @@ package main
 
 // AppVersion is the single source of truth for The Moment's version.
 // Bump this value when releasing; all other references (API, UI, ping) pick it up automatically.
-const AppVersion = "1.0.0"
+const AppVersion = "1.1.0"

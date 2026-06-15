@@ -225,6 +225,19 @@ Looking for ideas? Here are some areas that need help:
 
 By contributing to The Moment, you agree that your contributions will be licensed under the GNU General Public License v3.0.
 
+## Known Test Coverage Gaps
+
+The following subsystems are validated in production but lack automated HTTP-level tests:
+
+- Backup/restore (`/api/backup/*`)
+- Virtual printer file processing (`/api/printers/:id/files/*`)
+- Mobile NFC assignment flow (`/nfc/spool/*`, `/nfc/location/*`)
+- WebSocket live updates
+- Print history batch operations
+- OctoPrint plugin ping
+
+Contributions adding test coverage for any of these are welcome.
+
 ## Questions?
 
 If you have questions about contributing:

@@ -4,6 +4,7 @@
     <div class="settings-tabs">
         <button class="settings-tab active" onclick="switchSettingsTab('basic-config', this)">🔧 Basic Configuration</button>
         <button class="settings-tab" onclick="switchSettingsTab('cost', this)">💰 Cost Settings</button>
+        <button class="settings-tab" onclick="switchSettingsTab('openprinttag', this)">🏷️ Open Print Tag</button>
         <button class="settings-tab" onclick="switchSettingsTab('advanced', this)">⚙️ Advanced Settings</button>
         <button class="settings-tab" onclick="switchSettingsTab('about', this)">ℹ️ About</button>
     </div>
@@ -122,6 +123,48 @@
         </div>
     </div>
 
+    <!-- Open Print Tag Tab -->
+    <div id="openprinttag-tab" class="settings-tab-content">
+        <div class="config-section">
+            <h3 style="margin-top:0;">OpenPrintTag Data Sources</h3>
+            <p class="help-text">
+                These sources are searched when you use the <strong>OpenPrintTag</strong> tab in the
+                Add Filament NFC dialog. Each URL must match a supported adapter type.
+            </p>
+
+            <div id="opt-sources-list">
+                <p style="color:var(--text-secondary);">Loading…</p>
+            </div>
+
+            <h4 style="margin-top:24px;margin-bottom:8px;">Add source</h4>
+            <div style="display:grid;grid-template-columns:1fr 2fr 1fr auto;gap:8px;align-items:end;">
+                <div>
+                    <label>Name</label>
+                    <input type="text" id="opt-add-name" placeholder="e.g. My OFD Instance">
+                </div>
+                <div>
+                    <label>URL</label>
+                    <input type="text" id="opt-add-url" placeholder="https://api.openfilamentdatabase.org">
+                </div>
+                <div>
+                    <label>Type</label>
+                    <select id="opt-add-type">
+                        <option value="ofd_api">ofd_api — Open Filament Database</option>
+                        <option value="filament_db_api">filament_db_api — filament-db REST API</option>
+                    </select>
+                </div>
+                <div>
+                    <label>&nbsp;</label>
+                    <button class="btn" onclick="optAddSource()">Add</button>
+                </div>
+            </div>
+
+            <div style="margin-top:16px;">
+                <button class="btn btn-secondary" onclick="optResetDefaults()">Reset to defaults</button>
+            </div>
+        </div>
+    </div>
+
     <!-- About Tab -->
     <div id="about-tab" class="settings-tab-content">
 
@@ -143,7 +186,7 @@
                 <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
                     <div style="font-size:1.3em;margin-bottom:8px;">🖨️</div>
                     <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Multi-Printer Support</div>
-                    <div style="font-size:0.82em;color:#999;line-height:1.5;">OctoPrint, PrusaLink, and Bambu MQTT. Monitors all printers concurrently and detects print start and finish automatically.</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">OctoPrint and PrusaLink. Monitors all printers concurrently and detects print start and finish automatically.</div>
                 </div>
                 <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
                     <div style="font-size:1.3em;margin-bottom:8px;">🧵</div>
@@ -179,7 +222,6 @@
             <div style="display:flex;flex-wrap:wrap;gap:10px;">
                 <span style="background:rgba(40,167,69,0.15);border:1px solid rgba(40,167,69,0.35);color:#6ee7a0;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">OctoPrint</span>
                 <span style="background:rgba(40,167,69,0.15);border:1px solid rgba(40,167,69,0.35);color:#6ee7a0;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">PrusaLink</span>
-                <span style="background:rgba(102,126,234,0.15);border:1px solid rgba(102,126,234,0.35);color:#a0b4f8;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">Bambu (MQTT)</span>
                 <span style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:#888;border-radius:6px;padding:6px 14px;font-size:0.87em;font-weight:600;">Virtual / Test</span>
             </div>
         </div>
@@ -351,6 +393,11 @@
             <div id="restorePendingBanner" style="display:none; background:var(--warning-bg,#fff3cd); border:1px solid var(--warning-border,#ffc107); border-radius:6px; padding:12px 16px; margin-bottom:16px; color:var(--text-primary);">
                 ⚠️ <strong>Restart required.</strong> A restore completed successfully. Restart the service to load the restored data:
                 <br><code>Docker: make down &amp;&amp; make up</code> &nbsp;|&nbsp; <code>Native: stop and restart the binary</code>
+            </div>
+
+            <!-- Disk space indicator -->
+            <div style="margin-bottom: 16px; font-size:0.85em; color:var(--text-secondary);">
+                💽 Disk space: <span id="backupDiskSpaceInfo" style="color:var(--text-primary);"></span>
             </div>
 
             <!-- Create backup -->

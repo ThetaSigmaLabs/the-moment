@@ -214,6 +214,7 @@ func (ws *WebServer) setupRoutes() {
 
 		// Backup management
 		api.GET("/backup", ws.listBackupsHandler)
+		api.GET("/backup/disk-space", ws.backupDiskSpaceHandler)
 		api.POST("/backup/create", ws.createBackupHandler)
 		api.POST("/backup/upload", ws.uploadBackupHandler)
 		api.GET("/backup/:filename/download", ws.downloadBackupHandler)
@@ -317,6 +318,19 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/locations", ws.createLocationHandler)
 		api.PUT("/locations/:name", ws.updateLocationHandler)
 		api.DELETE("/locations/:name", ws.deleteLocationHandler)
+
+		// OpenPrintTag source registry (Settings → Open Print Tag tab)
+		api.GET("/openprinttag/sources", ws.optSourcesListHandler)
+		api.POST("/openprinttag/sources", ws.optSourcesCreateHandler)
+		api.PUT("/openprinttag/sources/:id", ws.optSourcesUpdateHandler)
+		api.DELETE("/openprinttag/sources/:id", ws.optSourcesDeleteHandler)
+		api.POST("/openprinttag/sources/reset-defaults", ws.optSourcesResetHandler)
+		api.POST("/openprinttag/sources/:id/test", ws.optSourcesTestHandler)
+		api.GET("/openprinttag/search", ws.optSearchHandler)
+		api.GET("/openprinttag/variants", ws.optVariantsHandler)
+
+		// Create NFC filament tag from OpenPrintTag external source
+		api.POST("/nfc/openprinttag-tag", ws.nfcOPTTagCreateHandler)
 	}
 
 	// WebSocket endpoint
@@ -3600,6 +3614,10 @@ func (ws *WebServer) uploadPrintGcodeHandler(c *gin.Context) {
 		return
 	}
 	defer file.Close()
+	if header.Size > 100<<20 {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file too large (max 100 MiB)"})
+		return
+	}
 	content, err := io.ReadAll(file)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read file"})
@@ -3673,7 +3691,7 @@ func (ws *WebServer) downloadPrintAttachmentHandler(c *gin.Context) {
 		return
 	}
 	absPath := ws.bridge.gcodePath() + "/" + a.FilePath
-	c.Header("Content-Disposition", "attachment; filename=\""+a.Filename+"\"")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(a.Filename)))
 	c.File(absPath)
 }
 
@@ -4001,7 +4019,9 @@ func (ws *WebServer) createBackupHandler(c *gin.Context) {
 
 // POST /api/backup/upload   multipart field: "file"
 func (ws *WebServer) uploadBackupHandler(c *gin.Context) {
-	if err := c.Request.ParseMultipartForm(2 << 30); err != nil { // 2 GiB max
+	// Limit in-memory buffering to 32 MiB; spill to temp files beyond that.
+	// The old 2 GiB limit could OOM on the Odroid N2+.
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse upload"})
 		return
 	}
@@ -4023,6 +4043,20 @@ func (ws *WebServer) uploadBackupHandler(c *gin.Context) {
 		return
 	}
 
+	// Guard against filling the filesystem: require 3× the archive size free
+	// (archive on disk + extracted content + headroom).
+	if availBytes, err := availableDiskSpace(backupDir); err == nil {
+		estimatedBytes := uint64(header.Size) * 3
+		if estimatedBytes > uint64(availBytes) {
+			c.JSON(http.StatusInsufficientStorage, gin.H{
+				"error":           "insufficient disk space",
+				"available_bytes": availBytes,
+				"estimated_bytes": int64(estimatedBytes),
+			})
+			return
+		}
+	}
+
 	destPath := filepath.Join(backupDir, filepath.Base(header.Filename))
 	out, err := os.Create(destPath)
 	if err != nil {
@@ -4038,6 +4072,29 @@ func (ws *WebServer) uploadBackupHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"filename": header.Filename})
 }
 
+// GET /api/backup/disk-space
+func (ws *WebServer) backupDiskSpaceHandler(c *gin.Context) {
+	dir := getBackupDir()
+	// If the backup dir doesn't exist yet, stat its parent so we still get a useful answer.
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		dir = filepath.Dir(dir)
+	}
+	available, err := availableDiskSpace(dir)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	total, err := totalDiskSpace(dir)
+	if err != nil {
+		// total is best-effort; don't fail the whole call
+		total = -1
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"available_bytes": available,
+		"total_bytes":     total,
+	})
+}
+
 // GET /api/backup/:filename/download
 func (ws *WebServer) downloadBackupHandler(c *gin.Context) {
 	filename := c.Param("filename")
@@ -4050,7 +4107,7 @@ func (ws *WebServer) downloadBackupHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "backup not found"})
 		return
 	}
-	c.Header("Content-Disposition", "attachment; filename="+filepath.Base(filename))
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(filename)))
 	c.Header("Content-Type", "application/gzip")
 	c.File(path)
 }
@@ -4070,7 +4127,11 @@ func (ws *WebServer) preflightRestoreHandler(c *gin.Context) {
 func (ws *WebServer) restoreBackupHandler(c *gin.Context) {
 	filename := c.Param("filename")
 	if err := ws.bridge.RestoreBackup(filename); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "insufficient disk space") {
+			status = http.StatusInsufficientStorage
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

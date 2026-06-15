@@ -57,6 +57,19 @@ The Moment is the source of truth for filament calibration values. OrcaSlicer st
 - [ ] INDX 8-head — full multi-toolhead support when hardware ships (fall target per vendor)
 - [ ] Material compatibility matrix — record which filament materials each printer is rated for; warn on mismatch at assignment time
 
+### Bambu Printer Support (Hardware Testing Required)
+
+MQTT client implemented in `bambu.go`. Disabled in UI pending validation on real hardware.
+LAN mode must be enabled on the printer. No specific models are targeted.
+Re-enable when hardware testing is complete (see CLAUDE.md for re-enable steps).
+
+### Testing Improvements
+
+- Backup/restore automated tests (`/api/backup/*`) — critical data-safety workflow
+- Virtual printer file processing tests (`/api/printers/:id/files/*`) — complex G-code parsing pipeline
+- Mobile NFC assignment flow tests (`/nfc/spool/*`, `/nfc/location/*`) — core user-facing workflow
+- Error response hardening — wrap internal `err.Error()` before returning to HTTP clients
+
 ## Spool Lifecycle
 
 - [ ] Spool transfer audit log — record when a spool moved between printers or storage locations, with timestamps

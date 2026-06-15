@@ -113,6 +113,7 @@
                 <button class="nfcs-subtab active" id="nfcs-mode-link" onclick="nfcsSetAddMode('link')">Link existing</button>
                 <button class="nfcs-subtab" id="nfcs-mode-author" onclick="nfcsSetAddMode('author')">Author new</button>
                 <button class="nfcs-subtab" id="nfcs-mode-unbound" onclick="nfcsSetAddMode('unbound')">Add unbound</button>
+                <button class="nfcs-subtab" id="nfcs-mode-openprinttag" onclick="nfcsSetAddMode('openprinttag')">OpenPrintTag</button>
             </div>
 
             <label>Label (optional nickname)</label>
@@ -141,6 +142,43 @@
                 <label>Density (g/cm³)</label><input type="number" step="0.01" id="nfcs-fil-density" placeholder="1.24">
                 <label>Default weight (g)</label><input type="number" step="1" id="nfcs-fil-weight" placeholder="1000">
                 <label>Default price</label><input type="number" step="0.01" id="nfcs-fil-price" placeholder="25.00">
+            </div>
+
+            <div id="nfcs-add-openprinttag-section" style="display:none;">
+                <label>Data source</label>
+                <select id="nfcs-opt-source-select" onchange="nfcsOPTSourceChanged()">
+                    <option value="">Loading sources…</option>
+                </select>
+
+                <label style="margin-top:8px;">Search filaments</label>
+                <input type="text" id="nfcs-opt-search" placeholder="e.g. Polymaker PLA Black"
+                       autocomplete="off" oninput="nfcsSearchOPTDebounced()">
+
+                <div id="nfcs-opt-results" class="nfcs-picker" style="margin-top:4px;"></div>
+                <input type="hidden" id="nfcs-opt-selected-ref" value="">
+                <input type="hidden" id="nfcs-opt-selected-source-id" value="">
+                <div id="nfcs-opt-selected-info" style="font-size:0.82em;color:var(--brand-light);margin-top:5px;min-height:1.1em;"></div>
+
+                <!-- Colour variant picker — shown after a filament is selected -->
+                <div id="nfcs-opt-variant-section" style="display:none;margin-top:10px;">
+                    <div id="nfcs-opt-temps" style="font-size:0.82em;color:var(--text-secondary);margin-bottom:6px;"></div>
+                    <label>Select colour</label>
+                    <div id="nfcs-opt-variants" class="nfcs-picker" style="margin-top:4px;"></div>
+                    <input type="hidden" id="nfcs-opt-selected-variant" value="">
+                </div>
+
+                <div id="nfcs-opt-match-prompt" style="display:none;margin-top:10px;padding:10px;background:var(--bg-secondary);border-radius:6px;">
+                    <p style="margin:0 0 8px 0;font-size:0.9em;">
+                        Found a matching filament in Spoolman: <strong id="nfcs-opt-match-name"></strong>
+                    </p>
+                    <label style="cursor:pointer;margin-bottom:4px;display:block;">
+                        <input type="radio" name="nfcs-opt-action" value="update_existing" checked> Update it with this data
+                    </label>
+                    <label style="cursor:pointer;display:block;">
+                        <input type="radio" name="nfcs-opt-action" value="create_new"> Create a new Spoolman filament instead
+                    </label>
+                    <input type="hidden" id="nfcs-opt-match-filament-id" value="">
+                </div>
             </div>
 
             <div style="display:flex;gap:8px;margin-top:16px;">

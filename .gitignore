@@ -32,7 +32,7 @@ go.work
 
 # IDE
 .idea/
-.vscode/
+# .vscode/ # added to private_files
 *.swp
 *.swo
 *~
@@ -50,9 +50,7 @@ backups/
 .env
 .dev/
 
-# Claude Code local settings and AI agent instructions
-.claude/
-CLAUDE.md
+# Claude Code local settings and AI agent instructions are in private_files
 
 # Build artifacts
 *.zip

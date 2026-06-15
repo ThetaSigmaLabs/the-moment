@@ -1,0 +1,83 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Builds the local image and starts the full dev stack (both compose files).
+      // Port comes from .env (THE_MOMENT_PORT). Logs stream here; click Stop to tear down.
+      "name": "Docker: Dev Stack",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Run The Moment (debug)",
+      "type": "go",
+      "request": "launch",
+      // exec runs the pre-built signed binary so macOS firewall permits LAN connections.
+      // mode:debug would compile to a temp path that the firewall blocks on the LAN interface.
+      "mode": "exec",
+      "program": "${workspaceFolder}/the-moment",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "THE_MOMENT_DB_PATH": "${workspaceFolder}/.dev/db",
+        "THE_MOMENT_GCODE_PATH": "${workspaceFolder}/.dev/gcode",
+        "THE_MOMENT_UPLOADS_PATH": "${workspaceFolder}/.dev/uploads"
+      },
+      "preLaunchTask": "Build, Sign, and Start Spoolman",
+      "postDebugTask": "Stop Spoolman",
+      "args": []
+    },
+    {
+      "name": "Run The Moment (auto - tests)",
+      "type": "go",
+      "request": "launch",
+      // Change to debug, else auto will do test
+      "mode": "auto",
+      "program": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "THE_MOMENT_DB_PATH": "${workspaceFolder}/.dev/db",
+        "THE_MOMENT_GCODE_PATH": "${workspaceFolder}/.dev/gcode",
+        "THE_MOMENT_UPLOADS_PATH": "${workspaceFolder}/.dev/uploads"
+      },
+      "preLaunchTask": "Start Spoolman",
+      "postDebugTask": "Stop Spoolman",
+      "args": []
+    },
+    {
+      "name": "Launch Chrome",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:5001",
+      "webRoot": "${workspaceFolder}/static",
+      "sourceMaps": true,
+      "sourceMapPathOverrides": {
+        "/*": "${workspaceFolder}/static/*"
+      }
+    },
+    {
+      "name": "Test Current File",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}",
+      "args": [
+        "-v",
+        "-run",
+        "${selectedText}"
+      ]
+    },
+    {
+      "name": "Test All",
+      "type": "go",
+      "request": "launch",
+      "mode": "test",
+      "program": "${workspaceFolder}",
+      "args": [
+        "-v",
+        "-count=1"
+      ]
+    }
+  ]
+}

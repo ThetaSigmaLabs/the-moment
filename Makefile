@@ -147,14 +147,46 @@ changelog-preview: ## Draft CHANGELOG entry for commits since last stable tag
 
 # ── GitHub publishing ──────────────────────────────────────────────────────────
 
-github-push: ## Squash main → github branch (private_files excluded) and force-push to origin/main
+github-push-check: ## Dry-run: verify all private_files are excluded before github-push
+	@echo "Simulating github-push to verify private_files exclusion..."
+	@STASHED=0; \
+	 git stash push --include-untracked -m "github-push-check" >/dev/null 2>&1 && STASHED=1 || true; \
+	 [ "$$STASHED" = "1" ] && git stash apply --quiet 2>/dev/null || true; \
+	 git branch -D github-check 2>/dev/null; true; \
+	 git checkout --orphan github-check; \
+	 git add -A; \
+	 if [ -f private_files ]; then \
+	     while IFS= read -r f || [ -n "$$f" ]; do \
+	         [ -n "$$f" ] && git rm -r --cached "$$f" 2>/dev/null; true; \
+	     done < private_files; \
+	 fi; \
+	 FAIL=0; if [ -f private_files ]; then \
+	     while IFS= read -r f || [ -n "$$f" ]; do \
+	         [ -z "$$f" ] && continue; \
+	         if git diff --cached --name-only | grep -qF "$$f"; then \
+	             echo "  FAIL: $$f would leak to GitHub!"; FAIL=1; \
+	         else \
+	             echo "  OK:   $$f excluded"; \
+	         fi; \
+	     done < private_files; \
+	 fi; \
+	 git checkout -f main; \
+	 git branch -D github-check 2>/dev/null; true; \
+	 [ "$$STASHED" = "1" ] && git stash pop --quiet 2>/dev/null || true; \
+	 if [ "$$FAIL" = "1" ]; then \
+	     echo "FAIL: private_files check failed — fix before running github-push"; \
+	     exit 1; \
+	 fi; \
+	 echo "PASS: All private_files correctly excluded."
+
+github-push: github-push-check ## Squash main → github branch (private_files excluded) and force-push to origin/main
 	@echo "Building public commit from main (excluding private files)..."
 	@git branch -D github 2>/dev/null; true
 	@git checkout --orphan github
 	@git add -A
 	@if [ -f private_files ]; then \
 	    while IFS= read -r f || [ -n "$$f" ]; do \
-	        [ -n "$$f" ] && git rm --cached "$$f" 2>/dev/null; true; \
+	        [ -n "$$f" ] && git rm -r --cached "$$f" 2>/dev/null; true; \
 	    done < private_files; \
 	fi
 	@git commit -m "The Moment v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"')"

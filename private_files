@@ -4,3 +4,11 @@ CLAUDE.md
 SKILLS.md
 docs/release-workflow.md
 docs/ssh-keychain-undo.md
+.claude/
+.vscode/
+docs/git-bare-repo-head.md
+docs/icon-brief.md
+docs/install-testing.md
+docs/jenkins-windows-agent.md
+docs/plan_for_nfc_life_cycle.md
+docs/prusa-forum-post.md

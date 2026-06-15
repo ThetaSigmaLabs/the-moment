@@ -114,10 +114,13 @@ function switchSettingsTab(tabName, clickedElement) {
         loadConfiguration();
     } else if (tabName === 'cost') {
         loadCostSettings();
+    } else if (tabName === 'openprinttag') {
+        loadOPTSettings();
     } else if (tabName === 'advanced') {
         loadAdvancedSettings();
         loadAutoAssignSettings();
         loadBackupList();
+        loadBackupDiskSpace();
         checkRestorePending();
     }
 }
@@ -537,15 +540,35 @@ function uploadBackup() {
     btn.disabled = true;
     status.innerHTML = '<span class="btn-spinner"></span>Uploading…';
     fetch('/api/backup/upload', {method: 'POST', body: formData})
-        .then(r => r.json())
-        .then(data => {
+        .then(r => r.json().then(data => ({status: r.status, data})))
+        .then(({status: httpStatus, data}) => {
             btn.disabled = false;
+            if (httpStatus === 507) {
+                const need = formatBackupBytes(data.estimated_bytes);
+                const avail = formatBackupBytes(data.available_bytes);
+                status.textContent = `Not enough disk space. Upload needs ~${need} but only ${avail} is available. Free up space and retry.`;
+                return;
+            }
             if (data.error) { status.textContent = 'Error: ' + data.error; return; }
             status.textContent = 'Uploaded: ' + data.filename;
             input.value = '';
             loadBackupList();
         })
         .catch(() => { btn.disabled = false; status.textContent = 'Upload failed.'; });
+}
+
+function loadBackupDiskSpace() {
+    const el = document.getElementById('backupDiskSpaceInfo');
+    if (!el) return;
+    fetch('/api/backup/disk-space')
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) { el.textContent = ''; return; }
+            const avail = formatBackupBytes(data.available_bytes);
+            const total = data.total_bytes > 0 ? ' of ' + formatBackupBytes(data.total_bytes) : '';
+            el.textContent = avail + total + ' available';
+        })
+        .catch(() => { el.textContent = ''; });
 }
 
 function deleteBackup(filename) {
@@ -615,8 +638,17 @@ function confirmRestore() {
     btn.disabled = true;
     btn.innerHTML = '<span class="btn-spinner"></span>Restoring…';
     fetch('/api/backup/' + encodeURIComponent(_pendingRestoreFilename) + '/restore', {method: 'POST'})
-        .then(r => r.json())
-        .then(data => {
+        .then(r => r.json().then(data => ({status: r.status, data})))
+        .then(({status: httpStatus, data}) => {
+            if (httpStatus === 507) {
+                btn.disabled = false;
+                btn.textContent = 'Confirm Restore';
+                const info = document.getElementById('restorePreflightInfo');
+                if (info) {
+                    info.innerHTML += '<br><span style="color:var(--error-color,#e74c3c);">✗ Not enough disk space to restore. Free up space and try again.</span>';
+                }
+                return;
+            }
             closeRestoreModal();
             if (data.error) { showToast('Restore failed: ' + data.error, 'error'); return; }
             document.getElementById('restorePendingBanner').style.display = 'block';

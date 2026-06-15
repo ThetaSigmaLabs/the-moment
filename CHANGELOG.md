@@ -5,6 +5,46 @@ All notable changes to The Moment will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.1.0] — 2026-06-15
+
+### Added
+
+#### OpenPrintTag Integration
+
+- External filament database sources — new Settings → Open Print Tag tab
+- OFD API adapter: search Open Filament Database by brand, material, name; fetch colour variants
+- filament-db adapter: connect to self-hosted filament-db instances
+- TigerTag temperature fallback when OFD returns zero temperatures (24-hour cache)
+- OpenPrintTag subtab in Add Filament dialog: search → select variant → create NFC tag in one workflow
+- Smart Spoolman matching: fuzzy-match OPT results against existing filaments; offer update or create new
+- Source connectivity test button with latency display (ms)
+- 8 new `/api/openprinttag/*` API endpoints (sources CRUD, search, variants)
+- `POST /api/nfc/openprinttag-tag` — create filament tag from external source data
+- `openprinttag_sources` DB table with seed defaults (OFD enabled, filament-db disabled)
+
+#### NFC Management
+
+- OpenPrintTag mode in Add Filament dialog (fourth mode alongside link/author/unbound)
+- Colour variant picker with hex swatches and name labels
+- Temperature ranges and material density displayed during colour selection
+- Write `nfc_*` custom fields (temperatures, material class) to Spoolman filament on tag creation
+- Filament update path: populate colour, temperature, density, weight from external sources on existing Spoolman filaments
+
+#### UI & UX
+
+- Source-aware search placeholder hints adapt to selected adapter type
+- 400 ms debounce on OPT search to reduce unnecessary external API calls
+- Add Filament modal state fully reset on reopen (search, variants, selection, matched filament)
+- Settings → Open Print Tag tab: enable/disable sources, add custom sources, reset to defaults
+
+### Fixed
+
+- Spoolman API: accept both `200 OK` and `201 Created` on filament/spool POST — fixes compatibility with Spoolman version variance (affected `CloneFilament`, `CreateFilament`, `CreateSpool`)
+
+### Changed
+
+- Bambu printer support disabled in UI pending hardware testing — MQTT implementation is complete in code; re-enablement documented in ROADMAP.md and CLAUDE.md
+
 ## [v1.0.0] - 2026-06-09
 
 First public release. Forked from FilaBridge v0.3.0; feature-complete and running in production on Odroid N2+ with Prusa CORE One L, Ender 3 V3 SE, and Spoolman. All items below are additions or changes relative to FilaBridge v0.3.0.

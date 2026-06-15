@@ -257,15 +257,16 @@ function nfcsCloseModal(id) {
 
 // ─── Add filament tag ──────────────────────────────────────────────────────────
 
-// Three modes: link an existing Spoolman filament, author a new one, or create an unbound
-// filament tag (a filament type that may not exist in Spoolman yet).
+// Four modes: link existing, author new, add unbound, or look up via OpenPrintTag source.
 function nfcsSetAddMode(mode) {
     document.getElementById('nfcs-add-link-section').style.display = mode === 'link' ? '' : 'none';
     document.getElementById('nfcs-add-author-section').style.display = mode === 'author' ? '' : 'none';
     document.getElementById('nfcs-add-unbound-section').style.display = mode === 'unbound' ? '' : 'none';
+    document.getElementById('nfcs-add-openprinttag-section').style.display = mode === 'openprinttag' ? '' : 'none';
     document.getElementById('nfcs-mode-link').classList.toggle('active', mode === 'link');
     document.getElementById('nfcs-mode-author').classList.toggle('active', mode === 'author');
     document.getElementById('nfcs-mode-unbound').classList.toggle('active', mode === 'unbound');
+    document.getElementById('nfcs-mode-openprinttag').classList.toggle('active', mode === 'openprinttag');
 }
 
 // Searchable filament picker (mirrors the Spool picker; reuses nfcsMatchSearch).
@@ -318,6 +319,17 @@ async function nfcsOpenAddFilament() {
     document.getElementById('nfcs-fil-link-select').value = '';
     document.getElementById('nfcs-fil-selected').textContent = '';
     document.getElementById('nfcs-fil-search').value = '';
+    // Reset OPT section state
+    document.getElementById('nfcs-opt-search').value = '';
+    document.getElementById('nfcs-opt-results').innerHTML = '';
+    document.getElementById('nfcs-opt-selected-ref').value = '';
+    document.getElementById('nfcs-opt-selected-source-id').value = '';
+    document.getElementById('nfcs-opt-selected-info').textContent = '';
+    document.getElementById('nfcs-opt-match-prompt').style.display = 'none';
+    document.getElementById('nfcs-opt-variant-section').style.display = 'none';
+    document.getElementById('nfcs-opt-selected-variant').value = '';
+    nfcsOPTLastResults = [];
+    nfcsOPTSelectedFilament = null;
     document.getElementById('nfcs-add-filament-overlay').style.display = 'flex';
 
     const box = document.getElementById('nfcs-fil-options');
@@ -330,12 +342,46 @@ async function nfcsOpenAddFilament() {
     } catch (e) {
         box.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:#ef4444;">Failed to load filaments</div>';
     }
+    nfcsLoadOPTSources();
 }
 
 async function nfcsSubmitAddFilament() {
     const label = document.getElementById('nfcs-fil-label').value.trim();
     const authoring = document.getElementById('nfcs-add-author-section').style.display !== 'none';
     const linking = document.getElementById('nfcs-add-link-section').style.display !== 'none';
+    const optMode = document.getElementById('nfcs-add-openprinttag-section').style.display !== 'none';
+
+    if (optMode) {
+        const ref = document.getElementById('nfcs-opt-selected-ref').value;
+        const sourceId = parseInt(document.getElementById('nfcs-opt-selected-source-id').value, 10);
+        if (!ref || !sourceId) { nfcsToast('Select a filament from the search results.'); return; }
+        if (!ref.includes('/variants/')) { nfcsToast('Select a colour variant before creating the tag.'); return; }
+        const actionEl = document.querySelector('input[name="nfcs-opt-action"]:checked');
+        const action = actionEl ? actionEl.value : 'create_new';
+        const optBody = { source_id: sourceId, source_ref: ref, action: action };
+        if (label) optBody.label = label;
+        if (action === 'update_existing') {
+            const fid = parseInt(document.getElementById('nfcs-opt-match-filament-id').value, 10);
+            if (fid > 0) optBody.filament_id = fid;
+        }
+        try {
+            const res = await fetch('/api/nfc/openprinttag-tag', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(optBody)
+            });
+            const data = await res.json();
+            if (!res.ok) { nfcsToast('Create failed: ' + (data.error || res.statusText)); return; }
+            nfcsCloseModal('nfcs-add-filament-overlay');
+            await nfcsLoadFilamentTags();
+            if (data.tag && data.tag.tag_id) {
+                nfcsRenderPayload(data.tag.tag_id, data.tag_url, data.qr_code_base64, data.note, nfcsTagSubjectCache[data.tag.tag_id] || '');
+            }
+        } catch (e) {
+            nfcsToast('Create error: ' + e.message);
+        }
+        return;
+    }
 
     const body = { tag_type: 'filament' };
     if (label) body.label = label;
@@ -1255,4 +1301,261 @@ async function nfcsSubmitAddLocation() {
     } catch (e) {
         nfcsToast('Create error: ' + e.message);
     }
+}
+
+// ─── OpenPrintTag lookup tab ──────────────────────────────────────────────────
+
+let nfcsOPTDebounceTimer = null;
+let nfcsOPTLastResults = [];      // cache last search results for re-render on selection
+let nfcsOPTSelectedFilament = null; // the currently selected filament result (no variant yet)
+
+// Maps source_type values to short badge labels shown in the dropdown.
+const nfcsOPTSourceTypeBadge = {
+    ofd_api: 'OFD',
+    filament_db_api: 'local'
+};
+
+// Maps source_type values to placeholder text for the search input.
+const nfcsOPTSearchPlaceholder = {
+    ofd_api: 'e.g. Polymaker PLA Black',
+    filament_db_api: 'e.g. PLA 1.75mm'
+};
+
+function nfcsLoadOPTSources() {
+    fetch('/api/openprinttag/sources')
+        .then(function(r) { return r.json(); })
+        .then(function(sources) {
+            const sel = document.getElementById('nfcs-opt-source-select');
+            const searchInput = document.getElementById('nfcs-opt-search');
+            const resultsBox = document.getElementById('nfcs-opt-results');
+            sel.innerHTML = '';
+            const enabled = (sources || []).filter(function(s) { return s.enabled; });
+            if (enabled.length === 0) {
+                sel.innerHTML = '<option value="">No sources enabled — configure in Settings → Open Print Tag</option>';
+                document.getElementById('nfcs-mode-openprinttag').disabled = true;
+                if (searchInput) {
+                    searchInput.disabled = true;
+                    searchInput.placeholder = 'No sources enabled';
+                }
+                if (resultsBox) {
+                    resultsBox.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:var(--text-secondary);">No sources enabled. Go to Settings → Open Print Tag to enable a source.</div>';
+                }
+                return;
+            }
+            document.getElementById('nfcs-mode-openprinttag').disabled = false;
+            if (searchInput) searchInput.disabled = false;
+            enabled.forEach(function(s) {
+                const opt = document.createElement('option');
+                opt.value = s.id;
+                opt.dataset.sourceType = s.source_type;
+                const badge = nfcsOPTSourceTypeBadge[s.source_type] || s.source_type;
+                opt.textContent = s.name + ' [' + badge + ']';
+                sel.appendChild(opt);
+            });
+            // Set placeholder for initially-selected source
+            nfcsOPTUpdateSearchPlaceholder();
+        })
+        .catch(function() {
+            document.getElementById('nfcs-opt-source-select').innerHTML =
+                '<option value="">Failed to load sources</option>';
+        });
+}
+
+// Updates the search input placeholder based on the currently selected source type.
+function nfcsOPTUpdateSearchPlaceholder() {
+    const sel = document.getElementById('nfcs-opt-source-select');
+    const searchInput = document.getElementById('nfcs-opt-search');
+    if (!sel || !searchInput) return;
+    const opt = sel.options[sel.selectedIndex];
+    const sourceType = opt ? opt.dataset.sourceType : '';
+    searchInput.placeholder = nfcsOPTSearchPlaceholder[sourceType] || 'e.g. Polymaker PLA Black';
+}
+
+function nfcsOPTSourceChanged() {
+    document.getElementById('nfcs-opt-search').value = '';
+    document.getElementById('nfcs-opt-results').innerHTML = '';
+    document.getElementById('nfcs-opt-selected-ref').value = '';
+    document.getElementById('nfcs-opt-selected-source-id').value = '';
+    document.getElementById('nfcs-opt-selected-info').textContent = '';
+    document.getElementById('nfcs-opt-match-prompt').style.display = 'none';
+    document.getElementById('nfcs-opt-variant-section').style.display = 'none';
+    document.getElementById('nfcs-opt-selected-variant').value = '';
+    nfcsOPTLastResults = [];
+    nfcsOPTSelectedFilament = null;
+    nfcsOPTUpdateSearchPlaceholder();
+}
+
+function nfcsSearchOPTDebounced() {
+    clearTimeout(nfcsOPTDebounceTimer);
+    nfcsOPTDebounceTimer = setTimeout(nfcsSearchOPT, 400);
+}
+
+async function nfcsSearchOPT() {
+    const q = document.getElementById('nfcs-opt-search').value.trim();
+    const sourceId = document.getElementById('nfcs-opt-source-select').value;
+    if (!q || !sourceId) { document.getElementById('nfcs-opt-results').innerHTML = ''; return; }
+
+    const box = document.getElementById('nfcs-opt-results');
+    box.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:var(--text-secondary);">Searching…</div>';
+    try {
+        const res = await fetch('/api/openprinttag/search?source_id=' + encodeURIComponent(sourceId) + '&q=' + encodeURIComponent(q));
+        const results = await res.json();
+        if (!res.ok) {
+            box.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:#ef4444;">' + nfcsEscape(results.error || res.statusText) + '</div>';
+            return;
+        }
+        nfcsOPTLastResults = Array.isArray(results) ? results : [];
+        nfcsRenderOPTResults(nfcsOPTLastResults);
+    } catch (e) {
+        box.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:#ef4444;">Search error: ' + nfcsEscape(e.message) + '</div>';
+    }
+}
+
+function nfcsRenderOPTResults(results) {
+    const box = document.getElementById('nfcs-opt-results');
+    const selectedFilamentRef = nfcsOPTSelectedFilament ? nfcsOPTSelectedFilament.source_ref : '';
+    box.innerHTML = '';
+    if (!results || results.length === 0) {
+        box.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:var(--text-secondary);">No results.</div>';
+        return;
+    }
+    results.forEach(function(r) {
+        const div = document.createElement('div');
+        div.className = 'nfcs-pick' + (r.source_ref === selectedFilamentRef ? ' selected' : '');
+        // Show brand - material - filament name (no colour — colour is picked separately)
+        const label = [r.brand, r.material, r.filament_name].filter(Boolean).join(' - ');
+        div.innerHTML = nfcsEscape(label) +
+            '<span style="font-size:0.78em;color:var(--text-secondary);margin-left:6px;">' + nfcsEscape(r.source_name) + '</span>';
+        div.addEventListener('click', function() { nfcsSelectOPTResult(r); });
+        box.appendChild(div);
+    });
+}
+
+function nfcsSelectOPTResult(result) {
+    // Store the filament-level ref (without variant).
+    // The variant slug will be appended to this ref once the user picks a colour.
+    nfcsOPTSelectedFilament = result;
+    document.getElementById('nfcs-opt-selected-ref').value = result.source_ref;
+    document.getElementById('nfcs-opt-selected-source-id').value = result.source_id;
+    const label = [result.brand, result.material, result.filament_name].filter(Boolean).join(' - ');
+    document.getElementById('nfcs-opt-selected-info').textContent = 'Selected: ' + label;
+
+    // Reset variant + match state
+    document.getElementById('nfcs-opt-selected-variant').value = '';
+    document.getElementById('nfcs-opt-match-prompt').style.display = 'none';
+
+    // Update selection highlight in results list
+    nfcsRenderOPTResults(nfcsOPTLastResults);
+
+    // Fetch colour variants for this filament
+    nfcsOPTFetchVariants(result);
+}
+
+async function nfcsOPTFetchVariants(result) {
+    const section = document.getElementById('nfcs-opt-variant-section');
+    const variantBox = document.getElementById('nfcs-opt-variants');
+    section.style.display = '';
+    variantBox.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:var(--text-secondary);">Loading colours…</div>';
+    document.getElementById('nfcs-opt-temps').textContent = '';
+
+    try {
+        const res = await fetch('/api/openprinttag/variants?source_id=' +
+            encodeURIComponent(result.source_id) + '&ref=' + encodeURIComponent(result.source_ref));
+        const data = await res.json();
+        if (!res.ok) {
+            variantBox.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:#ef4444;">' +
+                nfcsEscape(data.error || res.statusText) + '</div>';
+            return;
+        }
+        // Show temperature summary
+        const tempsEl = document.getElementById('nfcs-opt-temps');
+        const parts = [];
+        if (data.min_print_temp || data.max_print_temp) {
+            parts.push('Nozzle: ' + (data.min_print_temp || '?') + '–' + (data.max_print_temp || '?') + '°C');
+        }
+        if (data.min_bed_temp || data.max_bed_temp) {
+            parts.push('Bed: ' + (data.min_bed_temp || '?') + '–' + (data.max_bed_temp || '?') + '°C');
+        }
+        if (data.density) parts.push('Density: ' + data.density + ' g/cm³');
+        tempsEl.textContent = parts.join('  ·  ');
+
+        nfcsOPTRenderVariants(data.variants || [], result.source_ref, result.source_id);
+    } catch (e) {
+        variantBox.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:#ef4444;">Error: ' + nfcsEscape(e.message) + '</div>';
+    }
+}
+
+function nfcsOPTRenderVariants(variants, filamentRef, sourceId) {
+    const box = document.getElementById('nfcs-opt-variants');
+    const selectedVariant = document.getElementById('nfcs-opt-selected-variant').value;
+    box.innerHTML = '';
+    if (!variants || variants.length === 0) {
+        box.innerHTML = '<div class="nfcs-pick" style="cursor:default;color:var(--text-secondary);">No colour variants found.</div>';
+        return;
+    }
+    variants.forEach(function(v) {
+        const div = document.createElement('div');
+        div.className = 'nfcs-pick' + (v.slug === selectedVariant ? ' selected' : '');
+        const hex = v.color_hex ? '#' + v.color_hex.replace(/^#/, '') : '#888';
+        div.innerHTML = '<span class="nfcs-swatch" style="background:' + hex + '"></span>' + nfcsEscape(v.name);
+        div.addEventListener('click', function() {
+            nfcsOPTSelectVariant(v.slug, v.name, v.color_hex, filamentRef, sourceId, variants);
+        });
+        box.appendChild(div);
+    });
+}
+
+function nfcsOPTSelectVariant(variantSlug, variantName, colorHex, filamentRef, sourceId, variants) {
+    const fullRef = filamentRef + '/variants/' + variantSlug;
+    document.getElementById('nfcs-opt-selected-ref').value = fullRef;
+    document.getElementById('nfcs-opt-selected-source-id').value = sourceId;
+    document.getElementById('nfcs-opt-selected-variant').value = variantSlug;
+
+    // Update filament info line to include colour
+    if (nfcsOPTSelectedFilament) {
+        const label = [nfcsOPTSelectedFilament.brand, nfcsOPTSelectedFilament.material,
+            nfcsOPTSelectedFilament.filament_name, variantName].filter(Boolean).join(' - ');
+        document.getElementById('nfcs-opt-selected-info').textContent = 'Selected: ' + label;
+    }
+
+    // Re-render variant list to update highlight
+    nfcsOPTRenderVariants(variants, filamentRef, sourceId);
+
+    // Fuzzy match against Spoolman filaments now that we have brand + colour
+    const matchResult = nfcsOPTSelectedFilament
+        ? { brand: nfcsOPTSelectedFilament.brand, material: nfcsOPTSelectedFilament.material, color_name: variantName }
+        : { brand: '', material: '', color_name: variantName };
+    const match = nfcsOPTFuzzyMatch(matchResult);
+    const prompt = document.getElementById('nfcs-opt-match-prompt');
+    if (match) {
+        document.getElementById('nfcs-opt-match-name').textContent =
+            (match.vendor ? match.vendor.name + ' ' : '') + (match.name || '');
+        document.getElementById('nfcs-opt-match-filament-id').value = match.id;
+        const radio = document.querySelector('input[name="nfcs-opt-action"][value="update_existing"]');
+        if (radio) radio.checked = true;
+        prompt.style.display = '';
+    } else {
+        document.getElementById('nfcs-opt-match-filament-id').value = '';
+        prompt.style.display = 'none';
+        const radio = document.querySelector('input[name="nfcs-opt-action"][value="create_new"]');
+        if (radio) radio.checked = true;
+    }
+}
+
+// nfcsOPTFuzzyMatch looks for a Spoolman filament that matches the OPT result by
+// vendor name and material/color substring. Returns the first match or null.
+function nfcsOPTFuzzyMatch(result) {
+    if (!nfcsFilamentPickerData || nfcsFilamentPickerData.length === 0) return null;
+    const brand = (result.brand || '').toLowerCase();
+    const material = (result.material || '').toLowerCase();
+    const colorName = (result.color_name || '').toLowerCase();
+    return nfcsFilamentPickerData.find(function(f) {
+        const vendorName = (f.vendor && f.vendor.name ? f.vendor.name : '').toLowerCase();
+        const fName = (f.name || '').toLowerCase();
+        const fMaterial = (f.material || '').toLowerCase();
+        const brandMatch = brand && vendorName.includes(brand);
+        const materialMatch = material && (fMaterial.includes(material) || fName.includes(material));
+        const colorMatch = colorName && fName.includes(colorName);
+        return brandMatch && (materialMatch || colorMatch);
+    }) || null;
 }

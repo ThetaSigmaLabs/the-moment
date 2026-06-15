@@ -1,0 +1,23 @@
+{
+  "go.testExplorer.enable": true,
+  "go.toolsManagement.autoUpdate": true,
+  "go.testFlags": [
+    "-v",
+    "-count=1"
+  ],
+  "go.coverOnSave": false,
+  "go.lintOnSave": "package",
+  "go.formatTool": "goimports",
+  "editor.formatOnSave": true,
+  "[go]": {
+    "editor.defaultFormatter": "golang.go"
+  },
+  "files.associations": {
+    "*.html": "gohtml"
+  },
+  "[gohtml]": {
+    "editor.formatOnSave": false,
+    "editor.defaultFormatter": null
+  },
+  "makefile.configureOnOpen": false
+}

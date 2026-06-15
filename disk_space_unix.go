@@ -16,3 +16,12 @@ func availableDiskSpace(path string) (int64, error) {
 	}
 	return int64(stat.Bavail) * int64(stat.Bsize), nil
 }
+
+// totalDiskSpace returns the total capacity in bytes of the filesystem containing path.
+func totalDiskSpace(path string) (int64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return -1, err
+	}
+	return int64(stat.Blocks) * int64(stat.Bsize), nil
+}

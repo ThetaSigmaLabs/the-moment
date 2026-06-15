@@ -464,6 +464,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		return nil, fmt.Errorf("failed to migrate NFC tags: %w", err)
 	}
 
+	if err := bridge.migrateOpenPrintTagSources(); err != nil {
+		return nil, fmt.Errorf("failed to migrate OpenPrintTag sources: %w", err)
+	}
+
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
 		log.Printf("[RECONCILE] dedup migration warning: %v", err)
 	}
@@ -1707,6 +1711,9 @@ func fetchHTTPSnapshot(snapshotURL string) ([]byte, error) {
 }
 
 func fetchRTSPSnapshot(rtspURL string) ([]byte, error) {
+	if !strings.HasPrefix(rtspURL, "rtsp://") && !strings.HasPrefix(rtspURL, "http://") && !strings.HasPrefix(rtspURL, "https://") {
+		return nil, fmt.Errorf("invalid camera URL scheme: %s", rtspURL)
+	}
 	tmp, err := os.CreateTemp("", "snapshot-*.jpg")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)

@@ -105,7 +105,7 @@ Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assign
 |---|---|---|---|
 | Any PrusaLink printer (CORE One, XL, MK4, Mini+) | PrusaLink API | Yes (Core One L tester with 5 heads manual changing) | Fully supported |
 | Any OctoPrint printer (Ender, CR-10, Voron, etc.) | OctoPrint plugin | Single-head | Fully supported |
-| Bambu X1C, P1S, A1, A1 Mini | MQTT over LAN | AMS slots → toolheads | **Beta — not hardware-tested** |
+| Bambu | MQTT over LAN | AMS slots → toolheads | Planned |
 | INDX 8-head | TBD | 8 toolheads | Future |
 
 ### Virtual Test Printers
@@ -191,33 +191,9 @@ The Moment ships an OctoPrint plugin that pushes print events directly.
 
 Full plugin documentation: [docs/octoprint-plugin.md](docs/octoprint-plugin.md)
 
-### Bambu (X1C, P1S, A1, A1 Mini)
+### Bambu
 
-> **Not hardware-tested.** Bambu support is implemented based on the MQTT protocol specification and community documentation, but has not been validated against a physical Bambu printer. The connection logic, AMS slot mapping, and filament weight reporting are believed to be correct — but treat this as a beta feature and expect rough edges. Feedback and test reports welcome.
-
-Bambu printers connect via MQTT over TLS on your LAN — no cloud relay, no Bambu account required.
-
-**Requirements:**
-
-- LAN mode enabled (Bambu Handy → Settings → LAN Only Mode)
-- Printer's LAN IP address
-- Serial number and access code (Bambu Handy → Settings → Device, or on the printer screen under Network)
-
-**Add the printer:**
-
-1. Settings → Printers → Add Printer → Type: `Bambu`
-2. IP Address: the printer's LAN IP
-3. API Key: `serial:accesscode` (e.g. `00M09C380500001:abc12345`)
-4. Toolheads: number of AMS slots (4 for one AMS, 8 for two, 1 for no AMS)
-5. Save
-
-Each AMS tray maps to a toolhead: `(ams_unit × 4) + tray`. Assign Spoolman spools to those slots the same way as any other printer.
-
-**Troubleshooting Bambu:** Enable `BAMBU_DEBUG=1` in `.env` (requires restart), then:
-
-```bash
-docker logs -f the-moment 2>&1 | grep "BAMBU"
-```
+> **Planned — not yet available.** MQTT client is implemented in `bambu.go` but disabled in the UI pending hardware testing. See [ROADMAP.md](ROADMAP.md) for status.
 
 ---
 
@@ -370,13 +346,6 @@ The Moment exposes a REST API for integration with other tools and the OctoPrint
 - Confirm the URL in OctoPrint Settings → The Moment includes the correct host and port
 - Check `octoprint.log` for connection errors
 - Ensure The Moment is reachable from the OctoPrint host
-
-### Bambu printer not connecting
-
-- Confirm LAN mode is enabled on the printer
-- Verify the IP is reachable: `ping <printer-ip>` from the Docker host
-- API Key must be `serial:accesscode` — no spaces, colon separator
-- Enable `BAMBU_DEBUG=1` and check: `docker logs the-moment 2>&1 | grep "BAMBU"`
 
 ### WebSocket connection issues
 

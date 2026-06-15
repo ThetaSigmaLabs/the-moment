@@ -20,3 +20,16 @@ func availableDiskSpace(path string) (int64, error) {
 	}
 	return int64(freeBytesAvailable), nil
 }
+
+// totalDiskSpace returns the total capacity in bytes of the filesystem containing path.
+func totalDiskSpace(path string) (int64, error) {
+	pathPtr, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return -1, err
+	}
+	var freeBytesAvailable, totalBytes, totalFreeBytes uint64
+	if err := windows.GetDiskFreeSpaceEx(pathPtr, &freeBytesAvailable, &totalBytes, &totalFreeBytes); err != nil {
+		return -1, err
+	}
+	return int64(totalBytes), nil
+}

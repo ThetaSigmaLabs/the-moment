@@ -1056,7 +1056,7 @@ func (c *SpoolmanClient) CloneFilament(filamentID int) (*SpoolmanFilament, error
 		return nil, fmt.Errorf("posting cloned filament: %w", err)
 	}
 	defer postResp.Body.Close()
-	if postResp.StatusCode != http.StatusCreated {
+	if postResp.StatusCode != http.StatusCreated && postResp.StatusCode != http.StatusOK {
 		return nil, c.handleAPIError(postResp)
 	}
 	var cloned SpoolmanFilament
@@ -1084,7 +1084,7 @@ func (c *SpoolmanClient) CreateFilament(data map[string]interface{}) (*SpoolmanF
 		return nil, fmt.Errorf("posting new filament: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		return nil, c.handleAPIError(resp)
 	}
 	var created SpoolmanFilament
@@ -1112,7 +1112,7 @@ func (c *SpoolmanClient) CreateSpool(data map[string]interface{}) (*SpoolmanSpoo
 		return nil, fmt.Errorf("posting new spool: %w", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		return nil, c.handleAPIError(resp)
 	}
 	var created SpoolmanSpool
