@@ -149,7 +149,8 @@ changelog-preview: ## Draft CHANGELOG entry for commits since last stable tag
 
 github-push-check: ## Dry-run: verify all private_files are excluded before github-push
 	@echo "Simulating github-push to verify private_files exclusion..."
-	@STASHED=0; \
+	@CURRENT_BRANCH=$$(git branch --show-current); \
+	 STASHED=0; \
 	 git stash push --include-untracked -m "github-push-check" >/dev/null 2>&1 && STASHED=1 || true; \
 	 [ "$$STASHED" = "1" ] && git stash apply --quiet 2>/dev/null || true; \
 	 git branch -D github-check 2>/dev/null; true; \
@@ -157,7 +158,7 @@ github-push-check: ## Dry-run: verify all private_files are excluded before gith
 	 git add -A; \
 	 if [ -f private_files ]; then \
 	     while IFS= read -r f || [ -n "$$f" ]; do \
-	         [ -n "$$f" ] && git rm -r --cached "$$f" 2>/dev/null; true; \
+	         [ -n "$$f" ] && git rm -r --cached --force "$$f" 2>/dev/null; true; \
 	     done < private_files; \
 	 fi; \
 	 FAIL=0; if [ -f private_files ]; then \
@@ -170,7 +171,7 @@ github-push-check: ## Dry-run: verify all private_files are excluded before gith
 	         fi; \
 	     done < private_files; \
 	 fi; \
-	 git checkout -f main; \
+	 git checkout -f "$$CURRENT_BRANCH"; \
 	 git branch -D github-check 2>/dev/null; true; \
 	 [ "$$STASHED" = "1" ] && git stash pop --quiet 2>/dev/null || true; \
 	 if [ "$$FAIL" = "1" ]; then \
