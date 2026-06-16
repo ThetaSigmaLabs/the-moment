@@ -182,18 +182,20 @@ github-push-check: ## Dry-run: verify all private_files are excluded before gith
 
 github-push: github-push-check ## Squash main → github branch (private_files excluded) and force-push to origin/main
 	@echo "Building public commit from main (excluding private files)..."
-	@git branch -D github 2>/dev/null; true
-	@git checkout --orphan github
-	@git add -A
-	@if [ -f private_files ]; then \
-	    while IFS= read -r f || [ -n "$$f" ]; do \
-	        [ -n "$$f" ] && git rm -r --cached "$$f" 2>/dev/null; true; \
-	    done < private_files; \
-	fi
-	@git commit -m "The Moment v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"')"
-	@git push origin github:main --force
-	@git checkout -f main
-	@echo "GitHub origin/main updated."
+	@CURRENT_BRANCH=$$(git branch --show-current); \
+	 git branch -D github 2>/dev/null; true; \
+	 git checkout --orphan github; \
+	 git add -A; \
+	 if [ -f private_files ]; then \
+	     while IFS= read -r f || [ -n "$$f" ]; do \
+	         [ -n "$$f" ] && git rm -r --cached --force "$$f" 2>/dev/null; true; \
+	     done < private_files; \
+	 fi; \
+	 git commit -m "The Moment v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"')"; \
+	 git push origin github:main --force; \
+	 git checkout -f "$$CURRENT_BRANCH"; \
+	 git branch -D github 2>/dev/null; true; \
+	 echo "GitHub origin/main updated."
 
 github-release: ## github-push then tag vX.Y.Z and create stable GitHub Release
 	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
