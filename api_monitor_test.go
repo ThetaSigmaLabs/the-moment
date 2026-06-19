@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"os"
 	"testing"
 )
@@ -66,103 +65,135 @@ func TestJsonFieldPaths_Array(t *testing.T) {
 	}
 }
 
-// ─── APIShapeMonitor ──────────────────────────────────────────────────────────
+// ─── APIShapeMonitor — schema-based diff ──────────────────────────────────────
 
-func TestAPIShapeMonitor_FirstCall_NoChange(t *testing.T) {
+// All-known body should never alert.
+func TestAPIShapeMonitor_AllKnown_NoAlert(t *testing.T) {
 	m := NewAPIShapeMonitor()
-	body := []byte(`{"printer":{"state":"IDLE"}}`)
-	added, removed, changed := m.Check("p1", "status", body)
-	if changed {
-		t.Error("first call should never report changed")
-	}
-	if len(added) != 0 || len(removed) != 0 {
-		t.Errorf("first call should return no diff, got added=%v removed=%v", added, removed)
+	body := []byte(`{"id":1,"state":"PRINTING","progress":5.0,"time_remaining":1800,"time_printing":60,"file":{"name":"x.gcode"}}`)
+	added, _, changed := m.Check("job", body)
+	if changed || len(added) > 0 {
+		t.Errorf("expected no change, got added=%v changed=%v", added, changed)
 	}
 }
 
-func TestAPIShapeMonitor_NoChange(t *testing.T) {
+// Regression: time_remaining appearing on a new print after a FINISHED-shaped
+// body must not alert — it's in the schema.
+func TestAPIShapeMonitor_JobTimeRemainingAppears_NoAlert(t *testing.T) {
 	m := NewAPIShapeMonitor()
-	body := []byte(`{"printer":{"state":"IDLE","temp":0}}`)
-	m.Check("p1", "status", body)
-	added, removed, changed := m.Check("p1", "status", body)
-	if changed {
-		t.Error("same JSON twice should not report changed")
-	}
-	if len(added) != 0 || len(removed) != 0 {
-		t.Errorf("expected empty diff, got added=%v removed=%v", added, removed)
+	finished := []byte(`{"id":62,"state":"FINISHED","progress":100,"time_printing":3600,"file":{"name":"x.gcode"}}`)
+	printing := []byte(`{"id":63,"state":"PRINTING","progress":5,"time_remaining":1800,"time_printing":60,"file":{"name":"y.gcode"}}`)
+	m.Check("job", finished)
+	added, _, changed := m.Check("job", printing)
+	if changed || len(added) > 0 {
+		t.Errorf("FINISHED→PRINTING transition should not alert (time_remaining is in schema), got added=%v", added)
 	}
 }
 
-func TestAPIShapeMonitor_ValueChangeNoAlert(t *testing.T) {
+// Known field disappearing is not an alert — fields may legitimately be
+// absent depending on state or firmware version.
+func TestAPIShapeMonitor_JobTimeRemainingDisappears_NoAlert(t *testing.T) {
 	m := NewAPIShapeMonitor()
-	m.Check("p1", "status", []byte(`{"printer":{"state":"IDLE"}}`))
-	added, removed, changed := m.Check("p1", "status", []byte(`{"printer":{"state":"PRINTING"}}`))
-	if changed {
-		t.Error("value-only change should not trigger shape change")
+	printing := []byte(`{"id":63,"state":"PRINTING","progress":5,"time_remaining":1800,"time_printing":60,"file":{"name":"x.gcode"}}`)
+	finished := []byte(`{"id":62,"state":"FINISHED","progress":100,"time_printing":3600,"file":{"name":"x.gcode"}}`)
+	m.Check("job", printing)
+	added, _, changed := m.Check("job", finished)
+	if changed || len(added) > 0 {
+		t.Errorf("PRINTING→FINISHED transition should not alert, got added=%v", added)
 	}
-	_ = added
-	_ = removed
 }
 
-func TestAPIShapeMonitor_AddedField(t *testing.T) {
+// /api/v1/status: job / storage / transfer / printer.axis_x / printer.axis_y
+// all legitimately come and go with state. None should alert.
+func TestAPIShapeMonitor_StatusOptionalKeys_NoAlert(t *testing.T) {
+	idle := []byte(`{"printer":{"state":"IDLE","temp_nozzle":26,"axis_x":0,"axis_y":0,"axis_z":10}}`)
+	printing := []byte(`{"job":{"id":1,"progress":5,"time_printing":60,"time_remaining":1800},"printer":{"state":"PRINTING","temp_nozzle":230,"axis_z":10}}`)
+	transfer := []byte(`{"printer":{"state":"IDLE","temp_nozzle":26},"transfer":{"id":1,"progress":50,"time_transferring":10,"transferred":512000}}`)
+	storage := []byte(`{"storage":{"path":"/usb/","name":"usb","read_only":false},"printer":{"state":"IDLE","temp_nozzle":26}}`)
+
 	m := NewAPIShapeMonitor()
-	m.Check("p1", "status", []byte(`{"printer":{"state":"IDLE"}}`))
-	added, removed, changed := m.Check("p1", "status", []byte(`{"printer":{"state":"IDLE","new_field":42}}`))
+	cycle := [][]byte{idle, printing, transfer, storage, idle, printing, transfer, storage}
+	for _, body := range cycle {
+		added, _, changed := m.Check("status", body)
+		if changed || len(added) > 0 {
+			t.Errorf("status optional keys should not alert, got added=%v", added)
+		}
+	}
+}
+
+// A genuinely unknown top-level field is the case worth alerting on.
+func TestAPIShapeMonitor_UnknownTopLevelField_Alerts(t *testing.T) {
+	m := NewAPIShapeMonitor()
+	body := []byte(`{"id":1,"state":"PRINTING","progress":5,"time_remaining":1800,"time_printing":60,"file":{"name":"x.gcode"},"material_remaining":42}`)
+	added, _, changed := m.Check("job", body)
 	if !changed {
-		t.Fatal("expected changed=true when a field is added")
-	}
-	if len(removed) != 0 {
-		t.Errorf("expected no removed fields, got %v", removed)
+		t.Fatal("expected changed=true for unknown top-level field")
 	}
 	found := false
 	for _, p := range added {
-		if p == "/printer/new_field" {
+		if p == "/material_remaining" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected /printer/new_field in added, got %v", added)
+		t.Errorf("expected /material_remaining in added, got %v", added)
 	}
 }
 
-func TestAPIShapeMonitor_RemovedField(t *testing.T) {
+// Unknown nested field is also reported.
+func TestAPIShapeMonitor_UnknownNestedField_Alerts(t *testing.T) {
 	m := NewAPIShapeMonitor()
-	m.Check("p1", "status", []byte(`{"printer":{"state":"IDLE","old_field":99}}`))
-	added, removed, changed := m.Check("p1", "status", []byte(`{"printer":{"state":"IDLE"}}`))
+	body := []byte(`{"file":{"name":"x.gcode","refs":{"download":"/x","new_ref":"y"}}}`)
+	added, _, changed := m.Check("job", body)
 	if !changed {
-		t.Fatal("expected changed=true when a field is removed")
-	}
-	if len(added) != 0 {
-		t.Errorf("expected no added fields, got %v", added)
+		t.Fatal("expected changed=true for unknown nested field")
 	}
 	found := false
-	for _, p := range removed {
-		if p == "/printer/old_field" {
+	for _, p := range added {
+		if p == "/file/refs/new_ref" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected /printer/old_field in removed, got %v", removed)
+		t.Errorf("expected /file/refs/new_ref in added, got %v", added)
 	}
 }
 
-func TestAPIShapeMonitor_MultiPrinterIndependent(t *testing.T) {
+// Value-only changes never alert.
+func TestAPIShapeMonitor_ValueChange_NoAlert(t *testing.T) {
 	m := NewAPIShapeMonitor()
-	base := []byte(`{"printer":{"state":"IDLE"}}`)
-	m.Check("printer-a", "status", base)
-	m.Check("printer-b", "status", base)
-
-	// Change printer-a's shape
-	added, _, changed := m.Check("printer-a", "status", []byte(`{"printer":{"state":"IDLE","extra":1}}`))
-	if !changed {
-		t.Error("printer-a should detect change")
+	m.Check("job", []byte(`{"id":1,"state":"IDLE","progress":0,"file":{"name":"x.gcode"}}`))
+	added, _, changed := m.Check("job", []byte(`{"id":1,"state":"PRINTING","progress":50,"file":{"name":"x.gcode"}}`))
+	if changed || len(added) > 0 {
+		t.Errorf("value-only change should not alert, got added=%v", added)
 	}
-	_ = added
+}
 
-	// printer-b should not be affected
-	_, _, changedB := m.Check("printer-b", "status", base)
-	if changedB {
-		t.Error("printer-b shape should be unchanged")
+// Empty body never alerts (204 No Content from /api/v1/job when idle).
+func TestAPIShapeMonitor_EmptyBody_NoAlert(t *testing.T) {
+	m := NewAPIShapeMonitor()
+	added, _, changed := m.Check("job", nil)
+	if changed || len(added) > 0 {
+		t.Errorf("empty body should not alert, got added=%v", added)
+	}
+}
+
+// Endpoint with no registered schema is silently ignored — not an alert
+// condition. (The monitor only knows status and job today.)
+func TestAPIShapeMonitor_UnknownEndpoint_NoAlert(t *testing.T) {
+	m := NewAPIShapeMonitor()
+	added, _, changed := m.Check("info", []byte(`{"hostname":"x"}`))
+	if changed || len(added) > 0 {
+		t.Errorf("unknown endpoint should not alert, got added=%v", added)
+	}
+}
+
+// Unparseable body never alerts.
+func TestAPIShapeMonitor_BadJSON_NoAlert(t *testing.T) {
+	m := NewAPIShapeMonitor()
+	added, _, changed := m.Check("job", []byte(`{not json`))
+	if changed || len(added) > 0 {
+		t.Errorf("bad JSON should not alert, got added=%v", added)
 	}
 }
 
@@ -189,7 +220,6 @@ func TestAPIShapeMonitor_Mute_SuppressesAlerts(t *testing.T) {
 	if m.ShouldAlert("p1") {
 		t.Error("should not alert while muted")
 	}
-	// Unmute via new print
 	m.UnmuteOnPrint("p1")
 	if !m.ShouldAlert("p1") {
 		t.Error("should alert again after UnmuteOnPrint")
@@ -199,84 +229,10 @@ func TestAPIShapeMonitor_Mute_SuppressesAlerts(t *testing.T) {
 func TestAPIShapeMonitor_MuteAlsoClearsPending(t *testing.T) {
 	m := NewAPIShapeMonitor()
 	m.SetAlertPending("p1")
-	m.Mute("p1") // mute should also clear pending so unmute starts fresh
+	m.Mute("p1")
 	m.UnmuteOnPrint("p1")
 	if !m.ShouldAlert("p1") {
 		t.Error("after mute+unmute, ShouldAlert should be true")
-	}
-}
-
-// ─── stripJSONKey ─────────────────────────────────────────────────────────────
-
-func TestStripJSONKey_RemovesKey(t *testing.T) {
-	body := []byte(`{"job":{"id":1},"printer":{"state":"PRINTING"}}`)
-	out := stripJSONKey(body, "job")
-	var m map[string]interface{}
-	if err := json.Unmarshal(out, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := m["job"]; ok {
-		t.Error("expected job key to be removed")
-	}
-	if _, ok := m["printer"]; !ok {
-		t.Error("expected printer key to remain")
-	}
-}
-
-func TestStripJSONKey_AbsentKey_Unchanged(t *testing.T) {
-	body := []byte(`{"printer":{"state":"IDLE"}}`)
-	out := stripJSONKey(body, "job")
-	var m map[string]interface{}
-	if err := json.Unmarshal(out, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := m["printer"]; !ok {
-		t.Error("expected printer key to remain")
-	}
-}
-
-// TestAPIShapeMonitor_StatusJobSubkeyNoFalsePositive verifies that a PRINTING→FINISHED
-// state transition (where the "job" sub-key disappears from /api/v1/status) does NOT
-// trigger a shape-change alert after normalization.
-func TestAPIShapeMonitor_StatusJobSubkeyNoFalsePositive(t *testing.T) {
-	printingBody := []byte(`{"job":{"id":62,"progress":8},"printer":{"state":"PRINTING","temp_nozzle":230}}`)
-	finishedBody := []byte(`{"printer":{"state":"FINISHED","temp_nozzle":26}}`)
-
-	m := NewAPIShapeMonitor()
-	m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(printingBody))
-	_, _, changed := m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(finishedBody))
-	if changed {
-		t.Error("job sub-key disappearing on print completion should not trigger shape change after normalization")
-	}
-}
-
-// TestAPIShapeMonitor_AxisXYDisappearsOnPrint_NoFalsePositive verifies that
-// axis_x/axis_y disappearing when a print starts (Core One L behaviour) does
-// NOT trigger a shape-change alert after normalization.
-func TestAPIShapeMonitor_AxisXYDisappearsOnPrint_NoFalsePositive(t *testing.T) {
-	idleBody  := []byte(`{"printer":{"state":"IDLE","temp_nozzle":26,"axis_x":0,"axis_y":0,"axis_z":10}}`)
-	printBody := []byte(`{"job":{"id":1,"progress":5,"time_printing":60},"printer":{"state":"PRINTING","temp_nozzle":230,"axis_z":10}}`)
-
-	m := NewAPIShapeMonitor()
-	m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(idleBody))
-	_, _, changed := m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(printBody))
-	if changed {
-		t.Error("axis_x/axis_y disappearing on print start should not trigger shape change after normalization")
-	}
-}
-
-// TestAPIShapeMonitor_TransferFieldNoFalsePositive verifies that the /transfer
-// object appearing and disappearing (present only during file uploads) does NOT
-// trigger a shape-change alert after normalization.
-func TestAPIShapeMonitor_TransferFieldNoFalsePositive(t *testing.T) {
-	idleBody     := []byte(`{"printer":{"state":"IDLE","temp_nozzle":26}}`)
-	transferBody := []byte(`{"printer":{"state":"IDLE","temp_nozzle":26},"transfer":{"id":1,"progress":50,"time_transferring":10,"transferred":512000}}`)
-
-	m := NewAPIShapeMonitor()
-	m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(idleBody))
-	_, _, changed := m.Check("core-one", "status", normalizePrusaLinkStatusForMonitor(transferBody))
-	if changed {
-		t.Error("transfer object appearing should not trigger shape change after normalization")
 	}
 }
 
@@ -288,10 +244,9 @@ func TestAPIShapeMonitor_LoadStatusFixture_Stable(t *testing.T) {
 		t.Fatalf("reading fixture: %v", err)
 	}
 	m := NewAPIShapeMonitor()
-	m.Check("core-one", "status", data)
-	_, _, changed := m.Check("core-one", "status", data)
-	if changed {
-		t.Error("same fixture twice should not report changed")
+	added, _, changed := m.Check("status", data)
+	if changed || len(added) > 0 {
+		t.Errorf("status fixture should match schema, got added=%v", added)
 	}
 }
 
@@ -301,9 +256,8 @@ func TestAPIShapeMonitor_LoadJobFixture_Stable(t *testing.T) {
 		t.Fatalf("reading fixture: %v", err)
 	}
 	m := NewAPIShapeMonitor()
-	m.Check("core-one", "job", data)
-	_, _, changed := m.Check("core-one", "job", data)
-	if changed {
-		t.Error("same fixture twice should not report changed")
+	added, _, changed := m.Check("job", data)
+	if changed || len(added) > 0 {
+		t.Errorf("job fixture should match schema, got added=%v", added)
 	}
 }

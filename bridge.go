@@ -66,24 +66,24 @@ func prettyJSON(raw []byte) string {
 
 // FilamentBridge manages the connection between PrusaLink and Spoolman
 type FilamentBridge struct {
-	config           *Config
-	spoolman         *SpoolmanClient
-	db               *sql.DB
-	wasPrinting      map[string]bool
-	currentJobFile   map[string]string     // Store current job filename per printer
-	currentJobDisplayName map[string]string // Display name (long filename) for current job
-	currentJobID     map[string]int        // Job ID from PRINTING state; carried to finish handler
-	processingPrints map[string]bool       // Track prints being processed
-	monitoringActive map[string]bool       // Guard against overlapping monitor goroutines per printer
-	printErrors      map[string]PrintError // Store print processing errors
-	errorMutex       sync.RWMutex
-	previousState    map[string]string    // Last seen printer state per printer
-	printStartTime   map[string]time.Time // When each printer's current job was first detected
-	mutex            sync.RWMutex
+	config                *Config
+	spoolman              *SpoolmanClient
+	db                    *sql.DB
+	wasPrinting           map[string]bool
+	currentJobFile        map[string]string     // Store current job filename per printer
+	currentJobDisplayName map[string]string     // Display name (long filename) for current job
+	currentJobID          map[string]int        // Job ID from PRINTING state; carried to finish handler
+	processingPrints      map[string]bool       // Track prints being processed
+	monitoringActive      map[string]bool       // Guard against overlapping monitor goroutines per printer
+	printErrors           map[string]PrintError // Store print processing errors
+	errorMutex            sync.RWMutex
+	previousState         map[string]string    // Last seen printer state per printer
+	printStartTime        map[string]time.Time // When each printer's current job was first detected
+	mutex                 sync.RWMutex
 
 	// Bambu MQTT clients — long-lived, one per printer, keyed by printerID
-	bambuClients      map[string]BambuStatusProvider
-	bambuMutex        sync.RWMutex
+	bambuClients map[string]BambuStatusProvider
+	bambuMutex   sync.RWMutex
 	// bambuClientFactory creates a new Bambu client; overridable in tests.
 	bambuClientFactory func(ip, serial, accessCode string) BambuStatusProvider
 
@@ -224,8 +224,8 @@ type PrintQualityTag struct {
 
 // PrintTagsPayload is the body for POST /api/history/:id/tags.
 type PrintTagsPayload struct {
-	Outcome    string   `json:"outcome"`    // "success" | "acceptable" | "failed" | ""
-	Issues     []string `json:"issues"`     // predefined and/or "custom"
+	Outcome    string   `json:"outcome"` // "success" | "acceptable" | "failed" | ""
+	Issues     []string `json:"issues"`  // predefined and/or "custom"
 	CustomText string   `json:"custom_text"`
 }
 
@@ -357,23 +357,23 @@ type PrinterData struct {
 // NewFilamentBridge creates a new FilamentBridge instance
 func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 	bridge := &FilamentBridge{
-		config:           config,
-		spoolman:         NewSpoolmanClient(DefaultSpoolmanURL, SpoolmanTimeout),
+		config:                config,
+		spoolman:              NewSpoolmanClient(DefaultSpoolmanURL, SpoolmanTimeout),
 		wasPrinting:           make(map[string]bool),
 		currentJobFile:        make(map[string]string),
 		currentJobDisplayName: make(map[string]string),
 		currentJobID:          make(map[string]int),
 		processingPrints:      make(map[string]bool),
-		monitoringActive: make(map[string]bool),
-		printErrors:      make(map[string]PrintError),
-		previousState:    make(map[string]string),
-		printStartTime:   make(map[string]time.Time),
-		bambuClients:     make(map[string]BambuStatusProvider),
-		lastSnapshotPct:  make(map[string]float64),
-		commLogs:         make(map[string]*PrinterCommLog),
-		rawResponses:     make(map[string]*PrusaLinkRawCapture),
-		apiMonitor:       NewAPIShapeMonitor(),
-		printerWarnings:  make(map[string][]PrinterWarning),
+		monitoringActive:      make(map[string]bool),
+		printErrors:           make(map[string]PrintError),
+		previousState:         make(map[string]string),
+		printStartTime:        make(map[string]time.Time),
+		bambuClients:          make(map[string]BambuStatusProvider),
+		lastSnapshotPct:       make(map[string]float64),
+		commLogs:              make(map[string]*PrinterCommLog),
+		rawResponses:          make(map[string]*PrusaLinkRawCapture),
+		apiMonitor:            NewAPIShapeMonitor(),
+		printerWarnings:       make(map[string][]PrinterWarning),
 	}
 	bridge.bambuClientFactory = func(ip, serial, accessCode string) BambuStatusProvider {
 		return NewBambuMQTTClient(ip, serial, accessCode, newBambuDebugLogger(bridge))
@@ -2342,19 +2342,19 @@ func (b *FilamentBridge) migrateToolheadMappingsToSpoolman() error {
 // initializeDefaultConfig sets up default configuration values
 func (b *FilamentBridge) initializeDefaultConfig() error {
 	defaultConfigs := map[string]string{
-		ConfigKeyPrinterIPs:                      "", // Comma-separated list of printer IP addresses
-		ConfigKeyAPIKey:                          "", // PrusaLink API key for authentication
-		ConfigKeySpoolmanURL:                     DefaultSpoolmanURL,
-		ConfigKeyPollInterval:                    fmt.Sprintf("%d", DefaultPollInterval),
-		ConfigKeyWebPort:                         DefaultWebPort,
-		ConfigKeyPrusaLinkTimeout:                fmt.Sprintf("%d", PrusaLinkTimeout),
-		ConfigKeyPrusaLinkFileDownloadTimeout:    fmt.Sprintf("%d", PrusaLinkFileDownloadTimeout),
-		ConfigKeySpoolmanTimeout:                 fmt.Sprintf("%d", SpoolmanTimeout),
-		ConfigKeyAutoAssignPreviousSpoolEnabled: "false", // Enable auto-assignment of previous spool to default location
-		ConfigKeyNFCTrashLocation:                "Trash",     // Location for empty/done spools (tag ready to re-program)
-		ConfigKeyNFCInventoryLocation:            "Inventory", // Default storage when spool displaced from toolhead
-		ConfigKeySpoolmanLocationSyncEnabled:     "false",     // Bidirectional Spoolman location sync
-		ConfigKeyNFCTapTimeoutSeconds:            "15",        // Tap-tap pending window in seconds (Stage 5)
+		ConfigKeyPrinterIPs:                     "", // Comma-separated list of printer IP addresses
+		ConfigKeyAPIKey:                         "", // PrusaLink API key for authentication
+		ConfigKeySpoolmanURL:                    DefaultSpoolmanURL,
+		ConfigKeyPollInterval:                   fmt.Sprintf("%d", DefaultPollInterval),
+		ConfigKeyWebPort:                        DefaultWebPort,
+		ConfigKeyPrusaLinkTimeout:               fmt.Sprintf("%d", PrusaLinkTimeout),
+		ConfigKeyPrusaLinkFileDownloadTimeout:   fmt.Sprintf("%d", PrusaLinkFileDownloadTimeout),
+		ConfigKeySpoolmanTimeout:                fmt.Sprintf("%d", SpoolmanTimeout),
+		ConfigKeyAutoAssignPreviousSpoolEnabled: "false",     // Enable auto-assignment of previous spool to default location
+		ConfigKeyNFCTrashLocation:               "Trash",     // Location for empty/done spools (tag ready to re-program)
+		ConfigKeyNFCInventoryLocation:           "Inventory", // Default storage when spool displaced from toolhead
+		ConfigKeySpoolmanLocationSyncEnabled:    "false",     // Bidirectional Spoolman location sync
+		ConfigKeyNFCTapTimeoutSeconds:           "15",        // Tap-tap pending window in seconds (Stage 5)
 	}
 
 	// INSERT OR IGNORE ensures new keys added in updates are seeded for existing
@@ -2375,19 +2375,19 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 // getConfigDescription returns a description for a configuration key
 func getConfigDescription(key string) string {
 	descriptions := map[string]string{
-		ConfigKeyPrinterIPs:                      "Comma-separated list of printer IP addresses for PrusaLink",
-		ConfigKeyAPIKey:                          "PrusaLink API key for authentication",
-		ConfigKeySpoolmanURL:                     "URL of Spoolman instance",
-		ConfigKeyPollInterval:                    "Polling interval in seconds",
-		ConfigKeyWebPort:                         "Port for web interface",
-		ConfigKeyPrusaLinkTimeout:                "PrusaLink API timeout in seconds",
-		ConfigKeyPrusaLinkFileDownloadTimeout:    "PrusaLink file download header timeout in seconds (body reading is unbounded to support large bgcode files)",
-		ConfigKeySpoolmanTimeout:                 "Spoolman API timeout in seconds",
+		ConfigKeyPrinterIPs:                     "Comma-separated list of printer IP addresses for PrusaLink",
+		ConfigKeyAPIKey:                         "PrusaLink API key for authentication",
+		ConfigKeySpoolmanURL:                    "URL of Spoolman instance",
+		ConfigKeyPollInterval:                   "Polling interval in seconds",
+		ConfigKeyWebPort:                        "Port for web interface",
+		ConfigKeyPrusaLinkTimeout:               "PrusaLink API timeout in seconds",
+		ConfigKeyPrusaLinkFileDownloadTimeout:   "PrusaLink file download header timeout in seconds (body reading is unbounded to support large bgcode files)",
+		ConfigKeySpoolmanTimeout:                "Spoolman API timeout in seconds",
 		ConfigKeyAutoAssignPreviousSpoolEnabled: "Enable automatic assignment of previous spool to Inventory location when assigning new spool to toolhead",
-		ConfigKeyNFCTrashLocation:                "Spoolman location name for empty/finished spools (NFC tag ready to re-program)",
-		ConfigKeyNFCInventoryLocation:            "Spoolman location name used as default storage when a spool is displaced from a toolhead via NFC",
-		ConfigKeySpoolmanLocationSyncEnabled:     "When true, The Moment writes spool locations to Spoolman on assign/unassign and polls for Spoolman-initiated moves",
-		ConfigKeyNFCTapTimeoutSeconds:            "Seconds a first NFC tap stays pending before a second tap is treated as a fresh first tap (tap-tap engine)",
+		ConfigKeyNFCTrashLocation:               "Spoolman location name for empty/finished spools (NFC tag ready to re-program)",
+		ConfigKeyNFCInventoryLocation:           "Spoolman location name used as default storage when a spool is displaced from a toolhead via NFC",
+		ConfigKeySpoolmanLocationSyncEnabled:    "When true, The Moment writes spool locations to Spoolman on assign/unassign and polls for Spoolman-initiated moves",
+		ConfigKeyNFCTapTimeoutSeconds:           "Seconds a first NFC tap stays pending before a second tap is treated as a fresh first tap (tap-tap engine)",
 	}
 	if desc, exists := descriptions[key]; exists {
 		return desc
@@ -2458,7 +2458,6 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolEnabled(enabled bool) error {
 	}
 	return b.SetConfigValue(ConfigKeyAutoAssignPreviousSpoolEnabled, value)
 }
-
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
@@ -3295,6 +3294,7 @@ func (b *FilamentBridge) MonitorPrinters() {
 // State machine:
 //
 //	PRINTING          → track wasPrinting=true, store job filename
+//
 // checkFilamentSufficiency estimates the filament required for the active job and compares it
 // against the remaining weight on each assigned spool. Intended to be called in a goroutine
 // at print-start so it never blocks the monitor loop.
@@ -3428,10 +3428,10 @@ func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePa
 	b.printerWarningsMu.Unlock()
 }
 
-//	PAUSED            → keep wasPrinting=true (print will resume)
-//	ATTENTION         → keep wasPrinting=true (filament runout — user swaps spool, then resumes)
-//	IDLE / FINISHED   → if wasPrinting: print completed normally → process full G-code usage
-//	STOPPED           → if wasPrinting: job was cancelled → log partial usage from progress %
+// PAUSED            → keep wasPrinting=true (print will resume)
+// ATTENTION         → keep wasPrinting=true (filament runout — user swaps spool, then resumes)
+// IDLE / FINISHED   → if wasPrinting: print completed normally → process full G-code usage
+// STOPPED           → if wasPrinting: job was cancelled → log partial usage from progress %
 func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig) error {
 	client := NewPrusaLinkClient(config.IPAddress, config.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
 	cl := b.getCommLog(printerID)
@@ -3472,21 +3472,21 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 	}
 	b.rawResponsesMu.Unlock()
 
-	// Detect API shape changes (e.g. unknown objects received from PrusaLink).
-	// The "job" sub-object in /api/v1/status is state-dependent: present during printing,
-	// absent when idle/finished. Strip it before shape comparison so a print completing
-	// doesn't trigger a false-positive "removed fields" alert.
+	// Detect API shape changes (e.g. unknown top-level fields received from PrusaLink).
+	// The monitor diffs each body against a per-endpoint schema of known field paths, so
+	// state-dependent fields (time_remaining on FINISHED, axis_x/y during PRINTING, the
+	// transfer sub-object during uploads, etc.) do not raise false positives.
 	for _, check := range []struct {
 		endpoint string
 		body     []byte
 	}{
-		{"status", normalizePrusaLinkStatusForMonitor(statusRaw)},
+		{"status", statusRaw},
 		{"job", jobRaw},
 	} {
 		if len(check.body) == 0 {
 			continue
 		}
-		added, removed, changed := b.apiMonitor.Check(printerID, check.endpoint, check.body)
+		added, removed, changed := b.apiMonitor.Check(check.endpoint, check.body)
 		if changed {
 			diff := FormatDiff("/api/v1/"+check.endpoint, added, removed)
 			cl.Append("EV", "api_change", diff, "")
@@ -6748,48 +6748,6 @@ func (b *FilamentBridge) GetDashboardStats() (*DashboardStats, error) {
 		WHERE ph.status = 'completed' AND julianday(ph.print_finished) >= julianday('now', '-30 days')`).Scan(&s.TotalCost30d, &s.Currency)
 	b.db.QueryRow(`SELECT COALESCE(AVG(print_time_minutes), 0) FROM print_history WHERE status = 'completed' AND print_time_minutes > 0 AND julianday(print_finished) >= julianday('now', '-30 days')`).Scan(&s.AvgPrintTimeMin)
 	return s, nil
-}
-
-// stripJSONKey removes one top-level key from a JSON object body.
-// Returns the original body unchanged on any parse error.
-func stripJSONKey(body []byte, key string) []byte {
-	var m map[string]interface{}
-	if err := json.Unmarshal(body, &m); err != nil {
-		return body
-	}
-	delete(m, key)
-	out, err := json.Marshal(m)
-	if err != nil {
-		return body
-	}
-	return out
-}
-
-// normalizePrusaLinkStatusForMonitor removes fields that are conditionally
-// present depending on printer state so the shape monitor only fires on
-// genuine structural changes, not idle↔printing transitions.
-//
-// Stripped fields:
-//   - "job": absent when idle, present when printing
-//   - "storage": optional/variable across firmware versions
-//   - printer.axis_x, printer.axis_y: present when idle, absent during printing
-func normalizePrusaLinkStatusForMonitor(body []byte) []byte {
-	var m map[string]interface{}
-	if err := json.Unmarshal(body, &m); err != nil {
-		return body
-	}
-	delete(m, "job")
-	delete(m, "storage")
-	delete(m, "transfer")
-	if printer, ok := m["printer"].(map[string]interface{}); ok {
-		delete(printer, "axis_x")
-		delete(printer, "axis_y")
-	}
-	out, err := json.Marshal(m)
-	if err != nil {
-		return body
-	}
-	return out
 }
 
 // All The Moment location management functions have been removed - locations are now managed in Spoolman only

@@ -12,84 +12,132 @@ import (
 	"sync"
 )
 
-// APIShapeMonitor detects when the JSON structure of PrusaLink API responses
-// changes between poll cycles — for example when an unknown object is received
-// that was not present before. On first call for a printer+endpoint pair the
-// response is stored as the baseline. Subsequent calls return the field diff.
+// APIShapeMonitor detects fields in PrusaLink API responses that the
+// application does not know about. It diffs each response body against a
+// per-endpoint schema (the set of field paths the structs declare, plus
+// state- and lifecycle-dependent keys the API may or may not emit) and
+// alerts only on paths outside that schema.
 //
-// Muting rules (all state is in-memory; resets on process restart):
-//   - alertPending: true while an unacknowledged API-change alert exists for a
-//     printer. Blocks new alerts until ClearAlert is called (i.e. user dismisses).
-//   - muted: true after the user explicitly mutes a printer. Suppresses all
-//     further alerts until UnmuteOnPrint is called (on IDLE→PRINTING transition).
+// Diff is against the schema, not against the first body seen. The first
+// body is unreliable as a baseline: it may be missing state-dependent
+// fields (e.g. time_remaining absent on FINISHED), which would lock in a
+// partial schema and trigger a false positive the first time a print starts.
+//
+// Muting rules (in-memory; reset on process restart):
+//   - alertPending: true while an unacknowledged alert exists. Blocks new
+//     alerts until ClearAlert is called (user dismisses).
+//   - muted: true after user mutes. Suppresses alerts until UnmuteOnPrint
+//     (on IDLE→PRINTING).
 type APIShapeMonitor struct {
 	mu           sync.Mutex
-	shapes       map[string]string // "printerID:endpoint" → sorted field-path fingerprint
-	alertPending map[string]bool   // printerID → alert is live and unacknowledged
-	muted        map[string]bool   // printerID → muted until next print / restart
+	schema       map[string]map[string]bool // endpoint → known field paths
+	alertPending map[string]bool            // printerID → alert is live and unacknowledged
+	muted        map[string]bool            // printerID → muted until next print / restart
 }
 
 // NewAPIShapeMonitor creates a ready-to-use monitor.
 func NewAPIShapeMonitor() *APIShapeMonitor {
 	return &APIShapeMonitor{
-		shapes:       make(map[string]string),
+		schema: map[string]map[string]bool{
+			"status": statusSchema(),
+			"job":    jobSchema(),
+		},
 		alertPending: make(map[string]bool),
 		muted:        make(map[string]bool),
 	}
 }
 
-// Check compares the JSON shape of body against the stored baseline for
-// printerID+endpoint. On first call the body is stored as the baseline and
-// (nil, nil, false) is returned. On subsequent calls a diff is returned when
-// the field set changes.
-//
-// Returns (added, removed []string, changed bool).
-// added/removed are slash-prefixed paths, e.g. "/printer/temp_nozzle".
-func (m *APIShapeMonitor) Check(printerID, endpoint string, body []byte) (added, removed []string, changed bool) {
+// statusSchema is the allow-list of field paths /api/v1/status may return.
+// Mirrors PrusaLinkStatus (prusalink.go) and adds state-/lifecycle-dependent
+// keys the API may emit but the struct does not decode:
+//   - storage: optional across firmware versions
+//   - job: present while printing, absent when idle/finished
+//   - transfer: present only during file uploads
+//   - printer.axis_x / axis_y: present when idle, absent while printing (Core One L)
+func statusSchema() map[string]bool {
+	return map[string]bool{
+		"/job":                        true,
+		"/job/id":                     true,
+		"/job/progress":               true,
+		"/job/time_remaining":         true,
+		"/job/time_printing":          true,
+		"/storage":                    true,
+		"/storage/path":               true,
+		"/storage/name":               true,
+		"/storage/read_only":          true,
+		"/printer":                    true,
+		"/printer/state":              true,
+		"/printer/temp_nozzle":        true,
+		"/printer/target_nozzle":      true,
+		"/printer/temp_bed":           true,
+		"/printer/target_bed":         true,
+		"/printer/axis_x":             true,
+		"/printer/axis_y":             true,
+		"/printer/axis_z":             true,
+		"/printer/flow":               true,
+		"/printer/speed":              true,
+		"/printer/fan_hotend":         true,
+		"/printer/fan_print":          true,
+		"/transfer":                   true,
+		"/transfer/id":                true,
+		"/transfer/progress":          true,
+		"/transfer/time_transferring": true,
+		"/transfer/transferred":       true,
+	}
+}
+
+// jobSchema is the allow-list of field paths /api/v1/job may return.
+// Mirrors PrusaLinkJob (prusalink.go). All fields are state- or
+// file-dependent and may legitimately be absent; the list is the
+// allow-list, not a required set.
+func jobSchema() map[string]bool {
+	return map[string]bool{
+		"/id":                   true,
+		"/state":                true,
+		"/progress":             true,
+		"/time_remaining":       true,
+		"/time_printing":        true,
+		"/file":                 true,
+		"/file/name":            true,
+		"/file/display_name":    true,
+		"/file/path":            true,
+		"/file/size":            true,
+		"/file/m_timestamp":     true,
+		"/file/refs":            true,
+		"/file/refs/download":   true,
+		"/file/refs/icon":       true,
+		"/file/refs/thumbnail":  true,
+		"/filament":             true,
+		"/filament/toolhead_id": true,
+		"/filament/length":      true,
+		"/filament/weight":      true,
+	}
+}
+
+// Check returns the field paths in body that are not in the schema for
+// endpoint. removed is always nil — known fields may legitimately
+// disappear with state, so their absence is not an alert-worthy event.
+// Returns (added, nil, false) for empty body, unparseable JSON, or an
+// unknown endpoint.
+func (m *APIShapeMonitor) Check(endpoint string, body []byte) (added, removed []string, changed bool) {
 	if len(body) == 0 {
 		return nil, nil, false
 	}
-
 	var v interface{}
 	if err := json.Unmarshal(body, &v); err != nil {
 		return nil, nil, false
 	}
-
-	paths := jsonFieldPaths(v, "")
-	sort.Strings(paths)
-	fingerprint := strings.Join(paths, "\n")
-
-	key := printerID + ":" + endpoint
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	prev, seen := m.shapes[key]
-	m.shapes[key] = fingerprint
-
-	if !seen {
+	known, ok := m.schema[endpoint]
+	if !ok {
 		return nil, nil, false
 	}
-	if prev == fingerprint {
-		return nil, nil, false
-	}
-
-	prevSet := splitSet(prev)
-	currSet := splitSet(fingerprint)
-
-	for p := range currSet {
-		if !prevSet[p] {
+	for _, p := range jsonFieldPaths(v, "") {
+		if !known[p] {
 			added = append(added, p)
 		}
 	}
-	for p := range prevSet {
-		if !currSet[p] {
-			removed = append(removed, p)
-		}
-	}
 	sort.Strings(added)
-	sort.Strings(removed)
-	return added, removed, true
+	return added, nil, len(added) > 0
 }
 
 // ShouldAlert returns true if an API-change alert should be fired for this
@@ -167,14 +215,4 @@ func jsonFieldPaths(v interface{}, prefix string) []string {
 	default:
 		return nil
 	}
-}
-
-func splitSet(fingerprint string) map[string]bool {
-	set := make(map[string]bool)
-	for _, line := range strings.Split(fingerprint, "\n") {
-		if line != "" {
-			set[line] = true
-		}
-	}
-	return set
 }
