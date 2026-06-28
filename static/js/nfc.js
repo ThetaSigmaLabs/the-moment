@@ -64,7 +64,7 @@ async function loadLocationTags() {
         container.innerHTML = '';
 
         // Add informational banner about Spoolman locations
-        const spoolmanURL = data.spoolman_url || '';
+        const spoolmanURL = data.spoolman_external_url || data.spoolman_url || '';
         const messageBanner = document.createElement('div');
         messageBanner.className = 'nfc-info-banner';
         messageBanner.style.cssText = 'background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 15px; margin-bottom: 15px; border-radius: 8px;';

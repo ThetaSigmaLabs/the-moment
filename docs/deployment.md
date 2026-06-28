@@ -282,6 +282,7 @@ In Docker, host paths set in `.env` are bind-mounted into the container at the f
 | Variable | Read by | Default | Purpose |
 |---|---|---|---|
 | `SPOOLMAN_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | URL The Moment uses to reach Spoolman. Only applied when the database is first created; ignored on subsequent starts. In Docker compose this is set to `http://spoolman:8000` (Docker DNS). Change via Settings → Advanced after first run. |
+| `SPOOLMAN_EXTERNAL_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | Browser-reachable Spoolman URL. Used for "Open Spoolman" links in the UI. In Docker compose this defaults to `http://spoolman:8000`. Falls back to `SPOOLMAN_URL` when empty. |
 | `BAMBU_DEBUG` | `bambu.go` | `0` | Set to `1` for verbose Bambu MQTT debug logging (requires restart). Hot-togglable without restart via Settings → Advanced → `bambu_debug = true`. |
 
 ### Backup
