@@ -83,6 +83,13 @@ type MoonrakerStatus struct {
 	BedTemp      float64
 	BedTarget    float64
 
+	// Live telemetry for the printer detail view.
+	AxisZ     float64 // mm, current layer height
+	Flow      int     // % — Klipper's extrude_factor
+	Speed     int     // % — Klipper's speed_factor
+	FanPrint  int     // % — part cooling fan
+	FanHotend int     // % — hotend heatbreak fan
+
 	LastUpdate time.Time
 }
 
@@ -292,6 +299,18 @@ func moonrakerSubscription() map[string]interface{} {
 		"virtual_sdcard": []string{"progress"},
 		"extruder":       []string{"temperature", "target"},
 		"heater_bed":     []string{"temperature", "target"},
+
+		// Display-only. gcode_move is subscribed for the flow/speed overrides
+		// and the displayed Z height — NEVER for extrusion. Its gcode_position
+		// E axis is rewritten by every slicer G92 E0 (observed live: raw axis
+		// 596.46mm vs gcode_position 7.23mm on the same move), so billing from
+		// it would be meaningless. Extrusion comes from toolhead.position only.
+		"gcode_move":     []string{"speed_factor", "extrude_factor", "gcode_position"},
+		"display_status": []string{"progress"},
+		"fan":            []string{"speed"},
+		// Config-dependent: most Klipper configs name the heatbreak fan this
+		// way, but it is optional and absence is handled.
+		"heater_fan hotend_fan": []string{"speed"},
 	}
 }
 
@@ -535,6 +554,62 @@ func (c *MoonrakerClient) applyStatus(objects map[string]json.RawMessage, isSnap
 		}
 		if err := json.Unmarshal(raw, &vs); err == nil && vs.Progress != nil {
 			c.status.Progress = *vs.Progress
+		}
+	}
+
+	// display_status carries the slicer's own M73 estimate, which accounts for
+	// time rather than bytes consumed and so tracks what the printer's screen
+	// and Mainsail show. It arrives after virtual_sdcard here deliberately: when
+	// both are present the M73 figure wins.
+	if raw, ok := objects["display_status"]; ok {
+		var ds struct {
+			Progress *float64 `json:"progress"`
+		}
+		if err := json.Unmarshal(raw, &ds); err == nil && ds.Progress != nil {
+			c.status.Progress = *ds.Progress
+		}
+	}
+
+	// gcode_move: display fields only. gcode_position[3] is the G92-rewritten
+	// extruder axis and is deliberately not read — extrusion comes from
+	// toolhead.position above.
+	if raw, ok := objects["gcode_move"]; ok {
+		var gm struct {
+			SpeedFactor   *float64  `json:"speed_factor"`
+			ExtrudeFactor *float64  `json:"extrude_factor"`
+			GcodePosition []float64 `json:"gcode_position"`
+		}
+		if err := json.Unmarshal(raw, &gm); err == nil {
+			if gm.SpeedFactor != nil {
+				c.status.Speed = int(*gm.SpeedFactor * 100)
+			}
+			if gm.ExtrudeFactor != nil {
+				c.status.Flow = int(*gm.ExtrudeFactor * 100)
+			}
+			// Index 2 is Z. Safe to read: unlike the E axis, Z is not rewritten
+			// in a way that matters for display.
+			if len(gm.GcodePosition) >= 3 {
+				c.status.AxisZ = gm.GcodePosition[2]
+			}
+		}
+	}
+
+	if raw, ok := objects["fan"]; ok {
+		var f struct {
+			Speed *float64 `json:"speed"`
+		}
+		if err := json.Unmarshal(raw, &f); err == nil && f.Speed != nil {
+			c.status.FanPrint = int(*f.Speed * 100)
+		}
+	}
+
+	// Optional: not every Klipper config defines a hotend fan under this name.
+	if raw, ok := objects["heater_fan hotend_fan"]; ok {
+		var f struct {
+			Speed *float64 `json:"speed"`
+		}
+		if err := json.Unmarshal(raw, &f); err == nil && f.Speed != nil {
+			c.status.FanHotend = int(*f.Speed * 100)
 		}
 	}
 

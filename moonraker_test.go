@@ -346,14 +346,14 @@ func TestMoonrakerCloseIsIdempotent(t *testing.T) {
 }
 
 // The subscribe request must ask for toolhead.position — the raw kinematic
-// axis — and must never subscribe to gcode_move, whose gcode_position is
-// rewritten by G92 and would silently lose extrusion.
-func TestMoonrakerSubscribesToToolheadNotGcodeMove(t *testing.T) {
+// extruder axis.
+//
+// gcode_move IS subscribed, but only for display fields (flow, speed, Z).
+// Its gcode_position E axis is rewritten by every slicer G92 E0 and must never
+// reach the tracker. TestMoonrakerBillsFromToolheadNotGcodePosition enforces
+// that behaviourally, which is the guarantee that actually matters.
+func TestMoonrakerSubscribesToToolheadPosition(t *testing.T) {
 	objects := moonrakerSubscription()
-
-	if _, ok := objects["gcode_move"]; ok {
-		t.Error("must not subscribe to gcode_move: G92 rewrites gcode_position")
-	}
 
 	fields, ok := objects["toolhead"].([]string)
 	if !ok {
@@ -372,6 +372,91 @@ func TestMoonrakerSubscribesToToolheadNotGcodeMove(t *testing.T) {
 	// Guard the wire format too, since this is what Klipper actually parses.
 	if _, err := json.Marshal(objects); err != nil {
 		t.Errorf("subscription must marshal: %v", err)
+	}
+}
+
+// Extrusion must be billed from toolhead.position[3], never from
+// gcode_move.gcode_position[3].
+//
+// These two disagree wildly in practice: observed live on a Voron mid-print,
+// the raw axis read 596.46mm while gcode_position read 7.23mm on the very same
+// move, because the slicer emits G92 E0 constantly. Billing from the latter
+// would lose almost all consumption.
+func TestMoonrakerBillsFromToolheadNotGcodePosition(t *testing.T) {
+	f := newFakeMoonraker(t, toolheadSnapshot(1000, "extruder"))
+
+	c := NewMoonrakerClient(f.hostPort, false)
+	defer c.Close()
+
+	waitFor(t, "tracker baseline", func() bool { return c.Tracker().Ready() })
+	c.Tracker().SetActiveSpool(intPtr(12))
+
+	// Raw axis advances 50mm. gcode_position claims a G92-reset value that,
+	// if believed, would bill nothing at all.
+	f.notify <- map[string]interface{}{
+		"toolhead": map[string]interface{}{
+			"position": []float64{0, 0, 0, 1050},
+			"extruder": "extruder",
+		},
+		"gcode_move": map[string]interface{}{
+			"gcode_position": []float64{0, 0, 5.2, 3.1},
+			"speed_factor":   1.0,
+			"extrude_factor": 1.0,
+		},
+	}
+
+	waitFor(t, "extrusion billed", func() bool { return c.Tracker().PendingFor(12) > 0 })
+
+	if got := c.Tracker().PendingFor(12); got != 50 {
+		t.Errorf("billed %.3fmm, want 50 — extrusion must follow toolhead.position", got)
+	}
+
+	// The display fields from the same message must still be picked up.
+	s, err := c.GetCurrentStatus()
+	if err != nil {
+		t.Fatalf("GetCurrentStatus: %v", err)
+	}
+	if s.AxisZ != 5.2 {
+		t.Errorf("AxisZ = %.2f, want 5.2 (gcode_move is still read for display)", s.AxisZ)
+	}
+}
+
+// Klipper reports fan speed as a 0-1 fraction; the dashboard renders a percent.
+func TestMoonrakerScalesFanAndFactorsToPercent(t *testing.T) {
+	f := newFakeMoonraker(t, toolheadSnapshot(0, "extruder"))
+
+	c := NewMoonrakerClient(f.hostPort, false)
+	defer c.Close()
+
+	waitFor(t, "connection", func() bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.status.Connected
+	})
+
+	f.notify <- map[string]interface{}{
+		"fan":                   map[string]interface{}{"speed": 0.788235},
+		"heater_fan hotend_fan": map[string]interface{}{"speed": 1.0},
+		"gcode_move":            map[string]interface{}{"speed_factor": 1.0, "extrude_factor": 0.95},
+	}
+
+	waitFor(t, "fan speed", func() bool {
+		s, _ := c.GetCurrentStatus()
+		return s.FanPrint > 0
+	})
+
+	s, _ := c.GetCurrentStatus()
+	if s.FanPrint != 78 {
+		t.Errorf("FanPrint = %d, want 78", s.FanPrint)
+	}
+	if s.FanHotend != 100 {
+		t.Errorf("FanHotend = %d, want 100", s.FanHotend)
+	}
+	if s.Flow != 95 {
+		t.Errorf("Flow = %d, want 95", s.Flow)
+	}
+	if s.Speed != 100 {
+		t.Errorf("Speed = %d, want 100", s.Speed)
 	}
 }
 

@@ -62,6 +62,26 @@ func mapMoonrakerState(state string) string {
 	}
 }
 
+// moonrakerTimeRemaining estimates seconds left in the current print.
+//
+// Klipper does not publish a remaining-time figure — Mainsail and Fluidd
+// compute their own. This uses the file-progress method: elapsed time scaled by
+// how much of the job is left. It is rough early on, when a slow first layer
+// skews the rate, and settles as the print proceeds.
+func moonrakerTimeRemaining(s MoonrakerStatus) int {
+	// Below a few percent the estimate is dominated by heat-up and the first
+	// layer, so reporting nothing beats reporting a wild number.
+	if s.Progress <= 0.02 || s.Progress >= 1 || s.PrintDuration <= 0 {
+		return 0
+	}
+	total := s.PrintDuration / s.Progress
+	remaining := total - s.PrintDuration
+	if remaining < 0 {
+		return 0
+	}
+	return int(remaining)
+}
+
 // moonrakerLogOnly reports whether Moonraker printers should compute usage
 // without writing it to Spoolman.
 //
