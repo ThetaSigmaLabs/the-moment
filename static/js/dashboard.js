@@ -377,7 +377,7 @@ function _apmPopulate(d) {
     const snapList = document.getElementById('apm-snapshot-list');
     if (snapList) {
         if (snaps.length === 0) {
-            snapList.innerHTML = '<span style="color:#555;">No snapshots yet.</span>';
+            snapList.innerHTML = '<span style="color:#888;">No snapshots yet.</span>';
         } else {
             _snapshotList = snaps.map(function (s) {
                 return { url: s.url, label: s.label || s.filename || '' };
@@ -402,7 +402,7 @@ function _apmPopulate(d) {
     const thEl = document.getElementById('apm-toolheads');
     if (thEl) {
         if (toolheads.length === 0) {
-            thEl.innerHTML = '<span style="color:#555;">No toolhead data.</span>';
+            thEl.innerHTML = '<span style="color:#888;">No toolhead data.</span>';
         } else {
             thEl.innerHTML = toolheads.map(function (t) {
                 const dot = t.color_hex
@@ -411,8 +411,10 @@ function _apmPopulate(d) {
                     : '';
                 const spoolInfo = t.spool_id > 0
                     ? dot + escapeHtml(t.material || '') + (t.brand ? ' · ' + escapeHtml(t.brand) : '') +
-                    ' <span style="color:#666;font-size:0.88em;">#' + t.spool_id + '</span>'
-                    : '<span style="color:#555;">No spool assigned</span>';
+                    // #666 on this modal's background is ~2.9:1 contrast, below
+                    // the 4.5:1 WCAG AA threshold; #999 clears it.
+                    ' <span style="color:#999;font-size:0.88em;">#' + t.spool_id + '</span>'
+                    : '<span style="color:#888;">No spool assigned</span>';
                 return '<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #222;">' +
                     '<span style="color:#888;min-width:90px;font-size:0.88em;flex-shrink:0;">' + escapeHtml(t.display_name) + '</span>' +
                     '<span style="display:flex;align-items:center;">' + spoolInfo + '</span>' +
