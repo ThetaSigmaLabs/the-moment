@@ -705,6 +705,32 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ─── Real Printer Modals ──────────────────────────────────────────────────────
 
+// selectPrinterType sets a printer-type <select> to a value, adding the option
+// first if the markup does not list it.
+//
+// Assigning a value with no matching <option> leaves the select blank, and the
+// submit path then falls back to 'prusalink' — so merely opening and saving the
+// edit dialog would silently convert the printer to a different type. That is
+// data loss triggered by a read-only action.
+//
+// Rather than hardcode every type here, adapt to whatever the server sent. A
+// type the UI does not offer for *creation* is still a type it must not corrupt
+// when *editing* — and this keeps working unchanged when a new option is added
+// to the markup later.
+function selectPrinterType(selectEl, type) {
+    if (!selectEl || !type) { return; }
+    selectEl.value = type;
+    if (selectEl.value === type) { return; } // markup already had it
+
+    var opt = document.createElement('option');
+    opt.value = type;
+    // Title-case as a readable stand-in; the real label ships with the option
+    // when the type becomes selectable for new printers.
+    opt.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+    selectEl.appendChild(opt);
+    selectEl.value = type;
+}
+
 function onPrinterTypeChange(type, prefix) {
     var label     = document.getElementById(prefix + 'APIKeyLabel');
     var hint      = document.getElementById(prefix + 'APIKeyHint');
@@ -909,7 +935,7 @@ function editPrinter(printerId) {
         if (testResult) { testResult.style.display = 'none'; }
         var typeEl = document.getElementById('editPrinterType');
         var printerType = p.printer_type || 'prusalink';
-        if (typeEl) { typeEl.value = printerType; }
+        if (typeEl) { selectPrinterType(typeEl, printerType); }
         onPrinterTypeChange(printerType, 'editPrinter');
         var tabBar = document.getElementById('editPrinterTabBar');
         if (tabBar) tabBar.style.display = '';
