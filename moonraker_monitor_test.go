@@ -39,6 +39,11 @@ type fakeMoonrakerProvider struct {
 	activeSpool int
 	spoolErr    error
 	spoolSetTo  int
+
+	// lastJob is what Moonraker's own history reports. Nil means no matching
+	// job, which sends the caller to the tracker fallback.
+	lastJob    *MoonrakerJob
+	lastJobErr error
 }
 
 func newFakeMoonrakerProvider() *fakeMoonrakerProvider {
@@ -61,6 +66,10 @@ func (f *fakeMoonrakerProvider) ActiveSpoolID() (int, error) {
 func (f *fakeMoonrakerProvider) SetActiveSpoolID(spoolID int) error {
 	f.spoolSetTo = spoolID
 	return nil
+}
+
+func (f *fakeMoonrakerProvider) LastCompletedJob(filename string) (*MoonrakerJob, error) {
+	return f.lastJob, f.lastJobErr
 }
 
 // moonrakerTestConfig returns a PrinterConfig for Moonraker tests. No real host
@@ -612,6 +621,89 @@ func TestMoonrakerGramsUsesSpoolDensity(t *testing.T) {
 	}
 	if math.Abs(pla-got) < 0.5 {
 		t.Errorf("density is being ignored: ABS+ %.4fg vs PLA %.4fg", got, pla)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Per-print usage comes from Moonraker, not our tracker
+// -----------------------------------------------------------------------------
+
+// Moonraker's job history is the authoritative per-print figure — it is the
+// number Spoolman was debited, and it has no in-memory state to lose.
+//
+// This is not theoretical. Restarting The Moment rebaselines the tracker's
+// high-water mark to wherever the extruder axis sits. After a tip-shaping
+// retraction that is BELOW the previous mark, so the next print re-bills the
+// re-prime. Measured on hardware: the tracker said 1293.77mm for a print
+// Moonraker and Spoolman both recorded as 1244.69mm — 49mm (3.9%) too high.
+func TestMoonrakerUsagePrefersMoonrakerHistory(t *testing.T) {
+	b := newTestBridge(t)
+	fake := installFakeMoonraker(b)
+
+	// The tracker holds the inflated figure a restart would produce.
+	b.moonrakerMutex.Lock()
+	b.moonrakerPrintStart["mr1"] = 2504.051
+	b.moonrakerMutex.Unlock()
+	fake.tracker.Reset(0, "extruder")
+	fake.tracker.SetActiveSpool(intPtr(12))
+	fake.tracker.HandleStatusUpdate(3797.818, "extruder")
+
+	// Moonraker reports what actually happened.
+	fake.lastJob = &MoonrakerJob{
+		JobID:          "000126",
+		Filename:       "Cube_ABS_8m36s.gcode",
+		Status:         "completed",
+		FilamentUsed:   1244.686,
+		SlicerFilament: 1225.74,
+	}
+
+	used, source := b.moonrakerPrintUsage("mr1", fake, "Cube_ABS_8m36s.gcode")
+
+	if source != "moonraker history" {
+		t.Errorf("source = %q, want %q", source, "moonraker history")
+	}
+	if math.Abs(used-1244.686) > 0.001 {
+		t.Errorf("used = %.3fmm, want 1244.686 (Moonraker's figure, not the tracker's)", used)
+	}
+}
+
+// Without Moonraker history — no history component, or the job has not landed
+// yet — the tracker still provides a figure rather than losing the print.
+func TestMoonrakerUsageFallsBackToTracker(t *testing.T) {
+	b := newTestBridge(t)
+	fake := installFakeMoonraker(b)
+
+	b.moonrakerMutex.Lock()
+	b.moonrakerPrintStart["mr1"] = 1000
+	b.moonrakerMutex.Unlock()
+	fake.tracker.Reset(0, "extruder")
+	fake.tracker.SetActiveSpool(intPtr(12))
+	fake.tracker.HandleStatusUpdate(1500, "extruder")
+
+	fake.lastJob = nil // no matching job
+
+	used, source := b.moonrakerPrintUsage("mr1", fake, "Cube_ABS_8m36s.gcode")
+
+	if source != "tracker" {
+		t.Errorf("source = %q, want %q", source, "tracker")
+	}
+	if math.Abs(used-500) > 0.001 {
+		t.Errorf("used = %.3fmm, want 500", used)
+	}
+}
+
+// A print already running when we connected has no baseline, so neither source
+// can produce an honest number. Reporting zero lets the caller skip the record
+// rather than invent one.
+func TestMoonrakerUsageWithoutBaselineIsZero(t *testing.T) {
+	b := newTestBridge(t)
+	fake := installFakeMoonraker(b)
+	fake.lastJob = nil
+
+	used, source := b.moonrakerPrintUsage("mr1", fake, "Cube_ABS_8m36s.gcode")
+
+	if used != 0 || source != "none" {
+		t.Errorf("used=%.3f source=%q, want 0 and \"none\"", used, source)
 	}
 }
 

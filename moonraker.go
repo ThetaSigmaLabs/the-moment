@@ -107,6 +107,9 @@ type MoonrakerStatusProvider interface {
 	// SetActiveSpoolID assigns the spool in Moonraker, which is what Mainsail
 	// and Fluidd display.
 	SetActiveSpoolID(spoolID int) error
+	// LastCompletedJob returns Moonraker's own record for a finished job, which
+	// is the authoritative per-print consumption. Nil means no match.
+	LastCompletedJob(filename string) (*MoonrakerJob, error)
 	Close()
 }
 
@@ -230,6 +233,67 @@ func (c *MoonrakerClient) SetActiveSpoolID(spoolID int) error {
 		return fmt.Errorf("moonraker set spool_id: HTTP %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// MoonrakerJob is one entry from Moonraker's own print history.
+type MoonrakerJob struct {
+	JobID    string
+	Filename string
+	Status   string
+	// FilamentUsed is Moonraker's own figure for the job, in millimetres. It is
+	// the same number Spoolman was debited, so it is what print history should
+	// record.
+	FilamentUsed float64
+	// SlicerFilament is the slicer's estimate from the file's metadata, also in
+	// millimetres. The difference against FilamentUsed is the purge and
+	// tip-shaping overhead the slicer never sees.
+	SlicerFilament float64
+}
+
+// LastCompletedJob returns the most recent finished job matching filename.
+//
+// Print history takes its figure from here rather than from our own tracker.
+// The tracker's high-water mark is in-memory: restarting The Moment rebaselines
+// it to wherever the axis happens to be, and if that is below the previous
+// high-water — which it is after any tip-shaping retraction — the next print
+// re-bills the re-prime. Measured on real hardware, that inflated one print's
+// recorded usage by 49mm (3.9%). Moonraker's figure has no such state.
+//
+// Returns nil when no matching finished job is found, which the caller treats
+// as "fall back to the tracker".
+func (c *MoonrakerClient) LastCompletedJob(filename string) (*MoonrakerJob, error) {
+	var body struct {
+		Result struct {
+			Jobs []struct {
+				JobID        string  `json:"job_id"`
+				Filename     string  `json:"filename"`
+				Status       string  `json:"status"`
+				FilamentUsed float64 `json:"filament_used"`
+				Metadata     struct {
+					FilamentTotal float64 `json:"filament_total"`
+				} `json:"metadata"`
+			} `json:"jobs"`
+		} `json:"result"`
+	}
+	// A handful is plenty: the job of interest has just finished, and asking for
+	// the whole history on every print end would be wasteful.
+	if err := c.getJSON("/server/history/list?limit=10", &body); err != nil {
+		return nil, err
+	}
+
+	for _, j := range body.Result.Jobs {
+		if j.Filename != filename || j.Status == "in_progress" {
+			continue
+		}
+		return &MoonrakerJob{
+			JobID:          j.JobID,
+			Filename:       j.Filename,
+			Status:         j.Status,
+			FilamentUsed:   j.FilamentUsed,
+			SlicerFilament: j.Metadata.FilamentTotal,
+		}, nil
+	}
+	return nil, nil
 }
 
 // getJSON performs a GET against Moonraker's HTTP API and decodes the body.

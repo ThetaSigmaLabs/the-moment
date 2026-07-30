@@ -370,14 +370,10 @@ func (b *FilamentBridge) handleMoonrakerPrintFinished(
 ) error {
 	printerName := resolvePrinterName(config)
 
-	b.moonrakerMutex.RLock()
-	startTotal, hadStart := b.moonrakerPrintStart[printerID]
-	b.moonrakerMutex.RUnlock()
-
-	usedMM := client.Tracker().BilledTotal() - startTotal
-	if !hadStart || usedMM <= 0 {
-		// No baseline (the print was already running when we connected) or
-		// nothing extruded. Recording a zero-gram print would be misleading.
+	usedMM, source := b.moonrakerPrintUsage(printerID, client, filename)
+	if usedMM <= 0 {
+		// Nothing extruded, or the print was already running when we connected
+		// so there is no baseline. Recording a zero-gram print would mislead.
 		log.Printf("[MOONRAKER] Print ended on %s (%s) state=%s file=%s — no usage to record",
 			printerID, config.Name, finalState, filename)
 		return nil
@@ -417,15 +413,58 @@ func (b *FilamentBridge) handleMoonrakerPrintFinished(
 	}
 
 	if printID > 0 {
-		_ = b.AppendFilamentUsage(printID, moonrakerToolhead, 0, spoolID, 0, usedGrams)
+		// usedMM is the measured quantity and usedGrams is derived from it, so
+		// both are recorded. Passing 0 for the length leaves the history detail
+		// view showing a blank mm column.
+		_ = b.AppendFilamentUsage(printID, moonrakerToolhead, 0, spoolID, usedMM, usedGrams)
 		if err := b.SnapshotAssignmentsForPrint(printID, printerID, startTime); err != nil {
 			log.Printf("[MOONRAKER] Warning: could not snapshot assignments for print %d: %v", printID, err)
 		}
 	}
 
-	log.Printf("[MOONRAKER] 🎉 Print %s on %s (%s): file=%s %.2fmm = %.2fg on spool %d",
-		status, printerID, config.Name, filename, usedMM, usedGrams, spoolID)
+	log.Printf("[MOONRAKER] 🎉 Print %s on %s (%s): file=%s %.2fmm (%s) = %.2fg on spool %d",
+		status, printerID, config.Name, filename, usedMM, source, usedGrams, spoolID)
 	return nil
+}
+
+// moonrakerPrintUsage reports how much filament a finished print consumed, in
+// millimetres, and where the figure came from.
+//
+// Moonraker's own job history is preferred. Its number is the one Spoolman was
+// debited, and unlike our tracker it survives a restart of The Moment: the
+// tracker's high-water mark is in-memory, so restarting rebaselines it to
+// wherever the axis sits — and after a tip-shaping retraction that is below the
+// previous mark, making the next print re-bill the re-prime. Measured on
+// hardware, that inflated one print's recorded usage by 49mm (3.9%).
+//
+// Falls back to the tracker when Moonraker has no matching job, which covers
+// printers without the history component and jobs that have not appeared yet.
+func (b *FilamentBridge) moonrakerPrintUsage(
+	printerID string, client MoonrakerStatusProvider, filename string,
+) (float64, string) {
+	if filename != "" {
+		job, err := client.LastCompletedJob(filename)
+		if err != nil {
+			log.Printf("[MOONRAKER] Could not read job history for %s: %v", printerID, err)
+		} else if job != nil && job.FilamentUsed > 0 {
+			if job.SlicerFilament > 0 {
+				// The gap is the prime line, purge and tip shaping — real
+				// filament the slicer never accounts for. Logging it makes an
+				// otherwise invisible per-print cost visible.
+				log.Printf("[MOONRAKER] Job %s: slicer estimated %.2fmm, actually used %.2fmm (%.2fmm overhead)",
+					job.JobID, job.SlicerFilament, job.FilamentUsed, job.FilamentUsed-job.SlicerFilament)
+			}
+			return job.FilamentUsed, "moonraker history"
+		}
+	}
+
+	b.moonrakerMutex.RLock()
+	startTotal, hadStart := b.moonrakerPrintStart[printerID]
+	b.moonrakerMutex.RUnlock()
+	if !hadStart {
+		return 0, "none"
+	}
+	return client.Tracker().BilledTotal() - startTotal, "tracker"
 }
 
 // moonrakerGramsForSpool converts millimetres to grams using the spool's own
