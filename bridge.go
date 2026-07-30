@@ -97,7 +97,11 @@ type FilamentBridge struct {
 	// moonrakerHosts records the address each client was created for, so a
 	// re-addressed printer can be detected and its client replaced.
 	moonrakerHosts map[string]string
-	moonrakerMutex sync.RWMutex
+	// moonrakerPrintStart holds the tracker's billed total at the moment each
+	// print began. The difference at print end is that print's consumption,
+	// which is what print history records.
+	moonrakerPrintStart map[string]float64
+	moonrakerMutex      sync.RWMutex
 	// moonrakerClientFactory creates a new Moonraker client; overridable in tests.
 	moonrakerClientFactory func(host string, debugLog bool) MoonrakerStatusProvider
 
@@ -408,6 +412,7 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		moonrakerClients:      make(map[string]MoonrakerStatusProvider),
 		moonrakerReporters:    make(map[string]*MoonrakerReporter),
 		moonrakerHosts:        make(map[string]string),
+		moonrakerPrintStart:   make(map[string]float64),
 		lastSnapshotPct:       make(map[string]float64),
 		commLogs:              make(map[string]*PrinterCommLog),
 		rawResponses:          make(map[string]*PrusaLinkRawCapture),

@@ -120,6 +120,19 @@ func (t *ExtrusionTracker) Ready() bool {
 	return t.ready
 }
 
+// BilledTotal returns the high-water mark of the extruder axis.
+//
+// Sampling this at the start and end of a print gives exactly the millimetres
+// billed in between — the same figure sent to Spoolman. Print history uses it
+// rather than print_stats.filament_used, which decrements on retraction and so
+// under-reports the spool debit by the end-of-print retraction (measured at
+// -3.9% on a small ABS print with a tip-shaping macro).
+func (t *ExtrusionTracker) BilledTotal() float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.highestEPos
+}
+
 // HandleStatusUpdate feeds one reading of the extruder axis.
 //
 // ePos MUST come from toolhead.position[3]. See property 2 in the file header.
