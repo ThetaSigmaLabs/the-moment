@@ -874,6 +874,8 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
             printer_type: fd.get('printer_type') || 'prusalink',
             camera_snapshot_url: fd.get('camera_snapshot_url') || '',
             progress_snapshot_config: progressSnapshotConfig,
+            fan_hotend_max_rpm: parseInt(fd.get('fan_hotend_max_rpm') || '0', 10) || 0,
+            fan_print_max_rpm: parseInt(fd.get('fan_print_max_rpm') || '0', 10) || 0,
             sort_order: sortOrder };
     fetch('/api/printers/' + pid, {
         method: 'PUT',
@@ -920,6 +922,10 @@ function editPrinter(printerId) {
         document.getElementById('editPrinterAPIKey').value = p.api_key || '';
         document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
         document.getElementById('editPrinterCameraURL').value = p.camera_snapshot_url || '';
+        // Blank rather than 0 when unset, so the placeholder shows and the user
+        // sees "not configured" instead of a meaningless zero.
+        document.getElementById('editPrinterFanHotendMaxRPM').value = p.fan_hotend_max_rpm || '';
+        document.getElementById('editPrinterFanPrintMaxRPM').value = p.fan_print_max_rpm || '';
         document.getElementById('editPrinterSortOrder').value = p.sort_order != null ? p.sort_order : 0;
         // Populate progress snapshot config
         var psc = p.progress_snapshot_config || {};

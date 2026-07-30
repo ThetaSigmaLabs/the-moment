@@ -364,8 +364,30 @@ type PrinterData struct {
 	Speed         int     `json:"speed,omitempty"`
 	FanHotend     int     `json:"fan_hotend,omitempty"`
 	FanPrint      int     `json:"fan_print,omitempty"`
+	// FanUnit is how FanHotend/FanPrint should be rendered: "rpm" or "%".
+	// PrusaLink reports fan speed in RPM (a hotend fan reads ~8000), while
+	// Klipper reports a 0-1 fraction. There is no conversion between them
+	// without knowing each fan's maximum, so the unit travels with the value
+	// rather than being assumed by the UI.
+	FanUnit string `json:"fan_unit,omitempty"`
 	// Filament sufficiency warnings — populated when a print starts and a spool may run out
 	FilamentWarnings []PrinterWarning `json:"filament_warnings,omitempty"`
+}
+
+// percentOfMax converts an RPM reading to a percentage of its rated maximum,
+// clamped to 0-100.
+//
+// Clamping matters because fans routinely read slightly above their rated
+// speed, and a "104%" display looks like the very bug this exists to fix.
+func percentOfMax(value, max int) int {
+	if max <= 0 || value <= 0 {
+		return 0
+	}
+	pct := value * 100 / max
+	if pct > 100 {
+		return 100
+	}
+	return pct
 }
 
 // NewFilamentBridge creates a new FilamentBridge instance
@@ -450,6 +472,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migratePrinterDebugLog(); err != nil {
 		return nil, fmt.Errorf("failed to migrate printer debug log: %w", err)
+	}
+
+	if err := bridge.migratePrinterFanMaxRPM(); err != nil {
+		return nil, fmt.Errorf("failed to migrate printer fan max rpm: %w", err)
 	}
 
 	if err := bridge.migrateToolheadLocations(); err != nil {
@@ -1089,6 +1115,17 @@ func (b *FilamentBridge) migratePrintAttachmentLabel() error {
 // the label is carried through when rows are flushed to print_attachments.
 func (b *FilamentBridge) migratePendingSnapshotLabel() error {
 	b.db.Exec(`ALTER TABLE pending_print_snapshots ADD COLUMN label TEXT DEFAULT ''`)
+	return nil
+}
+
+// migratePrinterFanMaxRPM adds the optional fan maximums used to render
+// PrusaLink fan speeds as a percentage. Zero (the default) means unknown, and
+// the dashboard shows RPM instead.
+func (b *FilamentBridge) migratePrinterFanMaxRPM() error {
+	// Errors are ignored: these fail harmlessly when the column already exists,
+	// matching the other ALTER-based migrations here.
+	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN fan_hotend_max_rpm INTEGER DEFAULT 0`)
+	b.db.Exec(`ALTER TABLE printer_configs ADD COLUMN fan_print_max_rpm INTEGER DEFAULT 0`)
 	return nil
 }
 
@@ -2486,7 +2523,7 @@ func (b *FilamentBridge) SetAutoAssignPreviousSpoolEnabled(enabled bool) error {
 
 // GetAllPrinterConfigs gets all printer configurations
 func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error) {
-	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, ''), COALESCE(sort_order, 0), COALESCE(progress_snapshot_config, '') FROM printer_configs")
+	rows, err := b.db.Query("SELECT printer_id, name, model, ip_address, api_key, toolheads, COALESCE(is_virtual, 0), COALESCE(printer_type, 'prusalink'), COALESCE(debug_log, 0), COALESCE(camera_snapshot_url, ''), COALESCE(sort_order, 0), COALESCE(progress_snapshot_config, ''), COALESCE(fan_hotend_max_rpm, 0), COALESCE(fan_print_max_rpm, 0) FROM printer_configs")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get printer configs: %w", err)
 	}
@@ -2496,8 +2533,9 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 	for rows.Next() {
 		var printerID, name, model, ipAddress, apiKey, printerType, cameraSnapshotURL, pscJSON string
 		var toolheads, sortOrder int
+		var fanHotendMaxRPM, fanPrintMaxRPM int
 		var isVirtual, debugLog bool
-		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL, &sortOrder, &pscJSON); err != nil {
+		if err := rows.Scan(&printerID, &name, &model, &ipAddress, &apiKey, &toolheads, &isVirtual, &printerType, &debugLog, &cameraSnapshotURL, &sortOrder, &pscJSON, &fanHotendMaxRPM, &fanPrintMaxRPM); err != nil {
 			return nil, fmt.Errorf("failed to scan printer config row: %w", err)
 		}
 		var psc ProgressSnapshotConfig
@@ -2516,6 +2554,8 @@ func (b *FilamentBridge) GetAllPrinterConfigs() (map[string]PrinterConfig, error
 			CameraSnapshotURL:      cameraSnapshotURL,
 			SortOrder:              sortOrder,
 			ProgressSnapshotConfig: psc,
+			FanHotendMaxRPM:        fanHotendMaxRPM,
+			FanPrintMaxRPM:         fanPrintMaxRPM,
 		}
 	}
 
@@ -2564,8 +2604,8 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 	pscJSON, _ := json.Marshal(config.ProgressSnapshotConfig)
 
 	_, err := b.db.Exec(`
-		INSERT INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url, sort_order, progress_snapshot_config)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO printer_configs (printer_id, name, model, ip_address, api_key, toolheads, is_virtual, printer_type, debug_log, camera_snapshot_url, sort_order, progress_snapshot_config, fan_hotend_max_rpm, fan_print_max_rpm)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(printer_id) DO UPDATE SET
 			name = excluded.name,
 			model = excluded.model,
@@ -2577,8 +2617,10 @@ func (b *FilamentBridge) SavePrinterConfig(printerID string, config PrinterConfi
 			debug_log = excluded.debug_log,
 			camera_snapshot_url = excluded.camera_snapshot_url,
 			sort_order = excluded.sort_order,
-			progress_snapshot_config = excluded.progress_snapshot_config
-	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL, config.SortOrder, string(pscJSON))
+			progress_snapshot_config = excluded.progress_snapshot_config,
+			fan_hotend_max_rpm = excluded.fan_hotend_max_rpm,
+			fan_print_max_rpm = excluded.fan_print_max_rpm
+	`, printerID, config.Name, config.Model, config.IPAddress, config.APIKey, config.Toolheads, isVirtualInt, printerType, debugLogInt, config.CameraSnapshotURL, config.SortOrder, string(pscJSON), config.FanHotendMaxRPM, config.FanPrintMaxRPM)
 
 	b.mutex.Unlock()
 
@@ -4725,17 +4767,33 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				b.moonrakerMutex.RLock()
 				mrClient, mrExists := b.moonrakerClients[printerID]
 				b.moonrakerMutex.RUnlock()
-				mrState := StateOffline
+
+				mrData := PrinterData{
+					Name:      printerName,
+					State:     StateOffline,
+					SortOrder: printerConfig.SortOrder,
+					DebugLog:  printerConfig.DebugLog,
+				}
 				if mrExists {
 					if s, err := mrClient.GetCurrentStatus(); err == nil && s.KlippyReady {
-						mrState = mapMoonrakerState(s.State)
+						mrData.State = mapMoonrakerState(s.State)
+						mrData.TempNozzle = s.NozzleTemp
+						mrData.TargetNozzle = s.NozzleTarget
+						mrData.TempBed = s.BedTemp
+						mrData.TargetBed = s.BedTarget
+						mrData.Progress = s.Progress * 100 // dashboard expects 0-100
+						mrData.TimePrinting = int(s.PrintDuration)
+						mrData.TimeRemaining = moonrakerTimeRemaining(s)
+						mrData.JobName = s.Filename
+						mrData.AxisZ = s.AxisZ
+						mrData.Flow = s.Flow
+						mrData.Speed = s.Speed
+						mrData.FanHotend = s.FanHotend
+						mrData.FanPrint = s.FanPrint
+						mrData.FanUnit = "%" // Klipper reports a 0-1 fraction, scaled to percent
 					}
 				}
-				status.Printers[printerID] = PrinterData{
-					Name:      printerName,
-					State:     mrState,
-					SortOrder: printerConfig.SortOrder,
-				}
+				status.Printers[printerID] = mrData
 				continue
 			}
 
@@ -4759,6 +4817,17 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 			filamentWarnings := b.printerWarnings[printerID]
 			b.printerWarningsMu.Unlock()
 
+			// PrusaLink reports fan speed in RPM. Convert to a percentage only
+			// when the printer's rated maximums are configured — otherwise show
+			// RPM, which is always truthful even if less intuitive.
+			fanHotend, fanPrint := printerStatus.Printer.FanHotend, printerStatus.Printer.FanPrint
+			fanUnit := "rpm"
+			if printerConfig.FanHotendMaxRPM > 0 && printerConfig.FanPrintMaxRPM > 0 {
+				fanHotend = percentOfMax(fanHotend, printerConfig.FanHotendMaxRPM)
+				fanPrint = percentOfMax(fanPrint, printerConfig.FanPrintMaxRPM)
+				fanUnit = "%"
+			}
+
 			status.Printers[printerID] = PrinterData{
 				Name:             printerName,
 				State:            printerStatus.Printer.State,
@@ -4775,8 +4844,9 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				AxisZ:            printerStatus.Printer.AxisZ,
 				Flow:             printerStatus.Printer.Flow,
 				Speed:            printerStatus.Printer.Speed,
-				FanHotend:        printerStatus.Printer.FanHotend,
-				FanPrint:         printerStatus.Printer.FanPrint,
+				FanHotend:        fanHotend,
+				FanPrint:         fanPrint,
+				FanUnit:          fanUnit,
 				FilamentWarnings: filamentWarnings,
 			}
 		}

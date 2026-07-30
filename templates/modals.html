@@ -139,6 +139,16 @@
                     </select>
                     <small id="editPrinterToolheadsHint"></small>
                 </div>
+                <div class="form-group" id="editPrinterFanMaxRPMGroup">
+                    <label>Fan Maximum RPM <span style="color:#777;font-weight:400;">(optional)</span></label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="number" id="editPrinterFanHotendMaxRPM" name="fan_hotend_max_rpm"
+                               min="0" step="100" placeholder="Hotend" style="flex:1;">
+                        <input type="number" id="editPrinterFanPrintMaxRPM" name="fan_print_max_rpm"
+                               min="0" step="100" placeholder="Print" style="flex:1;">
+                    </div>
+                    <small style="color:#888;">PrusaLink reports fan speed in RPM. Enter the rated maximums (published per extruder model) to show percentages instead. Leave blank to display raw RPM.</small>
+                </div>
                 <div class="form-group" id="editPrinterCameraURLGroup">
                     <label for="editPrinterCameraURL">Camera Snapshot URL <span style="color:#777;font-weight:400;">(optional)</span></label>
                     <div style="display:flex;gap:8px;align-items:flex-start;">

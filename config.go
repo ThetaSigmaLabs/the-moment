@@ -25,6 +25,16 @@ type PrinterConfig struct {
 	CameraSnapshotURL      string                 `json:"camera_snapshot_url,omitempty"`      // HTTP or RTSP URL for print-event snapshots
 	SortOrder              int                    `json:"sort_order,omitempty"`               // Dashboard display order (lower = leftmost)
 	ProgressSnapshotConfig ProgressSnapshotConfig `json:"progress_snapshot_config,omitempty"` // In-progress snapshot settings
+
+	// Fan maximums in RPM, used to render PrusaLink fan speeds as a percentage.
+	//
+	// PrusaLink reports fan speed in RPM with no maximum, so a raw value like
+	// 8073 cannot be turned into a percentage without knowing the fan's rated
+	// speed. That figure is published per extruder model, so it is configured
+	// rather than guessed. Zero means "unknown" and the dashboard falls back to
+	// showing RPM, which is always truthful even if less intuitive.
+	FanHotendMaxRPM int `json:"fan_hotend_max_rpm,omitempty"`
+	FanPrintMaxRPM  int `json:"fan_print_max_rpm,omitempty"`
 }
 
 // ProgressSnapshotConfig controls automatic camera snapshots during a print.
