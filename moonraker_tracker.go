@@ -34,6 +34,20 @@ package main
 // Billing is continuous and delta-based, so a cancelled print needs no
 // reconciliation at completion — purge, prime and wipe are already counted.
 //
+// Known limitation: FORCE_MOVE is invisible here. It drives the stepper
+// directly, bypassing the kinematics, so it never reaches toolhead.position —
+// verified on real hardware, where three 35mm FORCE_MOVE retractions left the
+// reported axis unchanged to four decimal places. motion_report.live_position
+// mirrors the toolhead and does not capture it either, so there is no way to
+// see it through Moonraker's object model.
+//
+// This is harmless for its usual purpose: macros use FORCE_MOVE to seek a
+// sensor or park filament, which moves material inside the toolhead without
+// consuming any. It only drifts if a macro mixes methods — retracting with
+// FORCE_MOVE but pushing back with G1 — because then the axis climbs without
+// the matching descent. Moonraker's [spoolman] reads the same axis and behaves
+// identically, so this is a shared limitation rather than a regression.
+//
 // This type performs no I/O and holds no clock. It accumulates pending usage
 // in millimetres; flushing to Spoolman is the caller's job (see
 // FlushPending/RestorePending/DropSpool). Keeping it pure is a deliberate

@@ -215,6 +215,10 @@ Usage is reported as **length in millimetres** via Spoolman's `/use` endpoint, s
 
 > Extrusion is read from Klipper's `toolhead.position` axis, not `gcode_move.gcode_position`, so slicer `G92 E0` resets and retractions are handled correctly.
 
+**What is and isn't counted.** Tracking follows the extruder axis, so it includes everything that physically leaves the spool — the prime line, `PRINT_START` purges, tip shaping, and filament loading — not just what the slicer planned. That is usually what you want: a G-code estimate misses this overhead entirely, and it adds up across many small prints.
+
+The exception is `FORCE_MOVE`. It drives the stepper directly, bypassing the kinematics, so it never appears in `toolhead.position` and is not counted. Macros that use it to seek a sensor or park filament move material within the toolhead without consuming any, so this is harmless in the normal case. It only matters if a macro mixes methods — retracting with `FORCE_MOVE` but pushing back with `G1` — which lets the axis drift upward relative to reality. If you write such a macro, keep both directions consistent. Moonraker's own `[spoolman]` component reads the same axis and shares this behaviour.
+
 ### Bambu
 
 > **Planned — not yet available.** MQTT client is implemented in `bambu.go` but disabled in the UI pending hardware testing. See [ROADMAP.md](ROADMAP.md) for status.
