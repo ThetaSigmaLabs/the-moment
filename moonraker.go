@@ -240,6 +240,13 @@ func (c *MoonrakerClient) connectAndServe() error {
 	defer close(stop)
 	go c.keepalive(conn, stop)
 
+	// Ask whether Klipper is up before subscribing. Moonraker answers either
+	// way, so this is the only way to distinguish a ready printer from one
+	// whose firmware is shut down.
+	if err := c.queryKlippyState(conn); err != nil {
+		return fmt.Errorf("server.info: %w", err)
+	}
+
 	if err := c.subscribe(conn); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
 	}
@@ -313,6 +320,11 @@ func (c *MoonrakerClient) subscribe(conn *websocket.Conn) error {
 		if err := conn.ReadJSON(&msg); err != nil {
 			return err
 		}
+		// A JSON-RPC error reply is terminal for this request. Without this the
+		// loop would keep reading until the 90s read deadline expired.
+		if msg.Error != nil {
+			return fmt.Errorf("subscribe rejected: %s", string(msg.Error))
+		}
 		if msg.Result != nil {
 			var res struct {
 				Status map[string]json.RawMessage `json:"status"`
@@ -327,11 +339,69 @@ func (c *MoonrakerClient) subscribe(conn *websocket.Conn) error {
 	}
 }
 
+// queryKlippyState asks Moonraker whether Klipper is actually up.
+//
+// Moonraker answers the WebSocket even when Klipper is shut down or in an error
+// state, and it only emits notify_klippy_ready on a *transition*. So a client
+// that connects while Klipper is already down would otherwise never learn it —
+// which is why readiness has to be asked for explicitly at connect time rather
+// than inferred from the arrival of a status snapshot.
+func (c *MoonrakerClient) queryKlippyState(conn *websocket.Conn) error {
+	id := c.nextRequestID()
+	req := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "server.info",
+		"id":      id,
+	}
+
+	c.connMu.Lock()
+	conn.SetWriteDeadline(time.Now().Add(moonrakerWriteWait))
+	err := conn.WriteJSON(req)
+	c.connMu.Unlock()
+	if err != nil {
+		return err
+	}
+
+	for {
+		var msg moonrakerMessage
+		if err := conn.ReadJSON(&msg); err != nil {
+			return err
+		}
+		if msg.ID != id {
+			// Not our reply — a notification, or a reply to something else.
+			if msg.Result == nil && msg.Error == nil {
+				c.handleNotification(&msg)
+			}
+			continue
+		}
+		if msg.Error != nil {
+			return fmt.Errorf("server.info failed: %s", string(msg.Error))
+		}
+		var info struct {
+			KlippyState string `json:"klippy_state"`
+		}
+		if err := json.Unmarshal(msg.Result, &info); err != nil {
+			return fmt.Errorf("decode server.info: %w", err)
+		}
+
+		ready := info.KlippyState == "ready"
+		c.mu.Lock()
+		c.status.KlippyReady = ready
+		c.mu.Unlock()
+		if !ready {
+			log.Printf("Moonraker %s: connected, but klippy_state=%q — not tracking extrusion",
+				c.host, info.KlippyState)
+		}
+		return nil
+	}
+}
+
 // moonrakerMessage is the subset of JSON-RPC 2.0 that Moonraker actually sends.
 type moonrakerMessage struct {
 	Method string            `json:"method"`
 	Params []json.RawMessage `json:"params"`
 	Result json.RawMessage   `json:"result"`
+	Error  json.RawMessage   `json:"error"`
 	ID     int               `json:"id"`
 }
 
@@ -498,9 +568,10 @@ func (c *MoonrakerClient) applyStatus(objects map[string]json.RawMessage, isSnap
 		}
 	}
 
-	if isSnapshot {
-		c.status.KlippyReady = true
-	}
+	// Readiness is deliberately NOT inferred from a snapshot arriving.
+	// Moonraker serves status even while Klipper is shut down, so treating any
+	// snapshot as proof of readiness would report a dead printer as idle.
+	// queryKlippyState establishes it at connect; notifications maintain it.
 	c.status.LastUpdate = time.Now()
 }
 

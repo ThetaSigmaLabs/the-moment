@@ -39,14 +39,18 @@ type fakeMoonraker struct {
 	notify   chan map[string]interface{}
 	snapshot map[string]interface{}
 	hostPort string
+	// klippyState is what server.info reports. "ready" unless a test overrides
+	// it to simulate a printer whose firmware is down.
+	klippyState string
 }
 
 func newFakeMoonraker(t *testing.T, snapshot map[string]interface{}) *fakeMoonraker {
 	t.Helper()
 
 	f := &fakeMoonraker{
-		notify:   make(chan map[string]interface{}, 32),
-		snapshot: snapshot,
+		notify:      make(chan map[string]interface{}, 32),
+		snapshot:    snapshot,
+		klippyState: "ready",
 	}
 
 	upgrader := websocket.Upgrader{
@@ -60,27 +64,52 @@ func newFakeMoonraker(t *testing.T, snapshot map[string]interface{}) *fakeMoonra
 		}
 		defer conn.Close()
 
-		// Await the subscribe request and reply with the snapshot.
-		var req struct {
-			Method string `json:"method"`
-			ID     int    `json:"id"`
-		}
-		if err := conn.ReadJSON(&req); err != nil {
-			return
-		}
-		if req.Method != "printer.objects.subscribe" {
-			return
-		}
-		reply := map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      req.ID,
-			"result": map[string]interface{}{
-				"eventtime": 1234.5,
-				"status":    f.snapshot,
-			},
-		}
-		if err := conn.WriteJSON(reply); err != nil {
-			return
+		// Answer requests until the client has subscribed. The client asks
+		// server.info first to establish whether Klipper is actually up, then
+		// subscribes.
+		for {
+			var req struct {
+				Method string `json:"method"`
+				ID     int    `json:"id"`
+			}
+			if err := conn.ReadJSON(&req); err != nil {
+				return
+			}
+
+			switch req.Method {
+			case "server.info":
+				reply := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]interface{}{
+						"klippy_state":     f.klippyState,
+						"klippy_connected": true,
+					},
+				}
+				if err := conn.WriteJSON(reply); err != nil {
+					return
+				}
+
+			case "printer.objects.subscribe":
+				reply := map[string]interface{}{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"result": map[string]interface{}{
+						"eventtime": 1234.5,
+						"status":    f.snapshot,
+					},
+				}
+				if err := conn.WriteJSON(reply); err != nil {
+					return
+				}
+
+			default:
+				return
+			}
+
+			if req.Method == "printer.objects.subscribe" {
+				break
+			}
 		}
 
 		// Forward notifications until the test finishes.
@@ -344,4 +373,48 @@ func TestMoonrakerSubscribesToToolheadNotGcodeMove(t *testing.T) {
 	if _, err := json.Marshal(objects); err != nil {
 		t.Errorf("subscription must marshal: %v", err)
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Klippy readiness
+// -----------------------------------------------------------------------------
+
+// Moonraker answers the WebSocket even while Klipper is shut down, and it only
+// emits notify_klippy_ready on a transition. A client that connects while
+// Klipper is already down must therefore ask, not assume — otherwise a dead
+// printer reports as idle and the poll loop treats it as a finished print.
+func TestMoonrakerShutdownKlippyIsNotReported(t *testing.T) {
+	f := newFakeMoonraker(t, toolheadSnapshot(100, "extruder"))
+	f.klippyState = "shutdown"
+
+	c := NewMoonrakerClient(f.hostPort, false)
+	defer c.Close()
+
+	waitFor(t, "connection", func() bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.status.Connected
+	})
+
+	c.mu.RLock()
+	ready := c.status.KlippyReady
+	c.mu.RUnlock()
+	if ready {
+		t.Error("KlippyReady is true while klippy_state=shutdown; readiness must not be inferred from a snapshot")
+	}
+}
+
+// The normal case still reports ready, so the guard above cannot be satisfied
+// by simply never setting it.
+func TestMoonrakerReadyKlippyIsReported(t *testing.T) {
+	f := newFakeMoonraker(t, toolheadSnapshot(100, "extruder"))
+
+	c := NewMoonrakerClient(f.hostPort, false)
+	defer c.Close()
+
+	waitFor(t, "klippy ready", func() bool {
+		c.mu.RLock()
+		defer c.mu.RUnlock()
+		return c.status.KlippyReady
+	})
 }
