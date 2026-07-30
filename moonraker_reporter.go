@@ -50,18 +50,26 @@ type spoolUsageReporter interface {
 // MoonrakerReporter flushes one tracker to Spoolman on a fixed interval.
 type MoonrakerReporter struct {
 	tracker  *ExtrusionTracker
-	spoolman spoolUsageReporter
 	interval time.Duration
 
-	// logOnly runs the whole pipeline but sends nothing. This is the
-	// verification mode: it lets the ported tracker run alongside Moonraker's
-	// still-enabled [spoolman] so the two can be reconciled over a full print
-	// before either is switched off. Without it, verifying would mean
-	// double-writing the same spool.
-	logOnly bool
+	// resolve returns the Spoolman client to write through and whether this
+	// flush must be log-only.
+	//
+	// It is called on every flush rather than captured once at construction.
+	// Both values can change while the process runs: the Spoolman client is
+	// replaced whenever the config reloads, and log-only is the safety switch
+	// that stops double-billing. Latching either would mean a user who turns
+	// log-only back on to stop a runaway double-write sees nothing happen until
+	// they restart — the switch has to work when it is reached for.
+	resolve func() (spoolUsageReporter, bool)
+
+	// flushMu serialises Flush. The ticker and the poll loop both call it (the
+	// poll loop flushes at print end), and without this they race on
+	// errorLogged.
+	flushMu sync.Mutex
 
 	// errorLogged latches so a persistent outage logs once per recovery cycle
-	// rather than once per flush.
+	// rather than once per flush. Guarded by flushMu.
 	errorLogged bool
 
 	printerID string
@@ -71,13 +79,22 @@ type MoonrakerReporter struct {
 	wg       sync.WaitGroup
 }
 
-// NewMoonrakerReporter creates a reporter. Call Start to begin flushing.
+// NewMoonrakerReporter creates a reporter with a fixed Spoolman client and
+// log-only setting. Convenient for tests; production uses
+// NewMoonrakerReporterFunc so both stay live.
 func NewMoonrakerReporter(printerID string, tracker *ExtrusionTracker, spoolman spoolUsageReporter, logOnly bool) *MoonrakerReporter {
+	return NewMoonrakerReporterFunc(printerID, tracker, func() (spoolUsageReporter, bool) {
+		return spoolman, logOnly
+	})
+}
+
+// NewMoonrakerReporterFunc creates a reporter that re-resolves its Spoolman
+// client and log-only setting on every flush. Call Start to begin flushing.
+func NewMoonrakerReporterFunc(printerID string, tracker *ExtrusionTracker, resolve func() (spoolUsageReporter, bool)) *MoonrakerReporter {
 	return &MoonrakerReporter{
 		tracker:   tracker,
-		spoolman:  spoolman,
 		interval:  MoonrakerSyncInterval,
-		logOnly:   logOnly,
+		resolve:   resolve,
 		printerID: printerID,
 		done:      make(chan struct{}),
 	}
@@ -114,6 +131,13 @@ func (r *MoonrakerReporter) Stop() {
 // tests and the verification tooling can drive a cycle deterministically
 // instead of waiting on the ticker.
 func (r *MoonrakerReporter) Flush() {
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
+
+	// Resolved once per flush, not per spool, so a config change cannot split a
+	// single drain across two different Spoolman targets.
+	spoolman, logOnly := r.resolve()
+
 	pending := r.tracker.FlushPending()
 	if len(pending) == 0 {
 		return
@@ -124,13 +148,13 @@ func (r *MoonrakerReporter) Flush() {
 			continue
 		}
 
-		if r.logOnly {
+		if logOnly {
 			log.Printf("Moonraker %s [log-only]: would report %.3fmm to spool %d",
 				r.printerID, useLength, spoolID)
 			continue
 		}
 
-		err := r.spoolman.UseSpoolLength(spoolID, useLength)
+		err := spoolman.UseSpoolLength(spoolID, useLength)
 		if err == nil {
 			r.errorLogged = false
 			continue
