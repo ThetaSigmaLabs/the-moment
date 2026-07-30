@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -305,6 +306,53 @@ func (c *SpoolmanClient) UpdateSpool(spoolID int, data map[string]interface{}) e
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return c.handleAPIError(resp)
+	}
+
+	return nil
+}
+
+// ErrSpoolNotFound reports that Spoolman no longer has the spool (HTTP 404).
+// Callers use it to stop retrying usage for a deleted spool rather than
+// accumulating reports forever.
+var ErrSpoolNotFound = errors.New("spool not found in Spoolman")
+
+// UseSpoolLength records filament consumption as a length in millimetres via
+// Spoolman's PUT /spool/{id}/use endpoint.
+//
+// This is the atomic counterpart to UpdateSpoolUsage. UpdateSpoolUsage does a
+// read-modify-write (GET the spool, add grams, PATCH used_weight), which loses
+// updates whenever anything else writes the same spool in between. /use has
+// Spoolman apply the delta server-side, so concurrent writers add up instead of
+// clobbering each other.
+//
+// Length rather than weight is deliberate: Spoolman converts mm to grams using
+// the filament's own density and diameter, so no caller has to guess a density.
+// That matters for anything not PLA.
+//
+// Returns ErrSpoolNotFound when Spoolman reports 404.
+func (c *SpoolmanClient) UseSpoolLength(spoolID int, useLength float64) error {
+	jsonData, err := json.Marshal(map[string]float64{"use_length": useLength})
+	if err != nil {
+		return fmt.Errorf("error marshaling spool use data: %w", err)
+	}
+
+	req, err := http.NewRequest("PUT", fmt.Sprintf("%s/api/v1/spool/%d/use", c.baseURL, spoolID), bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("error creating PUT request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("error reporting usage for spool %d to Spoolman: %w", spoolID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("spool %d: %w", spoolID, ErrSpoolNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return c.handleAPIError(resp)
 	}
