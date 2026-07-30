@@ -66,9 +66,22 @@ func main() {
 		log.Printf("Spoolman URL set from SPOOLMAN_URL env var: %s", envSpoolman)
 	}
 
-	// Handle graceful shutdown
+	// Handle graceful shutdown.
+	//
+	// The signal is fanned out through a closed channel rather than read
+	// directly by each goroutine. A send on sigChan is consumed by exactly one
+	// receiver, so with several goroutines selecting on it the runtime picks
+	// one at random and the rest never wake — including main's own wait, which
+	// is what runs the deferred bridge.Close() and its final Spoolman flush.
+	// Closing a channel, by contrast, releases every receiver.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	shutdown := make(chan struct{})
+	go func() {
+		<-sigChan
+		close(shutdown)
+	}()
 
 	// Auto-register Spoolman custom fields needed for NFC workflow
 	go func() {
@@ -93,7 +106,7 @@ func main() {
 				if err := bridge.cleanupExpiredSessions(); err != nil {
 					log.Printf("Error cleaning up NFC sessions: %v", err)
 				}
-			case <-sigChan:
+			case <-shutdown:
 				return
 			}
 		}
@@ -112,7 +125,7 @@ func main() {
 				if err := bridge.RetryPendingGcodeDownloads(); err != nil {
 					log.Printf("Error retrying pending G-code downloads: %v", err)
 				}
-			case <-sigChan:
+			case <-shutdown:
 				return
 			}
 		}
@@ -129,7 +142,7 @@ func main() {
 		}()
 
 		// Wait for shutdown signal
-		<-sigChan
+		<-shutdown
 		fmt.Println("Shutting down web server...")
 
 	} else if *bridgeOnly {
@@ -152,14 +165,14 @@ func main() {
 				select {
 				case <-ticker.C:
 					bridge.MonitorPrinters()
-				case <-sigChan:
+				case <-shutdown:
 					return
 				}
 			}
 		}()
 
 		// Wait for shutdown signal
-		<-sigChan
+		<-shutdown
 		fmt.Println("Shutting down bridge service...")
 
 	} else {
@@ -199,7 +212,7 @@ func main() {
 					} else if changed {
 						webServer.BroadcastStatus()
 					}
-				case <-sigChan:
+				case <-shutdown:
 					return
 				}
 			}
@@ -213,7 +226,7 @@ func main() {
 		}()
 
 		// Wait for shutdown signal
-		<-sigChan
+		<-shutdown
 		fmt.Println("Shutting down services...")
 	}
 }
