@@ -723,6 +723,16 @@ func validatePrinterConfig(config PrinterConfig) error {
 	if config.Toolheads > maxHeads {
 		return fmt.Errorf("toolheads cannot exceed %d", maxHeads)
 	}
+	// Reject unknown printer types. Without this a typo ("moonrakr") is stored
+	// verbatim and then silently monitored as PrusaLink, because that is the
+	// fallback everywhere the type is dispatched on. Failing at the form is far
+	// cheaper to diagnose than a printer that mysteriously never connects.
+	// Empty is allowed: it means PrusaLink for configs predating the column.
+	switch config.PrinterType {
+	case "", PrinterTypePrusaLink, PrinterTypeOctoPrint, PrinterTypeBambu, PrinterTypeMoonraker:
+	default:
+		return fmt.Errorf("unknown printer type %q", config.PrinterType)
+	}
 	return nil
 }
 
@@ -1185,9 +1195,12 @@ func (ws *WebServer) updatePrinterHandler(c *gin.Context) {
 			return
 		}
 
-		// Auto-detect model via PrusaLink API (not applicable to Bambu or OctoPrint)
+		// Auto-detect model via PrusaLink API (not applicable to Bambu, OctoPrint
+		// or Moonraker — those hosts do not answer the PrusaLink endpoints, so a
+		// probe just blocks the save for the full timeout before failing)
 		if printerConfig.PrinterType != PrinterTypeOctoPrint &&
 			printerConfig.PrinterType != PrinterTypeBambu &&
+			printerConfig.PrinterType != PrinterTypeMoonraker &&
 			(printerConfig.Model == "" || printerConfig.Model == ModelUnknown) {
 			log.Printf("🔍 [Auto-Detection] Detecting model for printer %s (IP: %s)", printerID, printerConfig.IPAddress)
 

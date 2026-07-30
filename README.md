@@ -105,6 +105,7 @@ Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assign
 |---|---|---|---|
 | Any PrusaLink printer (CORE One, XL, MK4, Mini+) | PrusaLink API | Yes (Core One L tester with 5 heads manual changing) | Fully supported |
 | Any OctoPrint printer (Ender, CR-10, Voron, etc.) | OctoPrint plugin | Single-head | Fully supported |
+| Any Moonraker printer (Voron, Rat Rig, Prusa CORE One in Klipper mode) | Moonraker WebSocket | Single-head | Supported — usage tracking defaults to log-only, see below |
 | Bambu | MQTT over LAN | AMS slots → toolheads | Planned |
 | INDX 8-head | TBD | 8 toolheads | Future |
 
@@ -190,6 +191,29 @@ The Moment ships an OctoPrint plugin that pushes print events directly.
 > The Moment accepts print records from any authenticated OctoPrint instance even before the printer config exists — no print data is ever lost. Create the config before the first print to get accurate per-printer cost rates from day one.
 
 Full plugin documentation: [docs/octoprint-plugin.md](docs/octoprint-plugin.md)
+
+### Moonraker (Klipper)
+
+1. Settings → Printers → Add Printer
+2. Set Type to `Moonraker`, enter the Moonraker host — port `7125` is assumed if you omit it
+3. Leave API Key blank unless your Moonraker requires one
+4. Save — The Moment opens a WebSocket and starts reporting status immediately
+
+**Filament usage starts in log-only mode, and that is deliberate.**
+
+Moonraker ships its own `[spoolman]` component (see [contrib/moonraker_spoolman.cfg](contrib/moonraker_spoolman.cfg)). If it is enabled and The Moment also writes, *both* deduct from the same spool and every print is counted twice — which cannot be undone without editing Spoolman by hand.
+
+So The Moment computes usage and logs it without writing, until you say otherwise:
+
+1. Run a print and compare The Moment's logged millimetres against what Moonraker's `[spoolman]` deducted. They should agree closely.
+2. Once satisfied, **remove the `[spoolman]` section from `moonraker.conf`** and restart Moonraker.
+3. Only then set `moonraker_log_only` to `false` so The Moment becomes the sole writer.
+
+Doing step 3 before step 2 is the double-counting case. Any value other than an explicit `false` — including a typo or an unset key — keeps log-only on.
+
+Usage is reported as **length in millimetres** via Spoolman's `/use` endpoint, so Spoolman applies each filament's own density. Nothing assumes a density constant.
+
+> Extrusion is read from Klipper's `toolhead.position` axis, not `gcode_move.gcode_position`, so slicer `G92 E0` resets and retractions are handled correctly.
 
 ### Bambu
 
@@ -403,6 +427,10 @@ monitor.go        — MonitorPrinters loop
 prusalink.go      — PrusaLink API client
 octoprint.go      — OctoPrint API client
 bambu.go          — Bambu MQTT client, AMS parsing
+moonraker.go      — Moonraker WebSocket client (Klipper)
+moonraker_tracker.go  — retraction-aware extrusion tracker
+moonraker_reporter.go — Spoolman flush loop for Moonraker usage
+moonraker_monitor.go  — bridge wiring: poll loop, spool sync, lifecycle
 virtual.go        — virtual printer file upload, G-code parsing
 gcode.go          — ParseGcodeMetadata (filament usage, thumbnails)
 history.go        — print history table, notes, delete

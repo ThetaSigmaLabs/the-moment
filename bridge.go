@@ -87,6 +87,20 @@ type FilamentBridge struct {
 	// bambuClientFactory creates a new Bambu client; overridable in tests.
 	bambuClientFactory func(ip, serial, accessCode string) BambuStatusProvider
 
+	// Moonraker WebSocket clients — long-lived, one per printer, keyed by
+	// printerID. Same ownership model as bambuClients: created on first poll,
+	// reused thereafter, closed on shutdown.
+	moonrakerClients map[string]MoonrakerStatusProvider
+	// moonrakerReporters holds the Spoolman flush loop for each client. Kept
+	// alongside the client so both are torn down together.
+	moonrakerReporters map[string]*MoonrakerReporter
+	// moonrakerHosts records the address each client was created for, so a
+	// re-addressed printer can be detected and its client replaced.
+	moonrakerHosts map[string]string
+	moonrakerMutex sync.RWMutex
+	// moonrakerClientFactory creates a new Moonraker client; overridable in tests.
+	moonrakerClientFactory func(host string, debugLog bool) MoonrakerStatusProvider
+
 	// lastSnapshotPct tracks the highest progress % at which a snapshot was taken for
 	// Bambu printers (which lack DB-backed active_print_sessions for snapshot tracking).
 	// Protected by b.mutex. Reset to 0 when a Bambu print ends.
@@ -369,6 +383,9 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		previousState:         make(map[string]string),
 		printStartTime:        make(map[string]time.Time),
 		bambuClients:          make(map[string]BambuStatusProvider),
+		moonrakerClients:      make(map[string]MoonrakerStatusProvider),
+		moonrakerReporters:    make(map[string]*MoonrakerReporter),
+		moonrakerHosts:        make(map[string]string),
 		lastSnapshotPct:       make(map[string]float64),
 		commLogs:              make(map[string]*PrinterCommLog),
 		rawResponses:          make(map[string]*PrusaLinkRawCapture),
@@ -377,6 +394,9 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 	}
 	bridge.bambuClientFactory = func(ip, serial, accessCode string) BambuStatusProvider {
 		return NewBambuMQTTClient(ip, serial, accessCode, newBambuDebugLogger(bridge))
+	}
+	bridge.moonrakerClientFactory = func(host string, debugLog bool) MoonrakerStatusProvider {
+		return NewMoonrakerClient(host, debugLog)
 	}
 
 	// Initialize database
@@ -1459,6 +1479,11 @@ func (b *FilamentBridge) ReconcileActiveSessions() {
 							}
 							cfg, ok := configs[capturedPrinterID]
 							if !ok || cfg.IPAddress == "" || cfg.IsVirtual {
+								return
+							}
+							// Thumbnail backfill downloads the G-code over the
+							// PrusaLink API; other printer types do not serve it.
+							if cfg.PrinterType != PrinterTypePrusaLink && cfg.PrinterType != "" {
 								return
 							}
 							b.mutex.RLock()
@@ -3171,7 +3196,7 @@ func (b *FilamentBridge) UnmapToolhead(printerName string, toolheadID int) error
 }
 
 // LogPrintUsageFull is the full version with print time, status, thumbnail, session, and source.
-// source should be "prusalink", "virtual", or "octoprint".
+// source should be "prusalink", "virtual", "octoprint", "bambu", or "moonraker".
 // Cost is automatically calculated and saved after the insert (outside the mutex).
 // Returns the new print_history row ID so callers can link spool events to it.
 func (b *FilamentBridge) LogPrintUsageFull(printerName string, toolheadID int, spoolID int,
@@ -3242,6 +3267,11 @@ func (b *FilamentBridge) MonitorPrinters() {
 		return
 	}
 
+	// Release Moonraker clients whose printer was deleted, retyped or moved.
+	// Their reporters flush on their own timer, so an orphan would keep
+	// debiting Spoolman with nothing polling it to notice.
+	b.reconcileMoonrakerClients(configSnapshot.Printers)
+
 	// Monitor each printer (OctoPrint uses push — skip it here)
 	for printerID, printerConfig := range configSnapshot.Printers {
 		if printerID == "no_printers" {
@@ -3255,8 +3285,11 @@ func (b *FilamentBridge) MonitorPrinters() {
 		}
 
 		monitorFn := b.monitorPrusaLink
-		if printerConfig.PrinterType == PrinterTypeBambu {
+		switch printerConfig.PrinterType {
+		case PrinterTypeBambu:
 			monitorFn = b.monitorBambu
+		case PrinterTypeMoonraker:
+			monitorFn = b.monitorMoonraker
 		}
 
 		go func(printerID string, config PrinterConfig, fn func(string, PrinterConfig) error) {
@@ -4687,6 +4720,25 @@ func (b *FilamentBridge) GetStatus() (*PrinterStatus, error) {
 				continue
 			}
 
+			// Moonraker: read the cached WebSocket state rather than connecting
+			if printerConfig.PrinterType == PrinterTypeMoonraker {
+				b.moonrakerMutex.RLock()
+				mrClient, mrExists := b.moonrakerClients[printerID]
+				b.moonrakerMutex.RUnlock()
+				mrState := StateOffline
+				if mrExists {
+					if s, err := mrClient.GetCurrentStatus(); err == nil && s.KlippyReady {
+						mrState = mapMoonrakerState(s.State)
+					}
+				}
+				status.Printers[printerID] = PrinterData{
+					Name:      printerName,
+					State:     mrState,
+					SortOrder: printerConfig.SortOrder,
+				}
+				continue
+			}
+
 			client := NewPrusaLinkClient(printerConfig.IPAddress, printerConfig.APIKey, b.config.PrusaLinkTimeout, b.config.PrusaLinkFileDownloadTimeout)
 
 			// Get current status
@@ -4992,6 +5044,17 @@ func (b *FilamentBridge) RetryPendingGcodeDownloads() error {
 				found = true
 				break
 			}
+		}
+		if found && cfg.PrinterType != PrinterTypePrusaLink && cfg.PrinterType != "" {
+			// Only PrusaLink serves G-code over its API. A queued download for
+			// any other type can never succeed, so retrying it forever is worse
+			// than dropping it loudly.
+			msg := fmt.Sprintf("printer at %s is type %q, which cannot serve G-code downloads; manual Spoolman update required for %s",
+				d.printerIP, cfg.PrinterType, d.filename)
+			log.Printf("⚠️  G-code retry: %s", msg)
+			b.addPrintError(d.printerName, d.filename, msg)
+			_, _ = b.db.Exec(`DELETE FROM pending_gcode_downloads WHERE id = ?`, d.id)
+			continue
 		}
 		if !found {
 			// Printer removed from config — unrecoverable, surface error and drop.
@@ -6576,6 +6639,15 @@ func (b *FilamentBridge) bulkFetchQualityTags(ids []int) map[int][]PrintQualityT
 // Close closes the database connection
 func (b *FilamentBridge) Close() error {
 	b.CloseBambuClients()
+	// Stop performs a final Spoolman flush so the last few seconds of extrusion
+	// are not lost on a clean shutdown.
+	//
+	// Note this is best-effort: if that flush fails, the millimetres are put
+	// back into the tracker, which is in memory only and is discarded with the
+	// process. Usage accumulated during a Spoolman outage does not survive a
+	// restart. Making it durable needs a pending-usage table, as the PrusaLink
+	// path has for G-code downloads.
+	b.CloseMoonrakerClients()
 	if b.db != nil {
 		return b.db.Close()
 	}

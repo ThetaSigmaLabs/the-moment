@@ -29,8 +29,11 @@ Go to **Settings → Printers → Add Printer**.
 |---|---|
 | PrusaLink (CORE One, XL, MK4, Mini+) | Type: PrusaLink · IP address · API key from printer screen · Toolheads: 1 (or 5 for XL) |
 | OctoPrint (Ender, Voron, etc.) | Type: OctoPrint · install the plugin first (see Step 1a below) |
+| Moonraker / Klipper (Voron, Rat Rig, etc.) | Type: Moonraker · host (port `7125` assumed) · API key usually blank · Toolheads: 1 |
 | Bambu X1C / P1S / A1 | Type: Bambu · IP · API Key as `serial:accesscode` · Toolheads: AMS slot count |
 | No hardware yet | Type: Virtual · lets you simulate prints from G-code files |
+
+> **Moonraker printers start in log-only mode.** Filament usage is computed and logged but not written to Spoolman, because Moonraker's own `[spoolman]` component may already be writing. Verify the two agree, remove `[spoolman]` from `moonraker.conf`, then set `moonraker_log_only` to `false`. See the Moonraker section in the README.
 
 **Save.** The Moment will poll PrusaLink printers immediately. OctoPrint printers become active when the plugin sends its first event.
 
