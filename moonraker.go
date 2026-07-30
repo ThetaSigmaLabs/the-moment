@@ -37,9 +37,12 @@ package main
 // =============================================================================
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"sync"
 	"time"
@@ -98,8 +101,19 @@ type MoonrakerStatus struct {
 type MoonrakerStatusProvider interface {
 	GetCurrentStatus() (MoonrakerStatus, error)
 	Tracker() *ExtrusionTracker
+	// ActiveSpoolID reports the spool Moonraker's [spoolman] component has
+	// active. ErrMoonrakerNoSpoolman means the component is not configured.
+	ActiveSpoolID() (int, error)
+	// SetActiveSpoolID assigns the spool in Moonraker, which is what Mainsail
+	// and Fluidd display.
+	SetActiveSpoolID(spoolID int) error
 	Close()
 }
+
+// ErrMoonrakerNoSpoolman means the printer has no [spoolman] section, so
+// Moonraker holds no spool assignment and The Moment's own mapping is
+// authoritative.
+var ErrMoonrakerNoSpoolman = errors.New("moonraker: spoolman component not configured")
 
 // MoonrakerClient maintains one WebSocket connection to one printer.
 type MoonrakerClient struct {
@@ -122,6 +136,12 @@ type MoonrakerClient struct {
 	// debugLog mirrors PrinterConfig.DebugLog: extrusion updates arrive many
 	// times a second, so per-update logging must be opt-in.
 	debugLog bool
+
+	// httpClient serves Moonraker's REST endpoints. The spool assignment lives
+	// behind /server/spoolman/* rather than the status subscription, so it
+	// cannot come over the WebSocket without interleaving request/reply
+	// plumbing into the read loop.
+	httpClient *http.Client
 }
 
 var _ MoonrakerStatusProvider = (*MoonrakerClient)(nil)
@@ -130,10 +150,11 @@ var _ MoonrakerStatusProvider = (*MoonrakerClient)(nil)
 // caller owns the returned client and must Close it.
 func NewMoonrakerClient(host string, debugLog bool) *MoonrakerClient {
 	c := &MoonrakerClient{
-		host:     normalizeMoonrakerHost(host),
-		tracker:  NewExtrusionTracker(),
-		done:     make(chan struct{}),
-		debugLog: debugLog,
+		host:       normalizeMoonrakerHost(host),
+		tracker:    NewExtrusionTracker(),
+		done:       make(chan struct{}),
+		debugLog:   debugLog,
+		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
 	go c.run()
 	return c
@@ -157,6 +178,78 @@ func normalizeMoonrakerHost(host string) string {
 
 // Tracker exposes the extrusion tracker so the flush loop can drain it.
 func (c *MoonrakerClient) Tracker() *ExtrusionTracker { return c.tracker }
+
+// ActiveSpoolID reports the spool Moonraker's [spoolman] component has active.
+//
+// Moonraker is treated as the source of truth for Klipper printers because
+// Mainsail and Fluidd read and write this same value, and those UIs are what
+// people have open while a print runs. Mirroring it here means the spool can be
+// set from either place without the two diverging.
+//
+// Returns ErrMoonrakerNoSpoolman when the component is absent, and 0 when it is
+// present but no spool is assigned.
+func (c *MoonrakerClient) ActiveSpoolID() (int, error) {
+	var body struct {
+		Result struct {
+			SpoolID *int `json:"spool_id"`
+		} `json:"result"`
+	}
+	if err := c.getJSON("/server/spoolman/spool_id", &body); err != nil {
+		return 0, err
+	}
+	if body.Result.SpoolID == nil {
+		return 0, nil // component present, no spool assigned
+	}
+	return *body.Result.SpoolID, nil
+}
+
+// SetActiveSpoolID assigns the spool in Moonraker so Mainsail and Fluidd show
+// it, and so Moonraker's own [spoolman] bills the right spool.
+func (c *MoonrakerClient) SetActiveSpoolID(spoolID int) error {
+	payload, err := json.Marshal(map[string]int{"spool_id": spoolID})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		fmt.Sprintf("http://%s/server/spoolman/spool_id", c.host), bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrMoonrakerNoSpoolman
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("moonraker set spool_id: HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// getJSON performs a GET against Moonraker's HTTP API and decodes the body.
+func (c *MoonrakerClient) getJSON(path string, out interface{}) error {
+	resp, err := c.httpClient.Get(fmt.Sprintf("http://%s%s", c.host, path))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Moonraker answers 404 for endpoints belonging to components that are not
+	// configured, which is how an absent [spoolman] presents.
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrMoonrakerNoSpoolman
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("moonraker GET %s: HTTP %d", path, resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
 
 // GetCurrentStatus returns the cached snapshot. It never blocks on the network,
 // so the dashboard stays responsive while a printer is unreachable.

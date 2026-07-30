@@ -19,6 +19,10 @@ package main
 // =============================================================================
 
 import (
+	"fmt"
+	"math"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -28,10 +32,20 @@ type fakeMoonrakerProvider struct {
 	err     error
 	tracker *ExtrusionTracker
 	closed  bool
+
+	// activeSpool is what Moonraker's [spoolman] reports. spoolErr defaults to
+	// ErrMoonrakerNoSpoolman so tests that do not care about the component
+	// behave as if it is absent and The Moment's own mapping is authoritative.
+	activeSpool int
+	spoolErr    error
+	spoolSetTo  int
 }
 
 func newFakeMoonrakerProvider() *fakeMoonrakerProvider {
-	return &fakeMoonrakerProvider{tracker: NewExtrusionTracker()}
+	return &fakeMoonrakerProvider{
+		tracker:  NewExtrusionTracker(),
+		spoolErr: ErrMoonrakerNoSpoolman,
+	}
 }
 
 func (f *fakeMoonrakerProvider) GetCurrentStatus() (MoonrakerStatus, error) {
@@ -39,6 +53,15 @@ func (f *fakeMoonrakerProvider) GetCurrentStatus() (MoonrakerStatus, error) {
 }
 func (f *fakeMoonrakerProvider) Tracker() *ExtrusionTracker { return f.tracker }
 func (f *fakeMoonrakerProvider) Close()                     { f.closed = true }
+
+func (f *fakeMoonrakerProvider) ActiveSpoolID() (int, error) {
+	return f.activeSpool, f.spoolErr
+}
+
+func (f *fakeMoonrakerProvider) SetActiveSpoolID(spoolID int) error {
+	f.spoolSetTo = spoolID
+	return nil
+}
 
 // moonrakerTestConfig returns a PrinterConfig for Moonraker tests. No real host
 // is contacted — the factory override intercepts it.
@@ -429,5 +452,180 @@ func TestMoonrakerLogOnlyTakesEffectWithoutRestart(t *testing.T) {
 	}
 	if spool == nil {
 		t.Error("resolve returned a nil Spoolman client")
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Moonraker owns the spool assignment
+// -----------------------------------------------------------------------------
+//
+// Mainsail and Fluidd read and write Moonraker's [spoolman] spool_id, and those
+// are the UIs people have open while a print runs. Treating Moonraker as the
+// source of truth is what lets the spool be set from either place without the
+// two drifting apart.
+
+func TestMoonrakerSpoolAssignmentIsAdoptedFromMoonraker(t *testing.T) {
+	b := newTestBridge(t)
+	fake := installFakeMoonraker(b)
+	cfg := moonrakerTestConfig("Voron")
+
+	// The operator picks a different spool in Mainsail.
+	fake.activeSpool = 7
+	fake.spoolErr = nil
+	if err := b.SetToolheadMapping(cfg.Name, moonrakerToolhead, 12); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+
+	if err := b.monitorMoonraker("mr1", cfg); err != nil {
+		t.Fatalf("monitorMoonraker: %v", err)
+	}
+
+	spool := fake.tracker.ActiveSpool()
+	if spool == nil || *spool != 7 {
+		t.Errorf("tracker spool = %v, want 7 (Moonraker's assignment wins)", spool)
+	}
+
+	// And our own mapping is updated to match, so the two do not diverge.
+	got, err := b.GetToolheadMapping(cfg.Name, moonrakerToolhead)
+	if err != nil {
+		t.Fatalf("GetToolheadMapping: %v", err)
+	}
+	if got != 7 {
+		t.Errorf("stored mapping = %d, want 7 (mirrored from Moonraker)", got)
+	}
+}
+
+// Clearing the spool in Mainsail must clear it here too, rather than leaving us
+// billing a spool the operator has unassigned.
+func TestMoonrakerClearedSpoolIsAdopted(t *testing.T) {
+	b := newTestBridge(t)
+	fake := installFakeMoonraker(b)
+	cfg := moonrakerTestConfig("Voron")
+
+	fake.activeSpool = 0 // component present, nothing assigned
+	fake.spoolErr = nil
+	if err := b.SetToolheadMapping(cfg.Name, moonrakerToolhead, 12); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+
+	if err := b.monitorMoonraker("mr1", cfg); err != nil {
+		t.Fatalf("monitorMoonraker: %v", err)
+	}
+
+	if fake.tracker.ActiveSpool() != nil {
+		t.Error("tracker still has a spool after Moonraker cleared it")
+	}
+	got, err := b.GetToolheadMapping(cfg.Name, moonrakerToolhead)
+	if err != nil {
+		t.Fatalf("GetToolheadMapping: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("stored mapping = %d, want 0 (cleared to match Moonraker)", got)
+	}
+}
+
+// Without a [spoolman] section Moonraker holds no assignment, so The Moment's
+// own mapping stands. This is the path for Klipper printers that do not use
+// Spoolman through Moonraker at all.
+func TestMoonrakerWithoutSpoolmanUsesOwnMapping(t *testing.T) {
+	b := newTestBridge(t)
+	fake := installFakeMoonraker(b)
+	cfg := moonrakerTestConfig("Voron")
+
+	fake.spoolErr = ErrMoonrakerNoSpoolman
+	if err := b.SetToolheadMapping(cfg.Name, moonrakerToolhead, 12); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+
+	if err := b.monitorMoonraker("mr1", cfg); err != nil {
+		t.Fatalf("monitorMoonraker: %v", err)
+	}
+
+	spool := fake.tracker.ActiveSpool()
+	if spool == nil || *spool != 12 {
+		t.Errorf("tracker spool = %v, want 12 (our mapping stands)", spool)
+	}
+}
+
+// An unreachable Moonraker must not stop billing mid-print — fall back to the
+// mapping we already hold rather than clearing it.
+func TestMoonrakerSpoolQueryFailureKeepsExistingMapping(t *testing.T) {
+	b := newTestBridge(t)
+	fake := installFakeMoonraker(b)
+	cfg := moonrakerTestConfig("Voron")
+
+	fake.spoolErr = errNotConnectedForTest{}
+	if err := b.SetToolheadMapping(cfg.Name, moonrakerToolhead, 12); err != nil {
+		t.Fatalf("SetToolheadMapping: %v", err)
+	}
+
+	if err := b.monitorMoonraker("mr1", cfg); err != nil {
+		t.Fatalf("monitorMoonraker: %v", err)
+	}
+
+	spool := fake.tracker.ActiveSpool()
+	if spool == nil || *spool != 12 {
+		t.Errorf("tracker spool = %v, want 12 (kept through a query failure)", spool)
+	}
+}
+
+// -----------------------------------------------------------------------------
+// Print history: mm -> grams
+// -----------------------------------------------------------------------------
+
+// spoolWithFilament serves one spool record with the given density/diameter.
+func spoolWithFilament(t *testing.T, density, diameter float64) *SpoolmanClient {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":12,"filament":{"id":4,"name":"BLACK","density":%v,"diameter":%v}}`,
+			density, diameter)
+	}))
+	t.Cleanup(srv.Close)
+	return &SpoolmanClient{baseURL: srv.URL, httpClient: srv.Client()}
+}
+
+// The tracker works in millimetres so Spoolman can apply the real density.
+// History stores grams, so the conversion happens here — and it must use the
+// spool's own density, not a constant. The PrusaLink path falls back to a
+// hardcoded 1.24, which overstates ABS+ by 19%.
+func TestMoonrakerGramsUsesSpoolDensity(t *testing.T) {
+	b := newTestBridge(t)
+
+	// 1307.639mm of 1.75mm ABS+ at density 1.04 — the figures measured on a
+	// real print, where Spoolman independently recorded 3.2710g.
+	b.spoolman = spoolWithFilament(t, 1.04, 1.75)
+
+	got, err := b.moonrakerGramsForSpool(12, 1307.639)
+	if err != nil {
+		t.Fatalf("moonrakerGramsForSpool: %v", err)
+	}
+	if math.Abs(got-3.2710) > 0.001 {
+		t.Errorf("got %.4fg, want 3.2710g (Spoolman's own figure for this print)", got)
+	}
+
+	// The same length of PLA-density filament must NOT produce the same answer.
+	b.spoolman = spoolWithFilament(t, 1.24, 1.75)
+	pla, err := b.moonrakerGramsForSpool(12, 1307.639)
+	if err != nil {
+		t.Fatalf("moonrakerGramsForSpool: %v", err)
+	}
+	if math.Abs(pla-got) < 0.5 {
+		t.Errorf("density is being ignored: ABS+ %.4fg vs PLA %.4fg", got, pla)
+	}
+}
+
+// Without a usable density the conversion must fail loudly rather than invent
+// one — silently guessing is the bug this whole path exists to avoid.
+func TestMoonrakerGramsRefusesWithoutDensity(t *testing.T) {
+	b := newTestBridge(t)
+	b.spoolman = spoolWithFilament(t, 0, 1.75)
+
+	if _, err := b.moonrakerGramsForSpool(12, 1000); err == nil {
+		t.Error("expected an error when the filament has no density")
+	}
+
+	if _, err := b.moonrakerGramsForSpool(0, 1000); err == nil {
+		t.Error("expected an error when no spool is assigned")
 	}
 }

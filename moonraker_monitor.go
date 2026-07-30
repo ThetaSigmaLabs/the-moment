@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 )
@@ -164,6 +165,7 @@ func (b *FilamentBridge) closeMoonrakerClient(printerID, reason string) {
 		delete(b.moonrakerClients, printerID)
 	}
 	delete(b.moonrakerHosts, printerID)
+	delete(b.moonrakerPrintStart, printerID)
 
 	log.Printf("[MOONRAKER] Released client for %s (%s)", printerID, reason)
 }
@@ -207,6 +209,35 @@ func (b *FilamentBridge) syncMoonrakerSpool(printerName string, client Moonraker
 		// not silently stop billing an in-progress print.
 		log.Printf("[MOONRAKER] Could not read spool mapping for %s: %v", printerName, err)
 		return
+	}
+
+	// Moonraker's [spoolman] assignment wins when it has one.
+	//
+	// Mainsail and Fluidd read and write that same value, and those are the UIs
+	// people have open while a print runs. Treating Moonraker as the source of
+	// truth means the spool can be set from either place without the two
+	// drifting apart, and it keeps Moonraker billing the spool the operator
+	// actually selected.
+	if mrSpool, err := client.ActiveSpoolID(); err == nil {
+		if mrSpool != spoolID {
+			if mrSpool == 0 {
+				// Cleared in Moonraker: drop ours to match rather than keep
+				// billing a spool the operator has unassigned.
+				if err := b.UnmapToolhead(printerName, moonrakerToolhead); err != nil {
+					log.Printf("[MOONRAKER] Could not clear spool mapping for %s: %v", printerName, err)
+				}
+			} else if err := b.SetToolheadMapping(printerName, moonrakerToolhead, mrSpool); err != nil {
+				log.Printf("[MOONRAKER] Could not mirror Moonraker spool %d for %s: %v",
+					mrSpool, printerName, err)
+			} else {
+				log.Printf("[MOONRAKER] Adopted spool %d from Moonraker for %s", mrSpool, printerName)
+			}
+		}
+		spoolID = mrSpool
+	} else if !errors.Is(err, ErrMoonrakerNoSpoolman) {
+		// Unreachable or erroring: keep using our own mapping rather than
+		// stopping billing mid-print.
+		log.Printf("[MOONRAKER] Could not read active spool from %s: %v", printerName, err)
 	}
 
 	tracker := client.Tracker()
@@ -268,8 +299,10 @@ func (b *FilamentBridge) monitorMoonraker(printerID string, config PrinterConfig
 	switch currentState {
 
 	case StatePrinting:
+		newJob := status.Filename != "" && storedJobFile == ""
+
 		b.mutex.Lock()
-		if status.Filename != "" && storedJobFile == "" {
+		if newJob {
 			b.currentJobFile[printerID] = status.Filename
 			b.printStartTime[printerID] = time.Now()
 			log.Printf("[MOONRAKER] 📁 Stored job filename for %s: %s", printerID, status.Filename)
@@ -278,6 +311,14 @@ func (b *FilamentBridge) monitorMoonraker(printerID string, config PrinterConfig
 		b.previousState[printerID] = currentState
 		b.mutex.Unlock()
 
+		// Remember what had been billed when the job started, so the difference
+		// at print end is exactly this print's consumption.
+		if newJob {
+			b.moonrakerMutex.Lock()
+			b.moonrakerPrintStart[printerID] = client.Tracker().BilledTotal()
+			b.moonrakerMutex.Unlock()
+		}
+
 	case StatePaused:
 		b.mutex.Lock()
 		b.previousState[printerID] = currentState
@@ -285,8 +326,8 @@ func (b *FilamentBridge) monitorMoonraker(printerID string, config PrinterConfig
 
 	case StateFinished, StateIdle, StateStopped:
 		if wasPrinting {
-			// Flush before clearing state so the last few millimetres extruded
-			// before the job ended are attributed to this print, not the next.
+			// Flush before reading the total so the last few millimetres
+			// extruded before the job ended belong to this print, not the next.
 			b.moonrakerMutex.RLock()
 			reporter := b.moonrakerReporters[printerID]
 			b.moonrakerMutex.RUnlock()
@@ -294,14 +335,19 @@ func (b *FilamentBridge) monitorMoonraker(printerID string, config PrinterConfig
 				reporter.Flush()
 			}
 
-			log.Printf("[MOONRAKER] Print ended on %s (%s): state=%s file=%s klipper_filament=%.1fmm",
-				printerID, config.Name, currentState, storedJobFile, status.FilamentUsed)
+			if err := b.handleMoonrakerPrintFinished(printerID, config, client, storedJobFile, currentState); err != nil {
+				log.Printf("[MOONRAKER] Could not record print history for %s: %v", printerID, err)
+			}
 		}
 		b.mutex.Lock()
 		b.wasPrinting[printerID] = false
 		b.currentJobFile[printerID] = ""
 		b.previousState[printerID] = currentState
 		b.mutex.Unlock()
+
+		b.moonrakerMutex.Lock()
+		delete(b.moonrakerPrintStart, printerID)
+		b.moonrakerMutex.Unlock()
 
 	default:
 		b.mutex.Lock()
@@ -310,6 +356,105 @@ func (b *FilamentBridge) monitorMoonraker(printerID string, config PrinterConfig
 	}
 
 	return nil
+}
+
+// handleMoonrakerPrintFinished records a finished Klipper print in history.
+//
+// Deliberately does NOT call processFilamentUsage, which is the shared
+// deduct-and-queue path used by PrusaLink and Bambu. Moonraker printers have
+// their filament accounted for already — either by Moonraker's own [spoolman]
+// or by our reporter — so running it here would deduct the same print twice.
+func (b *FilamentBridge) handleMoonrakerPrintFinished(
+	printerID string, config PrinterConfig, client MoonrakerStatusProvider,
+	filename, finalState string,
+) error {
+	printerName := resolvePrinterName(config)
+
+	b.moonrakerMutex.RLock()
+	startTotal, hadStart := b.moonrakerPrintStart[printerID]
+	b.moonrakerMutex.RUnlock()
+
+	usedMM := client.Tracker().BilledTotal() - startTotal
+	if !hadStart || usedMM <= 0 {
+		// No baseline (the print was already running when we connected) or
+		// nothing extruded. Recording a zero-gram print would be misleading.
+		log.Printf("[MOONRAKER] Print ended on %s (%s) state=%s file=%s — no usage to record",
+			printerID, config.Name, finalState, filename)
+		return nil
+	}
+
+	spoolID, err := b.GetToolheadMapping(printerName, moonrakerToolhead)
+	if err != nil {
+		return fmt.Errorf("read spool mapping: %w", err)
+	}
+
+	usedGrams, err := b.moonrakerGramsForSpool(spoolID, usedMM)
+	if err != nil {
+		// Without a density we cannot convert honestly, and inventing one is
+		// how the PrusaLink path ends up 19% out on non-PLA filament.
+		return fmt.Errorf("convert %.2fmm to grams: %w", usedMM, err)
+	}
+
+	b.mutex.RLock()
+	startTime := b.printStartTime[printerID]
+	b.mutex.RUnlock()
+
+	printMinutes := 0.0
+	if !startTime.IsZero() {
+		printMinutes = time.Since(startTime).Minutes()
+	}
+
+	status := "completed"
+	if finalState == StateStopped {
+		status = "cancelled"
+	}
+
+	sessionID := newSessionID()
+	printID, err := b.LogPrintUsageFull(printerName, moonrakerToolhead, spoolID, usedGrams,
+		filename, printMinutes, status, "", sessionID, PrinterTypeMoonraker)
+	if err != nil {
+		return fmt.Errorf("log print history: %w", err)
+	}
+
+	if printID > 0 {
+		_ = b.AppendFilamentUsage(printID, moonrakerToolhead, 0, spoolID, 0, usedGrams)
+		if err := b.SnapshotAssignmentsForPrint(printID, printerID, startTime); err != nil {
+			log.Printf("[MOONRAKER] Warning: could not snapshot assignments for print %d: %v", printID, err)
+		}
+	}
+
+	log.Printf("[MOONRAKER] 🎉 Print %s on %s (%s): file=%s %.2fmm = %.2fg on spool %d",
+		status, printerID, config.Name, filename, usedMM, usedGrams, spoolID)
+	return nil
+}
+
+// moonrakerGramsForSpool converts millimetres to grams using the spool's own
+// filament density and diameter.
+//
+// The tracker deliberately works in millimetres so Spoolman can apply the real
+// density. History stores grams, so the conversion has to happen somewhere —
+// doing it from the spool record keeps it honest. The PrusaLink path falls back
+// to a hardcoded 1.24 g/cm3, which overstates ABS+ (1.04) by 19%.
+func (b *FilamentBridge) moonrakerGramsForSpool(spoolID int, usedMM float64) (float64, error) {
+	if spoolID == 0 {
+		return 0, fmt.Errorf("no spool assigned")
+	}
+	spool, err := b.spoolman.GetSpoolByID(spoolID)
+	if err != nil {
+		return 0, err
+	}
+	if spool == nil || spool.Filament == nil {
+		return 0, fmt.Errorf("spool %d has no filament record", spoolID)
+	}
+	density, diameter := spool.Filament.Density, spool.Filament.Diameter
+	if density <= 0 || diameter <= 0 {
+		return 0, fmt.Errorf("spool %d: filament has density=%.3f diameter=%.3f", spoolID, density, diameter)
+	}
+
+	radius := diameter / 2
+	volumeMM3 := math.Pi * radius * radius * usedMM
+	// density is g/cm3; 1 cm3 = 1000 mm3.
+	return (volumeMM3 / 1000.0) * density, nil
 }
 
 // CloseMoonrakerClients stops every reporter and disconnects every client.
@@ -331,4 +476,5 @@ func (b *FilamentBridge) CloseMoonrakerClients() {
 		delete(b.moonrakerClients, id)
 	}
 	b.moonrakerHosts = make(map[string]string)
+	b.moonrakerPrintStart = make(map[string]float64)
 }

@@ -284,7 +284,7 @@ In Docker, host paths set in `.env` are bind-mounted into the container at the f
 | `SPOOLMAN_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | URL The Moment uses to reach Spoolman. Only applied when the database is first created; ignored on subsequent starts. In Docker compose this is set to `http://spoolman:8000` (Docker DNS). Change via Settings → Advanced after first run. |
 | `BAMBU_DEBUG` | `bambu.go` | `0` | Set to `1` for verbose Bambu MQTT debug logging (requires restart). Hot-togglable without restart via Settings → Advanced → `bambu_debug = true`. |
 
-**Moonraker.** `moonraker_log_only` is a database config key (Settings → Advanced), not an environment variable. It defaults to **on**: Moonraker printers compute filament usage and log it without writing to Spoolman. Only the exact value `false` enables writes — any other value, a typo, or an unset key leaves log-only on. Do not set it to `false` until Moonraker's own `[spoolman]` section has been removed from `moonraker.conf`, or every print is deducted twice.
+**Moonraker.** `moonraker_log_only` is a database config key (Settings → Advanced), not an environment variable. It defaults to **on**, which is the recommended mode: Moonraker's own `[spoolman]` component writes usage to Spoolman and drives the Mainsail/Fluidd spool display, while The Moment tracks the same usage for history, cost and sufficiency without writing. Only the exact value `false` enables writes — any other value, a typo, or an unset key leaves them off. Do not set it to `false` until `[spoolman]` has been removed from `moonraker.conf`, or every print is deducted twice.
 
 ### Backup
 

@@ -199,19 +199,26 @@ Full plugin documentation: [docs/octoprint-plugin.md](docs/octoprint-plugin.md)
 3. Leave API Key blank unless your Moonraker requires one
 4. Save — The Moment opens a WebSocket and starts reporting status immediately
 
-**Filament usage starts in log-only mode, and that is deliberate.**
+**Keep Moonraker's `[spoolman]` enabled.** The Moment is designed to sit alongside it, not replace it.
 
-Moonraker ships its own `[spoolman]` component (see [contrib/moonraker_spoolman.cfg](contrib/moonraker_spoolman.cfg)). If it is enabled and The Moment also writes, *both* deduct from the same spool and every print is counted twice — which cannot be undone without editing Spoolman by hand.
+Moonraker's own `[spoolman]` component (see [contrib/moonraker_spoolman.cfg](contrib/moonraker_spoolman.cfg)) already reports filament usage to Spoolman as a length, using the same retraction-aware extruder-axis method The Moment uses — measured agreement between the two over a full print is within 0.2%. It is also what powers the spool display in Mainsail and Fluidd, which is what most people have open while a print runs.
 
-So The Moment computes usage and logs it without writing, until you say otherwise:
+So by default The Moment **does not write to Spoolman for Moonraker printers**. It tracks usage in parallel for print history, cost and filament-sufficiency warnings, and leaves the Spoolman write to Moonraker. Nothing is counted twice, and your Mainsail spool display keeps working.
 
-1. Run a print and compare The Moment's logged millimetres against what Moonraker's `[spoolman]` deducted. They should agree closely.
-2. Once satisfied, **remove the `[spoolman]` section from `moonraker.conf`** and restart Moonraker.
-3. Only then set `moonraker_log_only` to `false` so The Moment becomes the sole writer.
+**The spool assignment lives in Moonraker.** Set it wherever you like — Mainsail, Fluidd, or `SET_ACTIVE_SPOOL` — and The Moment mirrors it automatically on the next poll. Clearing it there clears it here. Printers with no `[spoolman]` section fall back to assigning the spool in The Moment.
 
-Doing step 3 before step 2 is the double-counting case. Any value other than an explicit `false` — including a typo or an unset key — keeps log-only on.
+<details>
+<summary>Making The Moment the sole writer instead</summary>
+
+If you would rather The Moment own the Spoolman write — for example to keep one system of record across mixed printer types — then:
+
+1. **Remove the `[spoolman]` section from `moonraker.conf`** and restart Moonraker.
+2. Set `moonraker_log_only` to `false`.
+
+Order matters: doing step 2 first means both write and every print is deducted twice, which cannot be undone without editing Spoolman by hand. Any value other than an explicit `false` — including a typo or an unset key — keeps writing off. Note this also removes the spool display from Mainsail and Fluidd, and the spool must then be assigned in The Moment.
 
 Usage is reported as **length in millimetres** via Spoolman's `/use` endpoint, so Spoolman applies each filament's own density. Nothing assumes a density constant.
+</details>
 
 > Extrusion is read from Klipper's `toolhead.position` axis, not `gcode_move.gcode_position`, so slicer `G92 E0` resets and retractions are handled correctly.
 

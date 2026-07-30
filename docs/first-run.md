@@ -33,7 +33,7 @@ Go to **Settings → Printers → Add Printer**.
 | Bambu X1C / P1S / A1 | Type: Bambu · IP · API Key as `serial:accesscode` · Toolheads: AMS slot count |
 | No hardware yet | Type: Virtual · lets you simulate prints from G-code files |
 
-> **Moonraker printers start in log-only mode.** Filament usage is computed and logged but not written to Spoolman, because Moonraker's own `[spoolman]` component may already be writing. Verify the two agree, remove `[spoolman]` from `moonraker.conf`, then set `moonraker_log_only` to `false`. See the Moonraker section in the README.
+> **Leave Moonraker's `[spoolman]` enabled.** The Moment sits alongside it: Moonraker keeps writing usage to Spoolman and keeps the spool display working in Mainsail and Fluidd, while The Moment tracks the same usage for print history, cost and sufficiency warnings. Nothing is counted twice. Assign the spool in Mainsail and The Moment mirrors it. See the Moonraker section in the README if you would rather The Moment own the write.
 
 **Save.** The Moment will poll PrusaLink printers immediately. OctoPrint printers become active when the plugin sends its first event.
 
