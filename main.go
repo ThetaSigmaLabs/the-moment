@@ -66,7 +66,21 @@ func main() {
 		log.Printf("Spoolman URL set from SPOOLMAN_URL env var: %s", envSpoolman)
 	}
 
-	// Handle graceful shutdown.
+	// Override Spoolman external URL from env var (defaults to SPOOLMAN_URL or the
+	// stored value). Lets docker compose / k8s manifests set the browser-reachable
+	// address independently of the internal one.
+	if envExt := os.Getenv("SPOOLMAN_EXTERNAL_URL"); envExt != "" && config.SpoolmanExternalURL == DefaultSpoolmanExternalURL {
+		config.SpoolmanExternalURL = envExt
+		if err := bridge.SetConfigValue(ConfigKeySpoolmanExternalURL, envExt); err != nil {
+			log.Printf("Warning: could not persist SPOOLMAN_EXTERNAL_URL env override: %v", err)
+		}
+		if err := bridge.UpdateConfig(config); err != nil {
+			log.Printf("Warning: could not apply SPOOLMAN_EXTERNAL_URL env override to bridge: %v", err)
+		}
+		log.Printf("Spoolman external URL set from SPOOLMAN_EXTERNAL_URL env var: %s", envExt)
+	}
+
+	// Handle graceful shutdown
 	//
 	// The signal is fanned out through a closed channel rather than read
 	// directly by each goroutine. A send on sigChan is consumed by exactly one

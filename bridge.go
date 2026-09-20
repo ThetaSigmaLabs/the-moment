@@ -468,6 +468,10 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		return nil, fmt.Errorf("failed to migrate OpenPrintTag sources: %w", err)
 	}
 
+	if err := bridge.migrateSpoolmanExternalURL(); err != nil {
+		log.Printf("Warning: failed to migrate Spoolman external URL: %v", err)
+	}
+
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
 		log.Printf("[RECONCILE] dedup migration warning: %v", err)
 	}
@@ -2339,12 +2343,27 @@ func (b *FilamentBridge) migrateToolheadMappingsToSpoolman() error {
 	return nil
 }
 
+// migrateSpoolmanExternalURL seeds spoolman_external_url from spoolman_url for
+// existing single-URL deployments. INSERT OR IGNORE means fresh installs that
+// already have the key in initializeDefaultConfig are unaffected.
+func (b *FilamentBridge) migrateSpoolmanExternalURL() error {
+	_, err := b.db.Exec(
+		`INSERT OR IGNORE INTO configuration (key, value) SELECT ?, value FROM configuration WHERE key = ?`,
+		ConfigKeySpoolmanExternalURL, ConfigKeySpoolmanURL,
+	)
+	if err != nil {
+		return fmt.Errorf("seed spoolman_external_url: %w", err)
+	}
+	return nil
+}
+
 // initializeDefaultConfig sets up default configuration values
 func (b *FilamentBridge) initializeDefaultConfig() error {
 	defaultConfigs := map[string]string{
 		ConfigKeyPrinterIPs:                     "", // Comma-separated list of printer IP addresses
 		ConfigKeyAPIKey:                         "", // PrusaLink API key for authentication
 		ConfigKeySpoolmanURL:                    DefaultSpoolmanURL,
+		ConfigKeySpoolmanExternalURL:            DefaultSpoolmanExternalURL,
 		ConfigKeyPollInterval:                   fmt.Sprintf("%d", DefaultPollInterval),
 		ConfigKeyWebPort:                        DefaultWebPort,
 		ConfigKeyPrusaLinkTimeout:               fmt.Sprintf("%d", PrusaLinkTimeout),
@@ -2377,7 +2396,8 @@ func getConfigDescription(key string) string {
 	descriptions := map[string]string{
 		ConfigKeyPrinterIPs:                     "Comma-separated list of printer IP addresses for PrusaLink",
 		ConfigKeyAPIKey:                         "PrusaLink API key for authentication",
-		ConfigKeySpoolmanURL:                    "URL of Spoolman instance",
+		ConfigKeySpoolmanURL:                    "URL of Spoolman instance (internal — used for API calls)",
+		ConfigKeySpoolmanExternalURL:            "URL of Spoolman instance reachable from the user's browser (used for UI links; falls back to spoolman_url when empty)",
 		ConfigKeyPollInterval:                   "Polling interval in seconds",
 		ConfigKeyWebPort:                        "Port for web interface",
 		ConfigKeyPrusaLinkTimeout:               "PrusaLink API timeout in seconds",
@@ -2884,6 +2904,21 @@ func (b *FilamentBridge) pushSpoolToInventory(spoolID int) {
 	}
 }
 
+// GetSpoolmanExternalURL returns the browser-reachable Spoolman URL. Falls back to
+// the internal URL when the external one is not set, so existing single-URL
+// deployments keep working.
+func (b *FilamentBridge) GetSpoolmanExternalURL() string {
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
+	if b.config == nil {
+		return ""
+	}
+	if b.config.SpoolmanExternalURL != "" {
+		return b.config.SpoolmanExternalURL
+	}
+	return b.config.SpoolmanURL
+}
+
 // GetConfigSnapshot returns a snapshot of the current config for safe iteration
 func (b *FilamentBridge) GetConfigSnapshot() *Config {
 	b.mutex.RLock()
@@ -2897,6 +2932,7 @@ func (b *FilamentBridge) GetConfigSnapshot() *Config {
 	// Create a shallow copy of the config
 	configCopy := &Config{
 		SpoolmanURL:                  b.config.SpoolmanURL,
+		SpoolmanExternalURL:          b.config.SpoolmanExternalURL,
 		PollInterval:                 b.config.PollInterval,
 		DBFile:                       b.config.DBFile,
 		GcodePath:                    b.config.GcodePath,

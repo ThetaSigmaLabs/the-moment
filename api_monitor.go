@@ -54,6 +54,7 @@ func NewAPIShapeMonitor() *APIShapeMonitor {
 //   - job: present while printing, absent when idle/finished
 //   - transfer: present only during file uploads
 //   - printer.axis_x / axis_y: present when idle, absent while printing (Core One L)
+//   - job.filament_change_in: present when a scheduled filament change is pending
 func statusSchema() map[string]bool {
 	return map[string]bool{
 		"/job":                        true,
@@ -61,6 +62,7 @@ func statusSchema() map[string]bool {
 		"/job/progress":               true,
 		"/job/time_remaining":         true,
 		"/job/time_printing":          true,
+		"/job/filament_change_in":     true,
 		"/storage":                    true,
 		"/storage/path":               true,
 		"/storage/name":               true,
