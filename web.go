@@ -557,7 +557,7 @@ func (ws *WebServer) dashboardHandler(c *gin.Context) {
 		"Printers":          ws.bridge.config.Printers,
 		"SpoolmanConnected": spoolmanConnected,
 		"SpoolmanError":     spoolmanError,
-		"SpoolmanBaseURL":   ws.bridge.config.SpoolmanURL,
+		"SpoolmanBaseURL":   ws.bridge.GetSpoolmanExternalURL(),
 		"AppVersion":        AppVersion,
 	})
 }
@@ -1404,8 +1404,8 @@ func (ws *WebServer) spoolmanLocationsHandler(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"locations":    names,
-		"spoolman_url": ws.bridge.spoolman.GetBaseURL(),
+		"locations":             names,
+		"spoolman_external_url": ws.bridge.GetSpoolmanExternalURL(),
 	})
 }
 
@@ -2933,11 +2933,11 @@ func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 	})
 
 	// Get Spoolman URL for the response
-	spoolmanURL := ws.bridge.spoolman.GetBaseURL()
+	spoolmanURL := ws.bridge.GetSpoolmanExternalURL()
 
 	c.JSON(http.StatusOK, gin.H{
-		"urls":         urls,
-		"spoolman_url": spoolmanURL,
+		"urls":                  urls,
+		"spoolman_external_url": spoolmanURL,
 	})
 }
 
@@ -3000,11 +3000,11 @@ func (ws *WebServer) getLocationsHandler(c *gin.Context) {
 	}
 
 	// Get Spoolman URL for the message
-	spoolmanURL := ws.bridge.spoolman.GetBaseURL()
+	spoolmanURL := ws.bridge.GetSpoolmanExternalURL()
 
 	c.JSON(http.StatusOK, gin.H{
-		"locations":    allLocations,
-		"spoolman_url": spoolmanURL,
+		"locations":             allLocations,
+		"spoolman_external_url": spoolmanURL,
 	})
 }
 

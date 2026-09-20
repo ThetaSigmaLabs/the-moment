@@ -55,8 +55,8 @@ function loadEditPrinterToolheadsTab() {
         }
 
         var link = document.getElementById('editPrinterSpoolmanLink');
-        if (link && spoolmanData.spoolman_url) {
-            link.href = spoolmanData.spoolman_url;
+        if (link && spoolmanData.spoolman_external_url) {
+            link.href = spoolmanData.spoolman_external_url;
         }
 
         var toolheadCount = printerData.toolheads || 1;

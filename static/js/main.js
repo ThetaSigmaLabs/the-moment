@@ -134,9 +134,14 @@ function loadConfiguration() {
             form.innerHTML = `
                 <div style="max-width: 600px; margin: 0 auto;">
                     <div class="form-group">
-                        <label><strong>Spoolman URL:</strong></label>
-                        <input type="text" id="spoolman_url" value="${config.spoolman_url || ''}" placeholder="http://localhost:8000">
-                        <small>URL where Spoolman is running</small>
+                        <label><strong>Spoolman URL (internal):</strong></label>
+                        <input type="text" id="spoolman_url" value="${config.spoolman_url || ''}" placeholder="http://spoolman:8000">
+                        <small>URL The Moment uses to call the Spoolman API. Use a hostname reachable from this container (e.g. <code>http://spoolman:8000</code> in Docker, <code>http://localhost:7912</code> on bare metal).</small>
+                    </div>
+                    <div class="form-group">
+                        <label><strong>Spoolman URL (external / browser):</strong></label>
+                        <input type="text" id="spoolman_external_url" value="${config.spoolman_external_url || ''}" placeholder="http://your-host:7912">
+                        <small>URL the user's browser should use for "Open Spoolman" links. Leave blank to fall back to the internal URL above.</small>
                     </div>
                     <div class="form-group">
                         <label><strong>Poll Interval (seconds):</strong></label>
@@ -160,6 +165,7 @@ function loadConfiguration() {
 function saveConfiguration() {
     const config = {
         spoolman_url: document.getElementById('spoolman_url').value,
+        spoolman_external_url: document.getElementById('spoolman_external_url').value,
         poll_interval: document.getElementById('poll_interval').value
     };
 
@@ -183,8 +189,12 @@ function saveConfiguration() {
 }
 
 function testSpoolmanURL() {
-    const url = document.getElementById('spoolman_url').value.trim();
     const resultEl = document.getElementById('spoolman-test-result');
+    const active = document.activeElement && document.activeElement.id;
+    const urlEl = (active === 'spoolman_external_url')
+        ? document.getElementById('spoolman_external_url')
+        : document.getElementById('spoolman_url');
+    const url = urlEl.value.trim();
 
     if (!url) {
         resultEl.style.color = '#f0a500';

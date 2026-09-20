@@ -574,7 +574,7 @@ func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 		return
 	}
 
-	spoolmanURL := ws.bridge.config.SpoolmanURL
+	spoolmanURL := ws.bridge.GetSpoolmanExternalURL()
 
 	switch result.Action {
 	case TapUnknown:
@@ -637,7 +637,7 @@ func (ws *WebServer) buildPendingPageData(tag *NFCTag, result TapResult, host st
 		"Action":      result.Action,
 		"TagType":     tag.TagType,
 		"TagURL":      nfcTagURL(host, tag.TagID),
-		"SpoolmanURL": ws.bridge.config.SpoolmanURL,
+		"SpoolmanURL": ws.bridge.GetSpoolmanExternalURL(),
 	}
 	if tag.Label != nil {
 		data["Label"] = *tag.Label
@@ -713,7 +713,7 @@ func (ws *WebServer) nfcTagTapPostHandler(c *gin.Context) {
 		"FilamentID":   result.FilamentID,
 		"FilamentName": result.FilamentName,
 		"Message":      result.Message,
-		"SpoolmanURL":  ws.bridge.config.SpoolmanURL,
+		"SpoolmanURL":  ws.bridge.GetSpoolmanExternalURL(),
 	})
 }
 

@@ -66,6 +66,20 @@ func main() {
 		log.Printf("Spoolman URL set from SPOOLMAN_URL env var: %s", envSpoolman)
 	}
 
+	// Override Spoolman external URL from env var (defaults to SPOOLMAN_URL or the
+	// stored value). Lets docker compose / k8s manifests set the browser-reachable
+	// address independently of the internal one.
+	if envExt := os.Getenv("SPOOLMAN_EXTERNAL_URL"); envExt != "" && config.SpoolmanExternalURL == DefaultSpoolmanExternalURL {
+		config.SpoolmanExternalURL = envExt
+		if err := bridge.SetConfigValue(ConfigKeySpoolmanExternalURL, envExt); err != nil {
+			log.Printf("Warning: could not persist SPOOLMAN_EXTERNAL_URL env override: %v", err)
+		}
+		if err := bridge.UpdateConfig(config); err != nil {
+			log.Printf("Warning: could not apply SPOOLMAN_EXTERNAL_URL env override to bridge: %v", err)
+		}
+		log.Printf("Spoolman external URL set from SPOOLMAN_EXTERNAL_URL env var: %s", envExt)
+	}
+
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
