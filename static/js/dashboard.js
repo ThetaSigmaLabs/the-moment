@@ -362,9 +362,15 @@ function _apmPopulate(d) {
         ? (d.flow || 0) + '% / ' + (d.speed || 0) + '%'
         : '—';
 
+    // Fan speed units differ by printer type: PrusaLink reports RPM (a hotend
+    // fan reads ~8000), Klipper a 0-1 fraction scaled to percent. The backend
+    // sends the unit alongside the value; default to rpm for older payloads
+    // that predate the field, which were all PrusaLink.
     const fanEl = document.getElementById('apm-fans');
+    const fanUnit = d.fan_unit || 'rpm';
+    const fanSuffix = fanUnit === '%' ? '%' : ' rpm';
     if (fanEl) fanEl.textContent = (d.fan_hotend || d.fan_print)
-        ? (d.fan_hotend || 0) + '% / ' + (d.fan_print || 0) + '%'
+        ? (d.fan_hotend || 0) + fanSuffix + ' / ' + (d.fan_print || 0) + fanSuffix
         : '—';
 
     const jobEl = document.getElementById('apm-job-name');

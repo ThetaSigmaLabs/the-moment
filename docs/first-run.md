@@ -29,8 +29,11 @@ Go to **Settings → Printers → Add Printer**.
 |---|---|
 | PrusaLink (CORE One, XL, MK4, Mini+) | Type: PrusaLink · IP address · API key from printer screen · Toolheads: 1 (or 5 for XL) |
 | OctoPrint (Ender, Voron, etc.) | Type: OctoPrint · install the plugin first (see Step 1a below) |
+| Moonraker / Klipper (Voron, Rat Rig, etc.) | Type: Moonraker · host (port `7125` assumed) · API key usually blank · Toolheads: 1 |
 | Bambu X1C / P1S / A1 | Type: Bambu · IP · API Key as `serial:accesscode` · Toolheads: AMS slot count |
 | No hardware yet | Type: Virtual · lets you simulate prints from G-code files |
+
+> **Leave Moonraker's `[spoolman]` enabled.** The Moment sits alongside it: Moonraker keeps writing usage to Spoolman and keeps the spool display working in Mainsail and Fluidd, while The Moment tracks the same usage for print history, cost and sufficiency warnings. Nothing is counted twice. Assign the spool in Mainsail and The Moment mirrors it. See the Moonraker section in the README if you would rather The Moment own the write.
 
 **Save.** The Moment will poll PrusaLink printers immediately. OctoPrint printers become active when the plugin sends its first event.
 

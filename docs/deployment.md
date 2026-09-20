@@ -285,6 +285,8 @@ In Docker, host paths set in `.env` are bind-mounted into the container at the f
 | `SPOOLMAN_EXTERNAL_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | Browser-reachable Spoolman URL. Used for "Open Spoolman" links in the UI. In Docker compose this defaults to `http://spoolman:8000`. Falls back to `SPOOLMAN_URL` when empty. |
 | `BAMBU_DEBUG` | `bambu.go` | `0` | Set to `1` for verbose Bambu MQTT debug logging (requires restart). Hot-togglable without restart via Settings → Advanced → `bambu_debug = true`. |
 
+**Moonraker.** `moonraker_log_only` is a database config key (Settings → Advanced), not an environment variable. It defaults to **on**, which is the recommended mode: Moonraker's own `[spoolman]` component writes usage to Spoolman and drives the Mainsail/Fluidd spool display, while The Moment tracks the same usage for history, cost and sufficiency without writing. Only the exact value `false` enables writes — any other value, a typo, or an unset key leaves them off. Do not set it to `false` until `[spoolman]` has been removed from `moonraker.conf`, or every print is deducted twice.
+
 ### Backup
 
 | Variable | Read by | Default (native) | Docker container value | Purpose |

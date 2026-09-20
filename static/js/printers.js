@@ -208,11 +208,28 @@ function buildRealPrinterCard(printerId, printer) {
             'class="toolhead-name-input" data-printer-id="' + printerId + '" data-toolhead-id="' + i + '" ' +
             'style="flex:1;padding:8px;border-radius:4px;border:1px solid #666;background:rgba(255,255,255,0.1);color:#fff;"></div>';
     }
-    var isOctoPrint = (printer.printer_type === 'octoprint');
-    var typeBadge = isOctoPrint
-        ? '<span style="background:#3a4f6b;color:#90caf9;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">OctoPrint</span>'
-        : '<span style="background:#3a5a3a;color:#a5d6a7;padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">PrusaLink</span>';
-    var apiKeyLine = isOctoPrint
+    // Badge styling is keyed on the actual type rather than an isOctoPrint
+    // boolean, so a type with no entry shows its own name instead of being
+    // mislabelled as PrusaLink.
+    var printerType = printer.printer_type || 'prusalink';
+    var badgeStyles = {
+        octoprint: 'background:#3a4f6b;color:#90caf9;',
+        prusalink: 'background:#3a5a3a;color:#a5d6a7;',
+        moonraker: 'background:#4a3a5a;color:#ce93d8;'
+    };
+    var badgeLabels = {
+        octoprint: 'OctoPrint',
+        prusalink: 'PrusaLink',
+        moonraker: 'Moonraker'
+    };
+    var isOctoPrint = (printerType === 'octoprint');
+    var typeBadge = '<span style="' + (badgeStyles[printerType] || badgeStyles.prusalink) +
+        'padding:2px 8px;border-radius:12px;font-size:0.75em;font-weight:600;margin-left:8px;">' +
+        escapeHtml(badgeLabels[printerType] || printerType) + '</span>';
+    // OctoPrint and Moonraker both treat the API key as optional, so an absent
+    // key is normal rather than a misconfiguration worth flagging.
+    var apiKeyOptional = isOctoPrint || printerType === 'moonraker';
+    var apiKeyLine = apiKeyOptional
         ? (printer.api_key ? '<div><strong>API Key:</strong> ••••••••</div>' : '')
         : '<div><strong>API Key:</strong> ' + (printer.api_key ? '••••••••' : 'Not configured') + '</div>';
     var octoPrintHint = isOctoPrint
@@ -745,6 +762,13 @@ function onPrinterTypeChange(type, prefix) {
         if (ipHint)    ipHint.textContent    = 'Hostname or IP address of your OctoPrint server';
         if (thLabel)   thLabel.textContent   = 'Number of Toolheads';
         if (thHint)    thHint.textContent    = 'How many toolheads does your printer have?';
+    } else if (type === 'moonraker') {
+        if (label)     label.textContent     = 'API Key (optional)';
+        if (hint)      hint.textContent      = 'Leave blank unless Moonraker is configured to require one';
+        if (modelHint) modelHint.textContent = 'Informational only — not auto-detected for Moonraker';
+        if (ipHint)    ipHint.textContent    = 'Host or IP of Moonraker — port 7125 is assumed if omitted';
+        if (thLabel)   thLabel.textContent   = 'Number of Toolheads';
+        if (thHint)    thHint.textContent    = 'How many toolheads does your printer have?';
     } else {
         if (label)     label.textContent     = 'API Key';
         if (hint)      hint.textContent      = 'Found in PrusaLink settings on your printer';
@@ -830,7 +854,10 @@ document.getElementById('addPrinterForm').addEventListener('submit', function(e)
     var toolheads = parseInt(fd.get('toolheads'));
     var model = fd.get('model') || 'Other';
 
-    if (printerType === 'octoprint') {
+    // Model auto-detection speaks the PrusaLink API, so only PrusaLink printers
+    // go through it. Sending a Moonraker host there would stall the button for
+    // the full HTTP timeout before failing.
+    if (printerType === 'octoprint' || printerType === 'moonraker') {
         if (btn) { btn.disabled = true; btn.textContent = 'Adding…'; }
         addPrinter({ name: name, model: model, ip_address: ip, api_key: key,
             toolheads: toolheads, printer_type: printerType })
@@ -873,6 +900,8 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
             printer_type: fd.get('printer_type') || 'prusalink',
             camera_snapshot_url: fd.get('camera_snapshot_url') || '',
             progress_snapshot_config: progressSnapshotConfig,
+            fan_hotend_max_rpm: parseInt(fd.get('fan_hotend_max_rpm') || '0', 10) || 0,
+            fan_print_max_rpm: parseInt(fd.get('fan_print_max_rpm') || '0', 10) || 0,
             sort_order: sortOrder };
     fetch('/api/printers/' + pid, {
         method: 'PUT',
@@ -919,6 +948,10 @@ function editPrinter(printerId) {
         document.getElementById('editPrinterAPIKey').value = p.api_key || '';
         document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
         document.getElementById('editPrinterCameraURL').value = p.camera_snapshot_url || '';
+        // Blank rather than 0 when unset, so the placeholder shows and the user
+        // sees "not configured" instead of a meaningless zero.
+        document.getElementById('editPrinterFanHotendMaxRPM').value = p.fan_hotend_max_rpm || '';
+        document.getElementById('editPrinterFanPrintMaxRPM').value = p.fan_print_max_rpm || '';
         document.getElementById('editPrinterSortOrder').value = p.sort_order != null ? p.sort_order : 0;
         // Populate progress snapshot config
         var psc = p.progress_snapshot_config || {};

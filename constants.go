@@ -103,10 +103,27 @@ const (
 	PrinterTypePrusaLink = "prusalink"
 	PrinterTypeOctoPrint = "octoprint"
 	PrinterTypeBambu     = "bambu"
+	PrinterTypeMoonraker = "moonraker" // Klipper printers, via the Moonraker API
 )
 
 // ConfigKeyBambuDebug enables verbose Bambu MQTT debug logging when set to "true".
 const ConfigKeyBambuDebug = "bambu_debug"
+
+// ConfigKeyMoonrakerLogOnly makes Moonraker printers compute filament usage and
+// log it without writing to Spoolman.
+//
+// This defaults to on and is the recommended mode, not a temporary one.
+// Moonraker's own [spoolman] component already reports usage to Spoolman by the
+// same extruder-axis method, and it is what drives the spool display in Mainsail
+// and Fluidd — the UIs people actually watch during a print. Leaving it to write
+// avoids double-counting while The Moment still tracks usage for history, cost
+// and sufficiency warnings.
+//
+// Set to "false" only after removing [spoolman] from moonraker.conf. Doing it
+// the other way round deducts every print twice, which cannot be undone without
+// editing Spoolman by hand — so anything that is not an explicit "false",
+// including a typo or an unreadable database, leaves writing off.
+const ConfigKeyMoonrakerLogOnly = "moonraker_log_only"
 
 // Backup config keys
 const (

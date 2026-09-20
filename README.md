@@ -105,6 +105,7 @@ Tap a spool with your iPhone. Tap the printer slot. Done — the spool is assign
 |---|---|---|---|
 | Any PrusaLink printer (CORE One, XL, MK4, Mini+) | PrusaLink API | Yes (Core One L tester with 5 heads manual changing) | Fully supported |
 | Any OctoPrint printer (Ender, CR-10, Voron, etc.) | OctoPrint plugin | Single-head | Fully supported |
+| Any Moonraker printer (Voron, Rat Rig, Prusa CORE One in Klipper mode) | Moonraker WebSocket | Single-head | Supported — usage tracking defaults to log-only, see below |
 | Bambu | MQTT over LAN | AMS slots → toolheads | Planned |
 | INDX 8-head | TBD | 8 toolheads | Future |
 
@@ -190,6 +191,40 @@ The Moment ships an OctoPrint plugin that pushes print events directly.
 > The Moment accepts print records from any authenticated OctoPrint instance even before the printer config exists — no print data is ever lost. Create the config before the first print to get accurate per-printer cost rates from day one.
 
 Full plugin documentation: [docs/octoprint-plugin.md](docs/octoprint-plugin.md)
+
+### Moonraker (Klipper)
+
+1. Settings → Printers → Add Printer
+2. Set Type to `Moonraker`, enter the Moonraker host — port `7125` is assumed if you omit it
+3. Leave API Key blank unless your Moonraker requires one
+4. Save — The Moment opens a WebSocket and starts reporting status immediately
+
+**Keep Moonraker's `[spoolman]` enabled.** The Moment is designed to sit alongside it, not replace it.
+
+Moonraker's own `[spoolman]` component (see [contrib/moonraker_spoolman.cfg](contrib/moonraker_spoolman.cfg)) already reports filament usage to Spoolman as a length, using the same retraction-aware extruder-axis method The Moment uses — measured agreement between the two over a full print is within 0.2%. It is also what powers the spool display in Mainsail and Fluidd, which is what most people have open while a print runs.
+
+So by default The Moment **does not write to Spoolman for Moonraker printers**. It tracks usage in parallel for print history, cost and filament-sufficiency warnings, and leaves the Spoolman write to Moonraker. Nothing is counted twice, and your Mainsail spool display keeps working.
+
+**The spool assignment lives in Moonraker.** Set it wherever you like — Mainsail, Fluidd, or `SET_ACTIVE_SPOOL` — and The Moment mirrors it automatically on the next poll. Clearing it there clears it here. Printers with no `[spoolman]` section fall back to assigning the spool in The Moment.
+
+<details>
+<summary>Making The Moment the sole writer instead</summary>
+
+If you would rather The Moment own the Spoolman write — for example to keep one system of record across mixed printer types — then:
+
+1. **Remove the `[spoolman]` section from `moonraker.conf`** and restart Moonraker.
+2. Set `moonraker_log_only` to `false`.
+
+Order matters: doing step 2 first means both write and every print is deducted twice, which cannot be undone without editing Spoolman by hand. Any value other than an explicit `false` — including a typo or an unset key — keeps writing off. Note this also removes the spool display from Mainsail and Fluidd, and the spool must then be assigned in The Moment.
+
+Usage is reported as **length in millimetres** via Spoolman's `/use` endpoint, so Spoolman applies each filament's own density. Nothing assumes a density constant.
+</details>
+
+> Extrusion is read from Klipper's `toolhead.position` axis, not `gcode_move.gcode_position`, so slicer `G92 E0` resets and retractions are handled correctly.
+
+**What is and isn't counted.** Tracking follows the extruder axis, so it includes everything that physically leaves the spool — the prime line, `PRINT_START` purges, tip shaping, and filament loading — not just what the slicer planned. That is usually what you want: a G-code estimate misses this overhead entirely, and it adds up across many small prints.
+
+The exception is `FORCE_MOVE`. It drives the stepper directly, bypassing the kinematics, so it never appears in `toolhead.position` and is not counted. Macros that use it to seek a sensor or park filament move material within the toolhead without consuming any, so this is harmless in the normal case. It only matters if a macro mixes methods — retracting with `FORCE_MOVE` but pushing back with `G1` — which lets the axis drift upward relative to reality. If you write such a macro, keep both directions consistent. Moonraker's own `[spoolman]` component reads the same axis and shares this behaviour.
 
 ### Bambu
 
@@ -403,6 +438,10 @@ monitor.go        — MonitorPrinters loop
 prusalink.go      — PrusaLink API client
 octoprint.go      — OctoPrint API client
 bambu.go          — Bambu MQTT client, AMS parsing
+moonraker.go      — Moonraker WebSocket client (Klipper)
+moonraker_tracker.go  — retraction-aware extrusion tracker
+moonraker_reporter.go — Spoolman flush loop for Moonraker usage
+moonraker_monitor.go  — bridge wiring: poll loop, spool sync, lifecycle
 virtual.go        — virtual printer file upload, G-code parsing
 gcode.go          — ParseGcodeMetadata (filament usage, thumbnails)
 history.go        — print history table, notes, delete

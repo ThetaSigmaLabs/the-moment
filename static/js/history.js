@@ -1223,15 +1223,18 @@ function _sourceBadge(source) {
         octoprint: { bg: '#2a1a3d', color: '#b48aff', label: 'OctoPrint' },
         virtual:   { bg: '#1a3a2a', color: '#6ee7a0', label: 'Virtual'   },
         prusalink: { bg: '#2a1a3d', color: '#c8b8ff', label: 'PrusaLink' },
+        moonraker: { bg: '#2d1a3d', color: '#ce93d8', label: 'Moonraker' },
     };
-    var cfg = map[source] || map.prusalink;
+    // Fall back to the raw source rather than to PrusaLink: labelling an
+    // unknown source as a specific printer type is worse than showing it as-is.
+    var cfg = map[source] || { bg: '#2a2a2a', color: '#bbb', label: source || 'Unknown' };
     return ' <span style="background:' + cfg.bg + ';color:' + cfg.color + ';padding:1px 6px;' +
            'border-radius:8px;font-size:0.72em;white-space:nowrap;margin-left:4px;">' + cfg.label + '</span>';
 }
 
 function _sourceLabel(source) {
-    var labels = { octoprint: 'OctoPrint', virtual: 'Virtual printer', prusalink: 'PrusaLink' };
-    return labels[source] || source || 'PrusaLink';
+    var labels = { octoprint: 'OctoPrint', virtual: 'Virtual printer', prusalink: 'PrusaLink', moonraker: 'Moonraker' };
+    return labels[source] || source || 'Unknown';
 }
 
 // ─── Filament segment reassignment ───────────────────────────────────────────

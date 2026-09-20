@@ -5,6 +5,35 @@ All notable changes to The Moment will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### Moonraker / Klipper Support
+
+- New printer type `moonraker` — Klipper printers are now first-class alongside PrusaLink and OctoPrint
+- Persistent WebSocket client per printer (`moonraker.go`) with automatic reconnect and capped backoff; the dashboard reads a cached snapshot and never blocks on an unreachable printer
+- Retraction-aware extrusion tracker (`moonraker_tracker.go`), ported from Moonraker's own `[spoolman]` component — bills only net forward extrusion, immune to slicer `G92 E0` resets, and rebaselines across tool changes and reconnects
+- Filament usage reported to Spoolman as **length in millimetres** via `PUT /api/v1/spool/{id}/use`, so Spoolman applies each filament's own density rather than a hardcoded constant
+- `moonraker_log_only` config key — computes and logs usage without writing to Spoolman. **Defaults to on**, and only an explicit `false` enables writes, so The Moment cannot double-count alongside a still-enabled Moonraker `[spoolman]`
+- Moonraker setup guide in README, including the required order of operations for switching off Moonraker's own Spoolman integration
+- Live telemetry for Moonraker printers on the dashboard detail view — temperatures, progress, Z height, flow, speed, fans and an estimated time remaining
+- Optional per-printer fan maximum RPM. PrusaLink reports fan speed in RPM with no maximum; set the rated values (published per extruder model) to display percentages instead of raw RPM
+
+### Fixed
+
+- Printer type is now validated on save; an unrecognised type is rejected instead of being stored and silently monitored as PrusaLink
+- Editing a printer whose type had no matching dropdown entry no longer rewrites it to `prusalink` on save
+- Print history badges fall back to the raw source name instead of mislabelling an unknown source as "PrusaLink"
+- Model auto-detection no longer probes the PrusaLink API for printer types that cannot answer it, which previously blocked the add and edit forms for the full HTTP timeout
+- Queued G-code downloads for printers that cannot serve them are now dropped with a clear error rather than retried indefinitely
+- Fan speeds are shown in the unit the printer reports. PrusaLink returns RPM, which was previously rendered with a percent sign — a Core One displayed "8099%"
+
+### Known limitations
+
+- Moonraker extrusion tracking follows the kinematic extruder axis, so filament moved by `FORCE_MOVE` is not counted. Macros use it to seek sensors and park filament, which relocates material inside the toolhead without consuming any, so this is harmless in normal use. Moonraker's own `[spoolman]` component shares the behaviour.
+- Filament usage awaiting a Spoolman write is held in memory. A Spoolman outage that spans a restart of The Moment loses the usage accumulated during it.
+
 ## [v1.1.1] — 2026-06-23
 
 ### Fixed
