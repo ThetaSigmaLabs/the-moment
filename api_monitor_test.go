@@ -121,6 +121,21 @@ func TestAPIShapeMonitor_StatusOptionalKeys_NoAlert(t *testing.T) {
 	}
 }
 
+// Scheduled filament change field should not alert — it's optional and in the schema.
+func TestAPIShapeMonitor_FilamentChangeIn_NoAlert(t *testing.T) {
+	m := NewAPIShapeMonitor()
+	// Printing without scheduled filament change
+	without := []byte(`{"job":{"id":1,"progress":26,"time_remaining":3720,"time_printing":1626},"printer":{"state":"PRINTING","temp_nozzle":249.9}}`)
+	// Printing with scheduled filament change
+	with := []byte(`{"job":{"id":1,"progress":26,"time_remaining":3720,"filament_change_in":2940,"time_printing":1626},"printer":{"state":"PRINTING","temp_nozzle":249.9}}`)
+
+	m.Check("status", without)
+	added, _, changed := m.Check("status", with)
+	if changed || len(added) > 0 {
+		t.Errorf("filament_change_in field should not alert (is in schema), got added=%v", added)
+	}
+}
+
 // A genuinely unknown top-level field is the case worth alerting on.
 func TestAPIShapeMonitor_UnknownTopLevelField_Alerts(t *testing.T) {
 	m := NewAPIShapeMonitor()
