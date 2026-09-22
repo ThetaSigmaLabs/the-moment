@@ -33,7 +33,7 @@ FROM alpine:3.24 AS production
 
 # Install runtime dependencies
 # Using --no-scripts to work around Alpine trigger script issues with QEMU emulation on arm64
-RUN apk add --no-cache --no-scripts ca-certificates sqlite ffmpeg
+RUN apk add --no-cache --no-scripts ca-certificates sqlite ffmpeg tzdata
 
 # Create app directory
 WORKDIR /app
@@ -61,7 +61,7 @@ CMD ["./main"]
 # Used by Jenkins arm64 builds to skip recompiling on slow ARM hardware.
 # Caller must place the binary at ./main in the Docker build context.
 FROM alpine:3.24 AS production-prebuilt
-RUN apk add --no-cache --no-scripts ca-certificates sqlite ffmpeg
+RUN apk add --no-cache --no-scripts ca-certificates sqlite ffmpeg tzdata
 WORKDIR /app
 COPY main .
 COPY static/ ./static/

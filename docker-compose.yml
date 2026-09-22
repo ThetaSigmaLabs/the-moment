@@ -77,6 +77,9 @@ services:
       THE_MOMENT_UPLOADS_PATH: /app/data/uploads
       BACKUP_DIR: /app/data/backups
 
+      # Timezone — set TZ in .env (e.g. TZ=Europe/Prague). Defaults to UTC.
+      TZ: ${TZ:-UTC}
+
       # Point The Moment at the Spoolman service on the internal Docker network.
       # Uses the service name "spoolman" — Docker DNS resolves this automatically.
       # This env var is read at first-run config init; if you have already run

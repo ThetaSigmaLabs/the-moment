@@ -5,6 +5,12 @@ All notable changes to The Moment will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.2.1] - 2026-09-22
+
+### Fixed
+
+- TZ fix: TZ never reached the container.
+
 ## [v1.2.0] - 2026-09-20
 
 ### Added
@@ -13,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - History and dashboard prints redesigned as cards: replaces the 11-column table; sort pills, remove-from-card, search now covers status, source, date, cost and quality.
 - Calibration values from a past print's G-code — ↺ picker parses a saved print's slicer config footer to pre-fill the calibration row, plus two new fields cal_bridge_flow_ratio and cal_bridge_density.
 - Bulk filament reassignment from History: select records, pick one spool, every filament record moves; searchable spool dropdown.
-- some Hash routing changes, e.g. About 
+- some Hash routing changes, e.g. About
 
 #### Moonraker / Klipper support — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #9)
 
