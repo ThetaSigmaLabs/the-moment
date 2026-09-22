@@ -13,6 +13,7 @@ package main
 //   1. DELETE /api/printers/:id            — cascade removes toolhead_mappings
 //   2. POST   /api/map_toolhead            — maps spool→toolhead, DB updated
 //   3. POST   /api/prints/:id/filament/:segment_id/reassign — print_filament_usage updated
+//   3b. POST  /api/history/batch-reassign  — bulk spool reassignment across records
 //   4. POST/PUT/DELETE /api/locations/:name — location CRUD via Spoolman
 //
 // Run with:
@@ -549,6 +550,270 @@ func TestRoute_ReassignFilament_NotFound(t *testing.T) {
 		t.Errorf("not-found segment: want 500, got %d: %s", resp.StatusCode, body)
 	}
 	t.Logf("Missing segment returns 500 as expected: %s", body)
+}
+
+// ─── Test 3b: Bulk filament reassignment ─────────────────────────────────────
+
+// seedPrintWithSegments inserts a print_history row plus one
+// print_filament_usage row per (toolIndex, changeNumber) entry in segments,
+// returning the print id and the segment ids in the order given.
+func seedPrintWithSegments(t *testing.T, bridge *FilamentBridge, spoolID int, segments [][2]int, grams float64) (int, []int) {
+	t.Helper()
+
+	var printID int
+	err := bridge.db.QueryRow(`
+		INSERT INTO print_history (printer_name, toolhead_id, spool_id, filament_used, print_started, job_name)
+		VALUES ('TestPrinter', 0, ?, ?, CURRENT_TIMESTAMP, 'bulk-job.gcode')
+		RETURNING id`,
+		spoolID, grams*float64(len(segments)),
+	).Scan(&printID)
+	if err != nil {
+		t.Fatalf("insert print_history: %v", err)
+	}
+
+	ids := make([]int, 0, len(segments))
+	for _, seg := range segments {
+		var segID int
+		err := bridge.db.QueryRow(`
+			INSERT INTO print_filament_usage (print_id, tool_index, change_number, spool_id, filament_used_mm, filament_used_grams)
+			VALUES (?, ?, ?, ?, 1000, ?)
+			RETURNING id`,
+			printID, seg[0], seg[1], spoolID, grams,
+		).Scan(&segID)
+		if err != nil {
+			t.Fatalf("insert print_filament_usage: %v", err)
+		}
+		ids = append(ids, segID)
+	}
+	return printID, ids
+}
+
+// seedPrintWithoutSegments inserts a print_history row with no
+// print_filament_usage rows — the shape PrusaLink and virtual prints produce.
+func seedPrintWithoutSegments(t *testing.T, bridge *FilamentBridge, spoolID int, grams float64) int {
+	t.Helper()
+
+	var printID int
+	err := bridge.db.QueryRow(`
+		INSERT INTO print_history (printer_name, toolhead_id, spool_id, filament_used, print_started, job_name)
+		VALUES ('PrusaTest', 0, ?, ?, CURRENT_TIMESTAMP, 'prusa-job.gcode')
+		RETURNING id`,
+		spoolID, grams,
+	).Scan(&printID)
+	if err != nil {
+		t.Fatalf("insert print_history: %v", err)
+	}
+	return printID
+}
+
+// TestRoute_BatchReassign_MultiSegment verifies that one POST moves every
+// segment of every listed print onto the new spool, leaves gram amounts alone,
+// backfills print_history.spool_id, and adjusts Spoolman on both sides.
+func TestRoute_BatchReassign_MultiSegment(t *testing.T) {
+	spoolman := NewMockSpoolman(t, map[int]float64{10: 1000, 20: 1000})
+	serverURL, bridge := testServerWithSpoolman(t, spoolman.URL())
+
+	// Print A: two toolheads plus a mid-print change on T0.
+	printA, segsA := seedPrintWithSegments(t, bridge, 10, [][2]int{{0, 0}, {0, 1}, {1, 0}}, 40.0)
+	// Print B: a single segment.
+	printB, segsB := seedPrintWithSegments(t, bridge, 10, [][2]int{{0, 0}}, 25.0)
+
+	resp, body := post(t, serverURL+"/api/history/batch-reassign", map[string]interface{}{
+		"ids":      []int{printA, printB},
+		"spool_id": 20,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("batch-reassign: want 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Updated int `json:"updated"`
+		Changed int `json:"changed"`
+		Results []struct {
+			ID      int    `json:"id"`
+			Changed int    `json:"changed"`
+			Error   string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("response not JSON: %s", body)
+	}
+	if result.Updated != 2 {
+		t.Errorf("updated: want 2, got %d", result.Updated)
+	}
+	if result.Changed != len(segsA)+len(segsB) {
+		t.Errorf("changed: want %d, got %d", len(segsA)+len(segsB), result.Changed)
+	}
+	for _, r := range result.Results {
+		if r.Error != "" {
+			t.Errorf("print %d reported error: %s", r.ID, r.Error)
+		}
+	}
+
+	// Every segment must now sit on spool 20 with its original grams.
+	checkSegments := func(printID int, ids []int, wantGrams float64) {
+		for _, segID := range ids {
+			var spoolID int
+			var grams float64
+			if err := bridge.db.QueryRow(
+				`SELECT COALESCE(spool_id,0), filament_used_grams FROM print_filament_usage WHERE id = ?`,
+				segID,
+			).Scan(&spoolID, &grams); err != nil {
+				t.Fatalf("read segment %d: %v", segID, err)
+			}
+			if spoolID != 20 {
+				t.Errorf("print %d segment %d spool_id: want 20, got %d", printID, segID, spoolID)
+			}
+			if grams != wantGrams {
+				t.Errorf("print %d segment %d grams: want %.2f, got %.2f", printID, segID, wantGrams, grams)
+			}
+		}
+	}
+	checkSegments(printA, segsA, 40.0)
+	checkSegments(printB, segsB, 25.0)
+
+	// print_history.spool_id is backfilled from the change_number==0 segment.
+	for _, printID := range []int{printA, printB} {
+		var histSpool int
+		if err := bridge.db.QueryRow(
+			`SELECT COALESCE(spool_id,0) FROM print_history WHERE id = ?`, printID,
+		).Scan(&histSpool); err != nil {
+			t.Fatalf("read print_history %d: %v", printID, err)
+		}
+		if histSpool != 20 {
+			t.Errorf("print %d history spool_id: want 20, got %d", printID, histSpool)
+		}
+	}
+
+	if len(spoolman.UpdatesForSpool(10)) == 0 {
+		t.Errorf("expected Spoolman subtraction updates for spool 10, got none")
+	}
+	if len(spoolman.UpdatesForSpool(20)) == 0 {
+		t.Errorf("expected Spoolman usage updates for spool 20, got none")
+	}
+	t.Logf("batch-reassign moved %d segments across 2 prints: %s", result.Changed, body)
+}
+
+// TestRoute_BatchReassign_NoSegments_PrusaLinkRow verifies the fallback path for
+// records that have no print_filament_usage rows: print_history.spool_id moves
+// and Spoolman still sees the subtract and the add.
+func TestRoute_BatchReassign_NoSegments_PrusaLinkRow(t *testing.T) {
+	spoolman := NewMockSpoolman(t, map[int]float64{10: 1000, 20: 1000})
+	serverURL, bridge := testServerWithSpoolman(t, spoolman.URL())
+
+	printID := seedPrintWithoutSegments(t, bridge, 10, 60.0)
+
+	resp, body := post(t, serverURL+"/api/history/batch-reassign", map[string]interface{}{
+		"ids":      []int{printID},
+		"spool_id": 20,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("batch-reassign: want 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var histSpool int
+	if err := bridge.db.QueryRow(
+		`SELECT COALESCE(spool_id,0) FROM print_history WHERE id = ?`, printID,
+	).Scan(&histSpool); err != nil {
+		t.Fatalf("read print_history: %v", err)
+	}
+	if histSpool != 20 {
+		t.Errorf("history spool_id: want 20, got %d", histSpool)
+	}
+
+	// No segment rows should have been invented.
+	var segCount int
+	if err := bridge.db.QueryRow(
+		`SELECT COUNT(*) FROM print_filament_usage WHERE print_id = ?`, printID,
+	).Scan(&segCount); err != nil {
+		t.Fatalf("count segments: %v", err)
+	}
+	if segCount != 0 {
+		t.Errorf("segment rows: want 0, got %d", segCount)
+	}
+
+	if len(spoolman.UpdatesForSpool(10)) == 0 {
+		t.Errorf("expected Spoolman subtraction update for spool 10, got none")
+	}
+	if len(spoolman.UpdatesForSpool(20)) == 0 {
+		t.Errorf("expected Spoolman usage update for spool 20, got none")
+	}
+	t.Logf("no-segment fallback confirmed: %s", body)
+}
+
+// TestRoute_BatchReassign_InvalidInput verifies 400 for an empty id list and for
+// a missing/zero spool_id (bulk clear-to-none is not offered).
+func TestRoute_BatchReassign_InvalidInput(t *testing.T) {
+	serverURL, cleanup := testServer(t)
+	defer cleanup()
+
+	cases := []map[string]interface{}{
+		{"ids": []int{}, "spool_id": 20},
+		{"spool_id": 20},
+		{"ids": []int{1}, "spool_id": 0},
+		{"ids": []int{1}},
+	}
+	for _, payload := range cases {
+		resp, body := post(t, serverURL+"/api/history/batch-reassign", payload)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("payload %v: want 400, got %d: %s", payload, resp.StatusCode, body)
+		}
+	}
+	t.Logf("batch-reassign input validation confirmed")
+}
+
+// TestRoute_BatchReassign_PartialFailure verifies that a nonexistent id mixed
+// with a good one still returns 200, applies the good one, and reports the bad
+// one in results.
+func TestRoute_BatchReassign_PartialFailure(t *testing.T) {
+	spoolman := NewMockSpoolman(t, map[int]float64{10: 1000, 20: 1000})
+	serverURL, bridge := testServerWithSpoolman(t, spoolman.URL())
+
+	printID, segIDs := seedPrintWithSegments(t, bridge, 10, [][2]int{{0, 0}}, 15.0)
+
+	resp, body := post(t, serverURL+"/api/history/batch-reassign", map[string]interface{}{
+		"ids":      []int{printID, 999999},
+		"spool_id": 20,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("batch-reassign: want 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var result struct {
+		Updated int `json:"updated"`
+		Results []struct {
+			ID    int    `json:"id"`
+			Error string `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		t.Fatalf("response not JSON: %s", body)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("results: want 2 entries, got %d: %s", len(result.Results), body)
+	}
+	for _, r := range result.Results {
+		if r.ID == printID && r.Error != "" {
+			t.Errorf("good print %d reported error: %s", printID, r.Error)
+		}
+		if r.ID == 999999 && r.Error == "" {
+			t.Errorf("missing print 999999 should have reported an error")
+		}
+	}
+	if result.Updated != 1 {
+		t.Errorf("updated: want 1, got %d", result.Updated)
+	}
+
+	var spoolID int
+	if err := bridge.db.QueryRow(
+		`SELECT COALESCE(spool_id,0) FROM print_filament_usage WHERE id = ?`, segIDs[0],
+	).Scan(&spoolID); err != nil {
+		t.Fatalf("read segment: %v", err)
+	}
+	if spoolID != 20 {
+		t.Errorf("good print segment spool_id: want 20, got %d", spoolID)
+	}
+	t.Logf("partial failure handled: %s", body)
 }
 
 // ─── Test 4: Location CRUD ────────────────────────────────────────────────────

@@ -11,10 +11,10 @@
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <!-- Search -->
-                <input type="text" id="historySearch" placeholder="Search file, printer…"
+                <input type="text" id="historySearch" placeholder="Search file, printer, date, cost…"
                        oninput="filterHistory()"
                        style="padding:7px 12px;border-radius:6px;border:1px solid var(--surface-border);
-                              background:var(--surface-2);color:#fff;font-size:0.85em;width:200px;">
+                              background:var(--surface-2);color:#fff;font-size:0.85em;width:240px;">
                 <!-- Filter by status -->
                 <select id="historyStatusFilter" onchange="filterHistory()"
                         style="padding:7px 10px;border-radius:6px;border:1px solid var(--surface-border);
@@ -37,6 +37,9 @@
                 <button id="historyRecalcSelectedBtn" class="btn btn-small btn-secondary"
                         onclick="recalcSelectedSessions()"
                         style="display:none;">💰 Recalc Selected</button>
+                <button id="historyReassignSelectedBtn" class="btn btn-small btn-secondary"
+                        onclick="openBulkReassignPicker()"
+                        style="display:none;">↔ Reassign Selected</button>
                 <button id="historyDeleteSelectedBtn" class="btn btn-small btn-danger"
                         onclick="deleteSelectedSessions()"
                         style="display:none;">🗑 Delete Selected</button>
@@ -50,32 +53,28 @@
         <div style="overflow-x:auto;">
             <table id="historyTable" style="width:100%;border-collapse:collapse;font-size:0.88em;">
                 <thead>
-                    <tr style="border-bottom:2px solid #444;color:#888;text-transform:uppercase;
-                                font-size:0.75em;letter-spacing:0.05em;">
-                        <th style="padding:10px 8px;text-align:center;width:32px;">
+                    <tr style="border-bottom:1px solid #2a2a2a;">
+                        <th style="width:32px;padding:8px 8px;text-align:center;">
                             <input type="checkbox" id="historySelectAll" title="Select all"
                                    onchange="toggleSelectAll(this.checked)"
                                    style="cursor:pointer;width:15px;height:15px;">
                         </th>
-                        <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
-                            onclick="sortHistory('print_finished')">Date ↕</th>
-                        <th style="padding:10px 12px;text-align:center;width:52px;">🖼</th>
-                        <th style="padding:10px 12px;text-align:left;cursor:pointer;white-space:nowrap;"
-                            onclick="sortHistory('printer_name')">Printer ↕</th>
-                        <th style="padding:10px 12px;text-align:left;">File</th>
-                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;"
-                            onclick="sortHistory('filament_used')" style="cursor:pointer;">Usage ↕</th>
-                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;">Time</th>
-                        <th style="padding:10px 12px;text-align:right;white-space:nowrap;"
-                            onclick="sortHistory('total_cost')" style="cursor:pointer;">Cost ↕</th>
-                        <th style="padding:10px 12px;text-align:left;">Note</th>
-                        <th style="padding:10px 12px;text-align:center;">Status</th>
-                        <th style="padding:10px 12px;text-align:center;white-space:nowrap;">Quality</th>
+                        <th style="padding:8px 0 8px 4px;font-weight:normal;">
+                            <span style="color:#555;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;margin-right:10px;">Sort</span>
+                            <button id="sortBtn_print_finished" onclick="sortHistory('print_finished')"
+                                    style="background:none;border:1px solid #333;color:#666;border-radius:12px;padding:3px 10px;font-size:0.78em;cursor:pointer;margin-right:4px;">Date ↓</button>
+                            <button id="sortBtn_printer_name" onclick="sortHistory('printer_name')"
+                                    style="background:none;border:1px solid #333;color:#666;border-radius:12px;padding:3px 10px;font-size:0.78em;cursor:pointer;margin-right:4px;">Printer</button>
+                            <button id="sortBtn_filament_used" onclick="sortHistory('filament_used')"
+                                    style="background:none;border:1px solid #333;color:#666;border-radius:12px;padding:3px 10px;font-size:0.78em;cursor:pointer;margin-right:4px;">Usage</button>
+                            <button id="sortBtn_total_cost" onclick="sortHistory('total_cost')"
+                                    style="background:none;border:1px solid #333;color:#666;border-radius:12px;padding:3px 10px;font-size:0.78em;cursor:pointer;">Cost</button>
+                        </th>
                     </tr>
                 </thead>
                 <tbody id="historyBody">
                     <tr>
-                        <td colspan="11" style="text-align:center;padding:40px;color:#666;">
+                        <td colspan="2" style="text-align:center;padding:40px;color:#666;">
                             Loading print history…
                         </td>
                     </tr>

@@ -12,7 +12,8 @@ BACKUP_DIR              ?= ./backups
         dev-build dev-up dev-down \
         test-unit test-integration test-all lint \
         version changelog-preview \
-        github-push github-release github-release-beta github-dispatch private-add help
+        github-push github-release github-release-beta github-dispatch private-add \
+        pr-fetch pr-try pr-try-clean pr-merge help
 
 # ── Docker management ──────────────────────────────────────────────────────────
 
@@ -152,7 +153,9 @@ github-push-check: ## Dry-run: verify all private_files are excluded before gith
 	@CURRENT_BRANCH=$$(git branch --show-current); \
 	 git fetch origin -q; \
 	 STASHED=0; \
-	 git stash push --include-untracked -m "github-push-check" >/dev/null 2>&1 && STASHED=1 || true; \
+	 if [ -n "$$(git status --porcelain)" ]; then \
+	     git stash push --include-untracked -m "github-push-check" >/dev/null && STASHED=1; \
+	 fi; \
 	 git branch -D github-check 2>/dev/null; true; \
 	 git checkout -b github-check origin/main; \
 	 git checkout "$$CURRENT_BRANCH" -- .; \
@@ -187,7 +190,9 @@ github-push: github-push-check ## Build public commit from main (private_files e
 	@CURRENT_BRANCH=$$(git branch --show-current); \
 	 git fetch origin; \
 	 STASHED=0; \
-	 git stash push --include-untracked -m "github-push" >/dev/null 2>&1 && STASHED=1 || true; \
+	 if [ -n "$$(git status --porcelain)" ]; then \
+	     git stash push --include-untracked -m "github-push" >/dev/null && STASHED=1; \
+	 fi; \
 	 git branch -D github 2>/dev/null; true; \
 	 git checkout -b github origin/main; \
 	 git checkout "$$CURRENT_BRANCH" -- .; \
@@ -216,7 +221,8 @@ github-release: ## github-push then tag vX.Y.Z and create stable GitHub Release
 	 fi
 	$(MAKE) github-push
 	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
-	 git tag $$VERSION github && \
+	 git fetch origin && \
+	 git tag $$VERSION origin/main && \
 	 git push origin $$VERSION && \
 	 git tag $$VERSION-src && \
 	 git push local $$VERSION $$VERSION-src && \
@@ -239,7 +245,8 @@ github-release-beta: ## github-push then tag vX.Y.Z-beta.N as a GitHub pre-relea
 	 fi
 	$(MAKE) github-push
 	@VERSION=v$(shell grep AppVersion version.go | grep -oE '"[^"]+"' | tr -d '"') && \
-	 git tag $$VERSION github && \
+	 git fetch origin && \
+	 git tag $$VERSION origin/main && \
 	 git push origin $$VERSION && \
 	 git tag $$VERSION-src && \
 	 git push local $$VERSION $$VERSION-src && \
@@ -257,6 +264,116 @@ github-dispatch: ## Push current work to GitHub and trigger a test Docker build 
 	gh workflow run docker-build.yml --repo ThetaSigmaLabs/the-moment
 	@echo "Test build triggered. Find the SHA at:"
 	@echo "  https://github.com/ThetaSigmaLabs/the-moment/actions"
+
+# ── Contributor PRs ────────────────────────────────────────────────────────────
+
+pr-fetch: ## Fetch a GitHub PR into a test branch and run tests: make pr-fetch PR=<number>
+	@test -n "$(PR)" || { echo "Usage: make pr-fetch PR=<number>"; exit 1; }
+	@echo "Fetching PR #$(PR) into branch pr-$(PR)..."
+	@STASHED=0; \
+	 if [ -n "$$(git status --porcelain)" ]; then \
+	     git stash push --include-untracked -m "pr-fetch-$(PR)" >/dev/null && STASHED=1; \
+	 fi; \
+	 git fetch origin pull/$(PR)/head:pr-$(PR); \
+	 git checkout pr-$(PR); \
+	 go test ./...; \
+	 git checkout main; \
+	 if [ "$$STASHED" = "1" ]; then \
+	     git stash pop || { echo "ERROR: stash pop failed — run 'git stash list' and restore manually"; exit 1; }; \
+	 fi; \
+	 echo ""; \
+	 echo "PR #$(PR) fetched and tested. You are back on main."; \
+	 echo "Review: git checkout pr-$(PR)"; \
+	 echo "When ready: merge on GitHub, then run: make pr-merge PR=$(PR)"
+
+pr-try: ## Replay a PR onto a temp branch cut from local main: make pr-try PR=<number>
+	@test -n "$(PR)" || { echo "Usage: make pr-try PR=<number>"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { \
+	     echo ""; \
+	     echo "  ERROR: working tree is dirty."; \
+	     echo ""; \
+	     echo "  pr-try leaves you on branch pr-try-$(PR), not main, so it will not"; \
+	     echo "  stash for you. A main-based stash popped onto the PR branch can"; \
+	     echo "  conflict on the same files the PR touches, and you would not be"; \
+	     echo "  able to tell your own edits from the contributor's."; \
+	     echo ""; \
+	     echo "  Commit or stash your work first, then re-run."; \
+	     echo ""; \
+	     exit 1; \
+	 }
+	@git show-ref --verify --quiet refs/heads/pr-try-$(PR) && { \
+	     echo ""; \
+	     echo "  ERROR: branch pr-try-$(PR) already exists."; \
+	     echo "  It may hold conflict resolutions from an earlier run."; \
+	     echo "  Discard it with: make pr-try-clean PR=$(PR)"; \
+	     echo ""; \
+	     exit 1; \
+	 } || true
+	@echo "Replaying PR #$(PR) onto a branch cut from local main..."
+	@git fetch origin pull/$(PR)/head; \
+	 COMMITS=$$(gh pr view $(PR) --repo ThetaSigmaLabs/the-moment \
+	     --json commits --jq '.commits[].oid' | tr '\n' ' '); \
+	 [ -z "$$COMMITS" ] && { echo "ERROR: could not fetch PR #$(PR) commit list"; exit 1; }; \
+	 git checkout -b pr-try-$(PR) main || exit 1; \
+	 echo "Cherry-picking: $$COMMITS"; \
+	 git cherry-pick $$COMMITS; RC=$$?; \
+	 if [ $$RC -ne 0 ]; then \
+	     if git diff --name-only --diff-filter=U | grep -q .; then \
+	         echo ""; \
+	         echo "  CONFLICT: the PR does not apply cleanly to current main."; \
+	         echo "  You are on pr-try-$(PR) mid-cherry-pick. Resolve, then:"; \
+	         echo "      git cherry-pick --continue"; \
+	         echo "  Or abandon the evaluation:"; \
+	         echo "      git cherry-pick --abort && make pr-try-clean PR=$(PR)"; \
+	         echo ""; \
+	         echo "  The same conflict will occur in pr-merge after the GitHub merge."; \
+	         exit 1; \
+	     else \
+	         git cherry-pick --skip 2>/dev/null; \
+	         echo "NOTE: PR #$(PR) commits already present in local main."; \
+	     fi; \
+	 fi; \
+	 go test ./...; TRC=$$?; \
+	 echo ""; \
+	 if [ $$TRC -ne 0 ]; then \
+	     echo "  TESTS FAILED on PR #$(PR) combined with local main."; \
+	 else \
+	     echo "  Tests passed on PR #$(PR) combined with local main."; \
+	 fi; \
+	 echo "  You are on pr-try-$(PR). Build and run the app here to evaluate."; \
+	 echo "  A clean result means the commits apply and tests pass. It does not"; \
+	 echo "  rule out behaviour conflicts where both sides changed related logic."; \
+	 echo "  When done: make pr-try-clean PR=$(PR)"; \
+	 echo ""; \
+	 exit $$TRC
+
+pr-try-clean: ## Return to main and delete the pr-try branch: make pr-try-clean PR=<number>
+	@test -n "$(PR)" || { echo "Usage: make pr-try-clean PR=<number>"; exit 1; }
+	@git checkout main
+	@git branch -D pr-try-$(PR) 2>/dev/null || echo "No branch pr-try-$(PR) to delete."
+	@echo "Back on main. pr-try-$(PR) removed; local main untouched."
+
+pr-merge: ## Cherry-pick a merged PR onto local main: make pr-merge PR=<number>
+	@test -n "$(PR)" || { echo "Usage: make pr-merge PR=<number>"; exit 1; }
+	@git checkout main; \
+	 echo "Fetching commit list for PR #$(PR) from GitHub..."; \
+	 COMMITS=$$(gh pr view $(PR) --repo ThetaSigmaLabs/the-moment \
+	     --json commits --jq '.commits[].oid' | tr '\n' ' '); \
+	 [ -z "$$COMMITS" ] && { echo "ERROR: could not fetch PR #$(PR) commit list"; exit 1; }; \
+	 echo "Cherry-picking: $$COMMITS"; \
+	 git cherry-pick $$COMMITS; RC=$$?; \
+	 if [ $$RC -ne 0 ]; then \
+	     if git diff --name-only --diff-filter=U | grep -q .; then \
+	         echo "ERROR: cherry-pick conflict — resolve then run: git cherry-pick --continue"; exit 1; \
+	     else \
+	         git cherry-pick --skip 2>/dev/null; \
+	         echo "NOTE: PR #$(PR) commits already present in local main — nothing to do."; \
+	     fi; \
+	 else \
+	     git branch -D pr-$(PR) 2>/dev/null; true; \
+	     echo "PR #$(PR) cherry-picked onto local main."; \
+	     echo "Next: go test ./... and update CHANGELOG.md with contributor credit."; \
+	 fi
 
 private-add: ## Mark FILE=<path> as private (excluded from GitHub push)
 	@test -n "$(FILE)" || { echo "Error: specify FILE=<path>"; exit 1; }

@@ -93,6 +93,14 @@ Full details: [spoolman-location-sync.md](spoolman-location-sync.md)
 
 **Spoolman connection error** — Settings → Basic Configuration → Test Connection. Verify the URL matches what Spoolman is actually listening on.
 
+**Spoolman button opens a page that will not load** — the link is normally built from
+the address you loaded The Moment on plus the Spoolman port (`SPOOLMAN_PORT`, default
+`7912`), so it should work from any device that can reach The Moment. If your browser
+needs a different address, for example Spoolman behind a reverse proxy or served over
+https, set it explicitly in Settings → Basic Configuration → Spoolman URL (external /
+browser), or with `SPOOLMAN_EXTERNAL_URL` in `.env` before first run. Leaving that
+field blank restores the derived address.
+
 **PrusaLink printer shows offline** — check the IP in Settings → Printers. PrusaLink must be enabled on the printer (Prusa Connect → Settings → PrusaLink → Enable).
 
 **OctoPrint not sending events** — check OctoPrint → Settings → The Moment → URL is correct and reachable from the OctoPrint host. Check `octoprint.log` for connection errors.

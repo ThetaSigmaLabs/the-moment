@@ -5,11 +5,17 @@ All notable changes to The Moment will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v1.2.0] - 2026-09-20
 
 ### Added
 
-#### Moonraker / Klipper Support
+- (Initial) Pushover notifications and mid-print filament checks:  pre-print alert. New: Settings → 🔔 Notifications tab, pushover.go, per-cycle recheckFilamentSufficiency that scales the requirement by remaining progress, filament_warn_buffer_pct, and opt-in auto-pause on critical (PrusaLink only, once per print).
+- History and dashboard prints redesigned as cards: replaces the 11-column table; sort pills, remove-from-card, search now covers status, source, date, cost and quality.
+- Calibration values from a past print's G-code — ↺ picker parses a saved print's slicer config footer to pre-fill the calibration row, plus two new fields cal_bridge_flow_ratio and cal_bridge_density.
+- Bulk filament reassignment from History: select records, pick one spool, every filament record moves; searchable spool dropdown.
+- some Hash routing changes, e.g. About 
+
+#### Moonraker / Klipper support — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #9)
 
 - New printer type `moonraker` — Klipper printers are now first-class alongside PrusaLink and OctoPrint
 - Persistent WebSocket client per printer (`moonraker.go`) with automatic reconnect and capped backoff; the dashboard reads a cached snapshot and never blocks on an unreachable printer
@@ -22,17 +28,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Printer type is now validated on save; an unrecognised type is rejected instead of being stored and silently monitored as PrusaLink
-- Editing a printer whose type had no matching dropdown entry no longer rewrites it to `prusalink` on save
-- Print history badges fall back to the raw source name instead of mislabelling an unknown source as "PrusaLink"
-- Model auto-detection no longer probes the PrusaLink API for printer types that cannot answer it, which previously blocked the add and edit forms for the full HTTP timeout
-- Queued G-code downloads for printers that cannot serve them are now dropped with a clear error rather than retried indefinitely
-- Fan speeds are shown in the unit the printer reports. PrusaLink returns RPM, which was previously rendered with a percent sign — a Core One displayed "8099%"
+- Spoolman links in the UI now use a browser-reachable URL instead of the internal Docker address, so the Spoolman button, spool edit links, and NFC tag pages open correctly — contributed by [@patopesto](https://github.com/patopesto) (Alban Moreon, PR #3)
+- With no `SPOOLMAN_EXTERNAL_URL` set, the Spoolman link is derived from the address the browser used to reach The Moment plus the published Spoolman port, so a stock Docker install works with no configuration, including from a phone or another machine on the LAN
+- PrusaLink API shape monitor: `/job/filament_change_in` added to the declared schema, so a print with a scheduled filament change no longer raises a false-positive alert and fails processing — contributed by [@jjlawren](https://github.com/jjlawren) (issue #4, PR #5)
+- Stopping The Moment now shuts down every background task. A stop signal used to wake only one of them, so the rest kept running and the final save to Spoolman never happened — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #6)
+- Editing a printer whose type is not listed in the dropdown no longer silently rewrites it to PrusaLink. Assigning a value a `<select>` does not offer leaves it blank, and the submit path then saved the fallback — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #7)
+- Building on PR #7, the same guard now covers the model select, and a test asserts every model. CORE One, CORE One L, MK4 and MK3.5 are now selectable in the printer model dropdown. 
+- Faint text in the active print modal is now readable. The spool ID and the "no spool assigned" style messages were too dim against the dark background — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #8)
+- Building on PR #8, the same text now uses the app's colour palette rather than fixed greys, so it matches the rest of the UI. A few other dim spots were caught the same way: the dashboard print timestamps, the snapshot captions, and the "unknown" status badge
+- Printer type is now validated on save; an unrecognised type is rejected instead of being stored and silently monitored as PrusaLink — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #9)
+- Print history badges fall back to the raw source name instead of mislabelling an unknown source as "PrusaLink" — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #9)
+- Model auto-detection no longer probes the PrusaLink API for printer types that cannot answer it, which previously blocked the add and edit forms for the full HTTP timeout — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #9)
+- Queued G-code downloads for printers that cannot serve them are now dropped with a clear error rather than retried indefinitely — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #9)
+- Fan speeds are shown in the unit the printer reports. PrusaLink returns RPM, which was previously rendered with a percent sign — a Core One displayed "8099%" — contributed by [@Simon-CR](https://github.com/Simon-CR) (PR #9)
 
 ### Known limitations
 
 - Moonraker extrusion tracking follows the kinematic extruder axis, so filament moved by `FORCE_MOVE` is not counted. Macros use it to seek sensors and park filament, which relocates material inside the toolhead without consuming any, so this is harmless in normal use. Moonraker's own `[spoolman]` component shares the behaviour.
 - Filament usage awaiting a Spoolman write is held in memory. A Spoolman outage that spans a restart of The Moment loses the usage accumulated during it.
+
 
 ## [v1.1.1] — 2026-06-23
 

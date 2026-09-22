@@ -150,33 +150,32 @@
 .dashboard-recent-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
-.dashboard-print-row {
-  display: grid;
-  grid-template-columns: 20px 1fr auto auto auto;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 14px;
+.dashboard-print-card {
   border-radius: 7px;
+  background: rgba(255,255,255,0.02);
+  padding: 8px 12px;
   cursor: pointer;
   transition: background 0.15s;
-  border: 1px solid transparent;
 }
 
-.dashboard-print-row:hover {
-  background: var(--brand-tint);
-  border-color: var(--surface-border);
+.dashboard-print-card:hover {
+  background: rgba(255,255,255,0.05);
 }
 
-.dashboard-print-status {
-  font-size: 0.9em;
-  text-align: center;
+.dashboard-print-card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
 }
 
-.dashboard-print-name {
-  font-size: 0.88em;
+.dashboard-print-card-name {
+  font-size: 0.87em;
+  font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -184,26 +183,20 @@
   min-width: 0;
 }
 
-.dashboard-print-printer {
+.dashboard-print-card-meta {
   font-size: 0.78em;
   color: var(--text-secondary);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.dashboard-print-filament {
+.dashboard-print-card-stats {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   font-size: 0.78em;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  text-align: right;
-  min-width: 40px;
-}
-
-.dashboard-print-date {
-  font-size: 0.75em;
-  color: var(--text-muted);
-  white-space: nowrap;
-  text-align: right;
-  min-width: 55px;
+  color: #777;
+  flex-wrap: wrap;
 }
 
 /* ── Dashboard Alerts ─────────────────────────────────────────────────────── */
@@ -223,6 +216,26 @@
   background: rgba(245, 158, 11, 0.1);
   color: #fbbf24;
 }
+
+.dashboard-printer-warning--critical {
+  border-left-color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+  color: #fca5a5;
+}
+
+.warning-badge {
+  display: inline-block;
+  font-size: 0.7em;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-right: 4px;
+  vertical-align: middle;
+  letter-spacing: 0.04em;
+}
+
+.warning-badge--warning  { background: rgba(245, 158, 11, 0.25); color: #f59e0b; }
+.warning-badge--critical { background: rgba(239, 68, 68, 0.25);  color: #ef4444; }
 
 .dashboard-alert {
   border-radius: 8px;

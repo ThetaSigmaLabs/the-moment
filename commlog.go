@@ -20,7 +20,7 @@ type CommLogEntry struct {
 	Detail    string    `json:"detail,omitempty"`
 }
 
-const commLogMaxSize = 500
+const commLogMaxSize = 2000
 
 // PrinterCommLog is a fixed-size in-memory ring buffer of communication events
 // for a single printer. Safe for concurrent use.

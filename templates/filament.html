@@ -146,6 +146,34 @@
     </div>
 </div>
 
+<!-- Populate Calibration from Print Modal -->
+<div id="calibrationPickerModal" class="modal">
+    <div class="modal-content" style="max-width:480px;">
+        <div class="modal-header">
+            <h3>Populate Calibration from Print</h3>
+            <button class="close" onclick="closeCalibrationPicker()">&times;</button>
+        </div>
+        <p style="font-size:0.82em; color:var(--text-secondary); margin:0 0 12px;">
+            Pick a past print that used this filament. Values found in its saved G-code file
+            will pre-fill the calibration row below for you to review and save.
+        </p>
+        <input type="text" id="calPickerSearch" placeholder="Search printer or job name…"
+               oninput="filterCalibrationCandidates(this.value)"
+               style="width:100%; box-sizing:border-box; padding:7px; margin-bottom:8px;
+                      background:var(--surface-2); border:1px solid var(--surface-border);
+                      border-radius:4px; color:var(--text-primary); font-family:inherit;">
+        <select id="calPickerSelect" size="8" style="width:100%; padding:6px;
+                background:var(--surface-2); border:1px solid var(--surface-border);
+                border-radius:4px; color:var(--text-primary); font-family:inherit;">
+            <option value="">Loading…</option>
+        </select>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+            <button class="btn btn-small" onclick="confirmCalibrationPicker()">✓ Populate</button>
+            <button class="btn btn-small btn-secondary" onclick="closeCalibrationPicker()">Cancel</button>
+        </div>
+    </div>
+</div>
+
 <!-- Filament Calibration Tab -->
 <div id="filament-tab" class="tab-content">
     <div style="padding: 16px 0 8px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -174,6 +202,8 @@
                     <th title="Max volumetric flow rate mm³/s">Flow mm³/s</th>
                     <th title="Pressure advance / linear advance">Press. Adv.</th>
                     <th title="Flow ratio / flow multiplier">Flow Ratio</th>
+                    <th title="Flow ratio used specifically for external bridges">Ext. Bridge Flow</th>
+                    <th title="Infill density (%) used specifically for external bridges">Ext. Bridge Density %</th>
                     <th title="Retraction length mm">Ret. mm</th>
                     <th title="Retraction speed mm/s">Ret. mm/s</th>
                     <th style="width: 60px;"></th><!-- actions -->
@@ -181,7 +211,7 @@
             </thead>
             <tbody id="filament-tbody">
                 <tr id="filament-loading-row">
-                    <td colspan="11" style="text-align: center; color: var(--text-muted); padding: 24px;">
+                    <td colspan="13" style="text-align: center; color: var(--text-muted); padding: 24px;">
                         Loading filaments…
                     </td>
                 </tr>

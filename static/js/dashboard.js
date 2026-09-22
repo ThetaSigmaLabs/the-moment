@@ -127,27 +127,49 @@ function switchToSpoolsForPrinter(printerId) {
 function renderRecentPrints(records) {
     const container = document.getElementById('dashboard-recent-prints');
     if (!container) return;
-
     if (!records.length) {
         container.innerHTML = '<p style="color:var(--text-secondary);font-size:0.9em;">No prints yet.</p>';
         return;
     }
-
     container.innerHTML = records.map(r => {
-        const icon = r.status === 'cancelled' ? '⚠️' : r.status === 'failed' ? '❌' : '✅';
-        const name = escapeHtml(r.job_name || r.filename || 'Unknown');
+        const name   = escapeHtml((r.job_name || r.filename || 'Unknown').split(/[/\\]/).pop());
         const printer = escapeHtml(r.printer_name || '');
-        const grams = r.filament_used > 0 ? Math.round(r.filament_used) + 'g' : '—';
-        const when = relativeTime(r.print_started || r.print_finished);
+        const grams  = r.filament_used > 0 ? r.filament_used.toFixed(1) + ' g' : '';
+        const dur    = r.print_time_minutes > 0 ? formatDuration(r.print_time_minutes * 60) : '';
+        const cost   = r.total_cost > 0 ? r.total_cost.toFixed(2) + ' ' + (r.currency || '') : '';
+        const when   = relativeTime(r.print_finished || r.print_started);
+        const accent = r.status === 'completed' ? '#6ee7a0' :
+                       r.status === 'cancelled' ? '#ffb347' :
+                       r.status === 'failed'    ? '#ff7070' : '#7c5cfc';
 
-        return `<div class="dashboard-print-row" onclick="switchTab('history');setTimeout(()=>openHistoryModal(${r.id}),250)">
-            <span class="dashboard-print-status">${icon}</span>
-            <span class="dashboard-print-name" title="${name}">${name}</span>
-            <span class="dashboard-print-printer">${printer}</span>
-            <span class="dashboard-print-filament">${grams}</span>
-            <span class="dashboard-print-date">${when}</span>
+        const sep = '<span style="color:#2a2a2a;margin:0 1px;">·</span>';
+        const parts = [_dashStatusBadge(r.status)];
+        if (grams) parts.push(grams);
+        if (dur)   parts.push(dur);
+        if (cost)  parts.push(`<span style="color:#c8b8ff;">${cost}</span>`);
+
+        return `<div class="dashboard-print-card" style="border:1px solid #252525;border-left:3px solid ${accent};"
+                     onclick="switchTab('history');setTimeout(()=>openHistoryModal(${r.id}),250)">
+            <div class="dashboard-print-card-title">
+                <span class="dashboard-print-card-name" title="${name}">${name}</span>
+                <span class="dashboard-print-card-meta">${printer}${_dashSourceBadge(r.source)}&ensp;<span style="font-size:0.92em;">${when}</span></span>
+            </div>
+            <div class="dashboard-print-card-stats">${parts.join(sep)}</div>
         </div>`;
     }).join('');
+}
+
+function _dashStatusBadge(status) {
+    const map = { completed: ['#1b4332','#6ee7a0'], cancelled: ['#3d2a00','#ffb347'], failed: ['#3d0000','#ff7070'] };
+    const [bg, color] = map[status] || ['#2a2a2a','var(--text-secondary)'];
+    return `<span style="background:${bg};color:${color};padding:1px 7px;border-radius:9px;font-size:0.78em;white-space:nowrap;">${status || 'unknown'}</span>`;
+}
+
+function _dashSourceBadge(source) {
+    const map = { prusalink: ['#2a1a3d','#c8b8ff','PrusaLink'], octoprint: ['#2a1a3d','#b48aff','OctoPrint'], virtual: ['#1a3a2a','#6ee7a0','Virtual'] };
+    if (!source || !map[source]) return '';
+    const [bg, color, label] = map[source];
+    return ` <span style="background:${bg};color:${color};padding:1px 5px;border-radius:7px;font-size:0.72em;white-space:nowrap;">${label}</span>`;
 }
 
 function formatDuration(seconds) {
@@ -241,7 +263,16 @@ function updateDashboardPrinterStatus(printerId, printerData) {
     const warningsEl = card.querySelector('.dashboard-printer-warnings');
     const warnings = printerData.filament_warnings || [];
     if (warnings.length > 0) {
-        const html = warnings.map(w => `<div class="dashboard-printer-warning">⚠ ${escapeHtml(w.message)}</div>`).join('');
+        const html = warnings.map(w => {
+            const isCritical = w.severity === 'critical';
+            const cls = isCritical
+                ? 'dashboard-printer-warning dashboard-printer-warning--critical'
+                : 'dashboard-printer-warning';
+            const badge = isCritical
+                ? '<span class="warning-badge warning-badge--critical">CRITICAL</span>'
+                : '<span class="warning-badge warning-badge--warning">LOW</span>';
+            return `<div class="${cls}">${badge} ${escapeHtml(w.message)}</div>`;
+        }).join('');
         if (warningsEl) {
             warningsEl.innerHTML = html;
         } else {
@@ -383,7 +414,7 @@ function _apmPopulate(d) {
     const snapList = document.getElementById('apm-snapshot-list');
     if (snapList) {
         if (snaps.length === 0) {
-            snapList.innerHTML = '<span style="color:#888;">No snapshots yet.</span>';
+            snapList.innerHTML = '<span style="color:var(--text-secondary);">No snapshots yet.</span>';
         } else {
             _snapshotList = snaps.map(function (s) {
                 return { url: s.url, label: s.label || s.filename || '' };
@@ -396,7 +427,7 @@ function _apmPopulate(d) {
                         '<img src="' + url + '" alt="' + label + '" ' +
                         'style="width:90px;height:90px;object-fit:cover;border-radius:4px;cursor:zoom-in;display:block;" ' +
                         'onclick="openSnapshotLightbox(' + idx + ')">' +
-                        '<div style="font-size:0.72em;color:#777;margin-top:4px;word-break:break-all;">' + label + '</div>' +
+                        '<div style="font-size:0.72em;color:var(--text-secondary);margin-top:4px;word-break:break-all;">' + label + '</div>' +
                         '</div>';
                 }).join('') +
                 '</div>';
@@ -408,7 +439,7 @@ function _apmPopulate(d) {
     const thEl = document.getElementById('apm-toolheads');
     if (thEl) {
         if (toolheads.length === 0) {
-            thEl.innerHTML = '<span style="color:#888;">No toolhead data.</span>';
+            thEl.innerHTML = '<span style="color:var(--text-secondary);">No toolhead data.</span>';
         } else {
             thEl.innerHTML = toolheads.map(function (t) {
                 const dot = t.color_hex
@@ -417,12 +448,13 @@ function _apmPopulate(d) {
                     : '';
                 const spoolInfo = t.spool_id > 0
                     ? dot + escapeHtml(t.material || '') + (t.brand ? ' · ' + escapeHtml(t.brand) : '') +
-                    // #666 on this modal's background is ~2.9:1 contrast, below
-                    // the 4.5:1 WCAG AA threshold; #999 clears it.
-                    ' <span style="color:#999;font-size:0.88em;">#' + t.spool_id + '</span>'
-                    : '<span style="color:#888;">No spool assigned</span>';
+                    // Secondary text uses the palette token, not a hardcoded grey:
+                    // #666 was ~2.9:1 on this modal, below the 4.5:1 WCAG AA
+                    // threshold. --text-secondary is 6.7:1 and carries the purple tint.
+                    ' <span style="color:var(--text-secondary);font-size:0.88em;">#' + t.spool_id + '</span>'
+                    : '<span style="color:var(--text-secondary);">No spool assigned</span>';
                 return '<div style="display:flex;align-items:center;padding:8px 0;border-bottom:1px solid #222;">' +
-                    '<span style="color:#888;min-width:90px;font-size:0.88em;flex-shrink:0;">' + escapeHtml(t.display_name) + '</span>' +
+                    '<span style="color:var(--text-secondary);min-width:90px;font-size:0.88em;flex-shrink:0;">' + escapeHtml(t.display_name) + '</span>' +
                     '<span style="display:flex;align-items:center;">' + spoolInfo + '</span>' +
                     '</div>';
             }).join('');

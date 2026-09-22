@@ -14,14 +14,14 @@ import (
 
 // PrinterConfig represents configuration for a single printer
 type PrinterConfig struct {
-	Name               string `json:"name"`
-	Model              string `json:"model"`
-	IPAddress          string `json:"ip_address"`
-	APIKey             string `json:"api_key,omitempty"`
-	Toolheads          int    `json:"toolheads"`
-	IsVirtual          bool   `json:"is_virtual,omitempty"`            // Virtual test printer — no real hardware
-	PrinterType        string `json:"printer_type,omitempty"`          // "prusalink" | "octoprint" | "bambu" | "moonraker"
-	DebugLog           bool   `json:"debug_log,omitempty"`             // Capture per-poll debug log for print history
+	Name                   string                 `json:"name"`
+	Model                  string                 `json:"model"`
+	IPAddress              string                 `json:"ip_address"`
+	APIKey                 string                 `json:"api_key,omitempty"`
+	Toolheads              int                    `json:"toolheads"`
+	IsVirtual              bool                   `json:"is_virtual,omitempty"`               // Virtual test printer — no real hardware
+	PrinterType            string                 `json:"printer_type,omitempty"`             // "prusalink" | "octoprint" | "bambu" | "moonraker"
+	DebugLog               bool                   `json:"debug_log,omitempty"`                // Capture per-poll debug log for print history
 	CameraSnapshotURL      string                 `json:"camera_snapshot_url,omitempty"`      // HTTP or RTSP URL for print-event snapshots
 	SortOrder              int                    `json:"sort_order,omitempty"`               // Dashboard display order (lower = leftmost)
 	ProgressSnapshotConfig ProgressSnapshotConfig `json:"progress_snapshot_config,omitempty"` // In-progress snapshot settings
@@ -63,6 +63,7 @@ type FilamentSpool struct {
 type Config struct {
 	SpoolmanURL                  string
 	SpoolmanExternalURL          string
+	SpoolmanPublicPort           string
 	PollInterval                 time.Duration
 	LocationSyncInterval         time.Duration
 	DBFile                       string
@@ -124,6 +125,7 @@ func LoadConfig(bridge *FilamentBridge) (*Config, error) {
 	config := &Config{
 		SpoolmanURL:                  configValues[ConfigKeySpoolmanURL],
 		SpoolmanExternalURL:          configValues[ConfigKeySpoolmanExternalURL],
+		SpoolmanPublicPort:           configValues[ConfigKeySpoolmanPublicPort],
 		PollInterval:                 time.Duration(pollInterval) * time.Second,
 		LocationSyncInterval:         time.Duration(locationSyncInterval) * time.Minute,
 		DBFile:                       getDBFilePath(),

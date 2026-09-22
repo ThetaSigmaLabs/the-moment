@@ -80,7 +80,32 @@ func main() {
 		log.Printf("Spoolman external URL set from SPOOLMAN_EXTERNAL_URL env var: %s", envExt)
 	}
 
-	// Handle graceful shutdown
+	// Seed the published Spoolman port from the env var on first run. With no explicit
+	// external URL, the browser link is built from the request host plus this port, so
+	// a stock Docker install needs no configuration. Same first-run-only rule as above:
+	// once a value is stored, Settings wins.
+	if envPort := os.Getenv("SPOOLMAN_PORT"); envPort != "" && config.SpoolmanPublicPort == DefaultSpoolmanPublicPort {
+		config.SpoolmanPublicPort = envPort
+		if err := bridge.SetConfigValue(ConfigKeySpoolmanPublicPort, envPort); err != nil {
+			log.Printf("Warning: could not persist SPOOLMAN_PORT env override: %v", err)
+		}
+		if err := bridge.UpdateConfig(config); err != nil {
+			log.Printf("Warning: could not apply SPOOLMAN_PORT env override to bridge: %v", err)
+		}
+		log.Printf("Spoolman published port set from SPOOLMAN_PORT env var: %s", envPort)
+	}
+
+	// Say which URLs are in effect, so the first-run seeding is visible in the log.
+	log.Printf("Spoolman internal URL (API calls): %s", config.SpoolmanURL)
+	if config.SpoolmanExternalURL != "" {
+		log.Printf("Spoolman browser URL (UI links): %s (explicit)", config.SpoolmanExternalURL)
+	} else if config.SpoolmanPublicPort != "" {
+		log.Printf("Spoolman browser URL (UI links): derived from the request host, port %s", config.SpoolmanPublicPort)
+	} else {
+		log.Printf("Spoolman browser URL (UI links): %s (internal URL reused)", config.SpoolmanURL)
+	}
+
+	// Handle graceful shutdown.
 	//
 	// The signal is fanned out through a closed channel rather than read
 	// directly by each goroutine. A send on sigChan is consumed by exactly one
@@ -140,6 +165,21 @@ func main() {
 					log.Printf("Error retrying pending G-code downloads: %v", err)
 				}
 			case <-shutdown:
+				return
+			}
+		}
+	}()
+
+	// Prune print_debug_logs older than 90 days — runs at startup then every 24 hours.
+	go func() {
+		bridge.db.Exec(`DELETE FROM print_debug_logs WHERE logged_at < datetime('now', '-90 days')`)
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				bridge.db.Exec(`DELETE FROM print_debug_logs WHERE logged_at < datetime('now', '-90 days')`)
+			case <-sigChan:
 				return
 			}
 		}

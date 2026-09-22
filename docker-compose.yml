@@ -82,8 +82,16 @@ services:
       # This env var is read at first-run config init; if you have already run
       # The Moment and configured it via the UI, this variable is ignored.
       SPOOLMAN_URL: http://spoolman:8000
-      # Browser-reachable Spoolman URL. Used for "Open Spoolman" links in the UI.
-      SPOOLMAN_EXTERNAL_URL: ${SPOOLMAN_EXTERNAL_URL:-http://spoolman:8000}
+
+      # The port Spoolman is published on. "Open Spoolman" links in the UI are built
+      # from the address you are viewing The Moment on plus this port, so they work
+      # from the host, another machine on the LAN, or a phone with no configuration.
+      SPOOLMAN_PORT: ${SPOOLMAN_PORT:-7912}
+
+      # Browser-reachable Spoolman URL. Leave unset and the link is derived as above.
+      # Set it only when Spoolman is behind a reverse proxy, uses https, or answers on
+      # a different hostname, e.g. SPOOLMAN_EXTERNAL_URL=https://spoolman.example.com
+      SPOOLMAN_EXTERNAL_URL: ${SPOOLMAN_EXTERNAL_URL:-}
     networks:
       - momentnet
     healthcheck:

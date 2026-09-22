@@ -125,6 +125,20 @@ type FilamentBridge struct {
 	// Populated by checkFilamentSufficiency at print start; cleared when print ends.
 	printerWarnings   map[string][]PrinterWarning
 	printerWarningsMu sync.Mutex
+
+	// lastNotifiedSeverity tracks the highest-severity Pushover notification already sent
+	// for the current print per printer, preventing repeated identical notifications.
+	// Values: "" | "warning" | "critical". Protected by printerWarningsMu.
+	lastNotifiedSeverity map[string]string
+
+	// printerRequirements caches the G-code filament requirements (grams per toolhead)
+	// from print start so mid-print rechecks can scale by remaining progress fraction
+	// without re-fetching G-code. Protected by printerWarningsMu.
+	printerRequirements map[string]map[int]float64
+
+	// hasPaused prevents the auto-pause from firing more than once per print.
+	// Protected by b.mutex.
+	hasPaused map[string]bool
 }
 
 // PrusaLinkRawCapture holds the last raw response bodies received from a PrusaLink printer.
@@ -347,6 +361,7 @@ type PrinterWarning struct {
 	Required      float64 `json:"required_grams"`
 	Remaining     float64 `json:"remaining_grams"`
 	Message       string  `json:"message"`
+	Severity      string  `json:"severity"` // "warning" | "critical"
 }
 
 type PrinterData struct {
@@ -418,6 +433,9 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 		rawResponses:          make(map[string]*PrusaLinkRawCapture),
 		apiMonitor:            NewAPIShapeMonitor(),
 		printerWarnings:       make(map[string][]PrinterWarning),
+		lastNotifiedSeverity:  make(map[string]string),
+		printerRequirements:   make(map[string]map[int]float64),
+		hasPaused:             make(map[string]bool),
 	}
 	bridge.bambuClientFactory = func(ip, serial, accessCode string) BambuStatusProvider {
 		return NewBambuMQTTClient(ip, serial, accessCode, newBambuDebugLogger(bridge))
@@ -517,10 +535,6 @@ func NewFilamentBridge(config *Config) (*FilamentBridge, error) {
 
 	if err := bridge.migrateOpenPrintTagSources(); err != nil {
 		return nil, fmt.Errorf("failed to migrate OpenPrintTag sources: %w", err)
-	}
-
-	if err := bridge.migrateSpoolmanExternalURL(); err != nil {
-		log.Printf("Warning: failed to migrate Spoolman external URL: %v", err)
 	}
 
 	if err := bridge.deduplicateRecoveryStubs(); err != nil {
@@ -2410,20 +2424,6 @@ func (b *FilamentBridge) migrateToolheadMappingsToSpoolman() error {
 	return nil
 }
 
-// migrateSpoolmanExternalURL seeds spoolman_external_url from spoolman_url for
-// existing single-URL deployments. INSERT OR IGNORE means fresh installs that
-// already have the key in initializeDefaultConfig are unaffected.
-func (b *FilamentBridge) migrateSpoolmanExternalURL() error {
-	_, err := b.db.Exec(
-		`INSERT OR IGNORE INTO configuration (key, value) SELECT ?, value FROM configuration WHERE key = ?`,
-		ConfigKeySpoolmanExternalURL, ConfigKeySpoolmanURL,
-	)
-	if err != nil {
-		return fmt.Errorf("seed spoolman_external_url: %w", err)
-	}
-	return nil
-}
-
 // initializeDefaultConfig sets up default configuration values
 func (b *FilamentBridge) initializeDefaultConfig() error {
 	defaultConfigs := map[string]string{
@@ -2431,6 +2431,7 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 		ConfigKeyAPIKey:                         "", // PrusaLink API key for authentication
 		ConfigKeySpoolmanURL:                    DefaultSpoolmanURL,
 		ConfigKeySpoolmanExternalURL:            DefaultSpoolmanExternalURL,
+		ConfigKeySpoolmanPublicPort:             DefaultSpoolmanPublicPort,
 		ConfigKeyPollInterval:                   fmt.Sprintf("%d", DefaultPollInterval),
 		ConfigKeyWebPort:                        DefaultWebPort,
 		ConfigKeyPrusaLinkTimeout:               fmt.Sprintf("%d", PrusaLinkTimeout),
@@ -2441,6 +2442,11 @@ func (b *FilamentBridge) initializeDefaultConfig() error {
 		ConfigKeyNFCInventoryLocation:           "Inventory", // Default storage when spool displaced from toolhead
 		ConfigKeySpoolmanLocationSyncEnabled:    "false",     // Bidirectional Spoolman location sync
 		ConfigKeyNFCTapTimeoutSeconds:           "15",        // Tap-tap pending window in seconds (Stage 5)
+		ConfigKeyPushoverEnabled:                "false",
+		ConfigKeyPushoverAPIToken:               "",
+		ConfigKeyPushoverUserKey:                "",
+		ConfigKeyFilamentWarnBufferPct:          "20", // warn when remaining < required × 1.20
+		ConfigKeyFilamentPauseOnCritical:        "false",
 	}
 
 	// INSERT OR IGNORE ensures new keys added in updates are seeded for existing
@@ -2464,7 +2470,8 @@ func getConfigDescription(key string) string {
 		ConfigKeyPrinterIPs:                     "Comma-separated list of printer IP addresses for PrusaLink",
 		ConfigKeyAPIKey:                         "PrusaLink API key for authentication",
 		ConfigKeySpoolmanURL:                    "URL of Spoolman instance (internal — used for API calls)",
-		ConfigKeySpoolmanExternalURL:            "URL of Spoolman instance reachable from the user's browser (used for UI links; falls back to spoolman_url when empty)",
+		ConfigKeySpoolmanExternalURL:            "URL of Spoolman instance reachable from the user's browser (used for UI links; when empty the link is derived from the request host)",
+		ConfigKeySpoolmanPublicPort:             "Port Spoolman is published on for browsers (used to derive the UI link when no external URL is set)",
 		ConfigKeyPollInterval:                   "Polling interval in seconds",
 		ConfigKeyWebPort:                        "Port for web interface",
 		ConfigKeyPrusaLinkTimeout:               "PrusaLink API timeout in seconds",
@@ -2475,6 +2482,11 @@ func getConfigDescription(key string) string {
 		ConfigKeyNFCInventoryLocation:           "Spoolman location name used as default storage when a spool is displaced from a toolhead via NFC",
 		ConfigKeySpoolmanLocationSyncEnabled:    "When true, The Moment writes spool locations to Spoolman on assign/unassign and polls for Spoolman-initiated moves",
 		ConfigKeyNFCTapTimeoutSeconds:           "Seconds a first NFC tap stays pending before a second tap is treated as a fresh first tap (tap-tap engine)",
+		ConfigKeyPushoverEnabled:                "Enable Pushover push notifications for filament warnings (true/false)",
+		ConfigKeyPushoverAPIToken:               "Pushover application token from pushover.net",
+		ConfigKeyPushoverUserKey:                "Pushover user key from pushover.net",
+		ConfigKeyFilamentWarnBufferPct:          "Warn when remaining filament is less than required × (1 + buffer%). Default 20.",
+		ConfigKeyFilamentPauseOnCritical:        "Auto-pause PrusaLink print when filament is critically low (true/false). Uses slicer estimates — may produce false positives.",
 	}
 	if desc, exists := descriptions[key]; exists {
 		return desc
@@ -2991,6 +3003,29 @@ func (b *FilamentBridge) GetSpoolmanExternalURL() string {
 	return b.config.SpoolmanURL
 }
 
+// GetSpoolmanConfiguredExternalURL returns the stored external URL without the
+// fallback. Used by spoolmanLinkURL, which needs to tell "explicitly set" apart
+// from "not set" before deciding whether to derive from the request host.
+func (b *FilamentBridge) GetSpoolmanConfiguredExternalURL() string {
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
+	if b.config == nil {
+		return ""
+	}
+	return b.config.SpoolmanExternalURL
+}
+
+// GetSpoolmanPublicPort returns the port Spoolman is published on for browsers,
+// or "" when it is not configured.
+func (b *FilamentBridge) GetSpoolmanPublicPort() string {
+	b.mutex.RLock()
+	defer b.mutex.RUnlock()
+	if b.config == nil {
+		return ""
+	}
+	return b.config.SpoolmanPublicPort
+}
+
 // GetConfigSnapshot returns a snapshot of the current config for safe iteration
 func (b *FilamentBridge) GetConfigSnapshot() *Config {
 	b.mutex.RLock()
@@ -3005,6 +3040,7 @@ func (b *FilamentBridge) GetConfigSnapshot() *Config {
 	configCopy := &Config{
 		SpoolmanURL:                  b.config.SpoolmanURL,
 		SpoolmanExternalURL:          b.config.SpoolmanExternalURL,
+		SpoolmanPublicPort:           b.config.SpoolmanPublicPort,
 		PollInterval:                 b.config.PollInterval,
 		DBFile:                       b.config.DBFile,
 		GcodePath:                    b.config.GcodePath,
@@ -3411,6 +3447,61 @@ func (b *FilamentBridge) MonitorPrinters() {
 //
 //	PRINTING          → track wasPrinting=true, store job filename
 //
+// highestSeverity returns the most severe level present in a warning slice:
+// "critical" > "warning" > "" (empty = no warnings).
+func highestSeverity(warnings []PrinterWarning) string {
+	for _, w := range warnings {
+		if w.Severity == "critical" {
+			return "critical"
+		}
+	}
+	if len(warnings) > 0 {
+		return "warning"
+	}
+	return ""
+}
+
+// sendFilamentWarningNotification sends a Pushover notification for filament warnings.
+// It is a no-op when Pushover is not configured or not enabled.
+// paused=true appends a "print has been paused" note to the message.
+// Always called as a goroutine so it never blocks the monitor loop.
+func (b *FilamentBridge) sendFilamentWarningNotification(printerName, severity string, paused bool, warnings []PrinterWarning) {
+	enabled, _ := b.GetConfigValue(ConfigKeyPushoverEnabled)
+	if enabled != "true" {
+		return
+	}
+	token, _ := b.GetConfigValue(ConfigKeyPushoverAPIToken)
+	userKey, _ := b.GetConfigValue(ConfigKeyPushoverUserKey)
+	if token == "" || userKey == "" {
+		return
+	}
+
+	priority := 0
+	titlePrefix := "Low Filament"
+	if severity == "critical" {
+		priority = 1
+		titlePrefix = "CRITICAL Filament"
+	}
+
+	title := titlePrefix + " — " + printerName
+	var lines []string
+	for _, w := range warnings {
+		lines = append(lines, w.Message)
+	}
+	if paused {
+		lines = append(lines, "Print has been paused. Swap spool and resume.")
+	}
+	lines = append(lines, "⚠ Filament estimates are approximate. Actual usage may vary.")
+	message := strings.Join(lines, "\n")
+
+	client := NewPushoverClient(token, userKey)
+	if err := client.Send(title, message, priority); err != nil {
+		log.Printf("[FilamentCheck] Pushover send failed for %s: %v", printerName, err)
+	} else {
+		log.Printf("[FilamentCheck] Pushover %s notification sent for %s", severity, printerName)
+	}
+}
+
 // checkFilamentSufficiency estimates the filament required for the active job and compares it
 // against the remaining weight on each assigned spool. Intended to be called in a goroutine
 // at print-start so it never blocks the monitor loop.
@@ -3421,14 +3512,17 @@ func (b *FilamentBridge) MonitorPrinters() {
 //  3. Compare per-toolhead required grams against spool remaining_weight from Spoolman.
 //  4. Store any warnings in b.printerWarnings[printerID]; cleared when the print ends.
 func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePath string, client *PrusaLinkClient) {
-	log.Printf("🔍 [FilamentCheck] Checking filament sufficiency for %s (%s)", printerName, filePath)
+	cl := b.getCommLog(printerID)
+	summary := fmt.Sprintf("Checking filament for %s: %s", printerName, filePath)
+	log.Printf("[FilamentCheck] %s", summary)
+	cl.Append("EV", "filament_check_start", summary, "")
 
 	// --- Step 1: try file metadata (lightweight) ---
 	requiredByTool := make(map[int]float64) // toolhead index → grams required
 
 	fileInfo, err := client.GetFileInfo(filePath)
 	if err != nil {
-		log.Printf("⚠️  [FilamentCheck] File metadata unavailable for %s: %v — falling back to G-code download", filePath, err)
+		log.Printf("[FilamentCheck] File metadata unavailable for %s: %v — falling back to G-code download", filePath, err)
 	}
 	if fileInfo != nil {
 		for _, f := range fileInfo.Filament {
@@ -3436,20 +3530,24 @@ func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePa
 				requiredByTool[f.ToolheadID] = f.Weight
 			}
 		}
-		log.Printf("📋 [FilamentCheck] Got filament data from metadata: %v", requiredByTool)
+		log.Printf("[FilamentCheck] Got filament data from metadata: %v", requiredByTool)
 	}
 
 	// --- Step 2: fallback — download and parse G-code ---
 	if len(requiredByTool) == 0 {
-		log.Printf("📥 [FilamentCheck] Downloading G-code for filament data: %s", filePath)
+		log.Printf("[FilamentCheck] Downloading G-code for filament data: %s", filePath)
 		gcodeContent, err := client.GetGcodeFileWithRetry(filePath, b.config.PrusaLinkFileDownloadTimeout)
 		if err != nil {
-			log.Printf("⚠️  [FilamentCheck] Could not download G-code for %s: %v", filePath, err)
+			msg := fmt.Sprintf("Could not download G-code for %s: %v", filePath, err)
+			log.Printf("[FilamentCheck] %s", msg)
+			cl.Append("EV", "filament_no_data", msg, "")
 			return
 		}
 		usage, err := client.ParseGcodeFilamentUsage(gcodeContent)
 		if err != nil || len(usage) == 0 {
-			log.Printf("⚠️  [FilamentCheck] No filament data in G-code for %s", filePath)
+			msg := fmt.Sprintf("No filament data in G-code or metadata for %s — check skipped", filePath)
+			log.Printf("[FilamentCheck] %s", msg)
+			cl.Append("EV", "filament_no_data", msg, "")
 			return
 		}
 		for toolIdx, u := range usage {
@@ -3457,10 +3555,11 @@ func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePa
 				requiredByTool[toolIdx] = u.Grams
 			}
 		}
-		log.Printf("📋 [FilamentCheck] Got filament data from G-code: %v", requiredByTool)
+		log.Printf("[FilamentCheck] Got filament data from G-code: %v", requiredByTool)
 	}
 
 	if len(requiredByTool) == 0 {
+		cl.Append("EV", "filament_no_data", "No filament data available — check skipped", "")
 		return
 	}
 
@@ -3468,7 +3567,7 @@ func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePa
 	// Primary: NFC/active assignments (toolhead_spool_assignments)
 	assignments, err := b.GetAllCurrentAssignments(printerID)
 	if err != nil {
-		log.Printf("⚠️  [FilamentCheck] Could not get assignments for %s: %v", printerID, err)
+		log.Printf("[FilamentCheck] Could not get assignments for %s: %v", printerID, err)
 	}
 	spoolByTool := make(map[int]int) // toolhead index → spool ID
 	for _, a := range assignments {
@@ -3479,7 +3578,7 @@ func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePa
 	if len(spoolByTool) == 0 {
 		mappings, err := b.GetToolheadMappings(printerName)
 		if err != nil {
-			log.Printf("⚠️  [FilamentCheck] Could not get toolhead mappings for %s: %v", printerName, err)
+			log.Printf("[FilamentCheck] Could not get toolhead mappings for %s: %v", printerName, err)
 		}
 		for toolID, m := range mappings {
 			if m.SpoolID > 0 {
@@ -3491,7 +3590,7 @@ func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePa
 	// --- Step 4: fetch spool remaining weights from Spoolman ---
 	allSpools, err := b.spoolman.GetAllSpools()
 	if err != nil {
-		log.Printf("⚠️  [FilamentCheck] Could not fetch spools from Spoolman: %v", err)
+		log.Printf("[FilamentCheck] Could not fetch spools from Spoolman: %v", err)
 		return
 	}
 	remainingBySpoolID := make(map[int]SpoolmanSpool, len(allSpools))
@@ -3499,49 +3598,270 @@ func (b *FilamentBridge) checkFilamentSufficiency(printerID, printerName, filePa
 		remainingBySpoolID[s.ID] = s
 	}
 
-	// --- Step 5: compare and build warnings ---
+	// --- Step 5: read buffer threshold ---
+	bufStr, _ := b.GetConfigValue(ConfigKeyFilamentWarnBufferPct)
+	bufPct, _ := strconv.ParseFloat(bufStr, 64)
+	if bufPct < 0 {
+		bufPct = 0
+	}
+
+	// --- Step 6: compare and build two-tier warnings ---
 	var warnings []PrinterWarning
 	for toolIdx, required := range requiredByTool {
 		spoolID, assigned := spoolByTool[toolIdx]
 		if !assigned {
-			warnings = append(warnings, PrinterWarning{
+			w := PrinterWarning{
 				ToolheadIndex: toolIdx,
 				SpoolID:       0,
 				Required:      required,
 				Remaining:     0,
+				Severity:      "critical",
 				Message:       fmt.Sprintf("T%d: needs %.0fg but no spool assigned", toolIdx, required),
-			})
+			}
+			warnings = append(warnings, w)
+			cl.Append("EV", "filament_critical", w.Message, "")
 			continue
 		}
 		spool, found := remainingBySpoolID[spoolID]
 		if !found {
 			continue
 		}
-		if spool.RemainingWeight < required {
-			spoolName := spool.Name
-			if spoolName == "" {
-				spoolName = fmt.Sprintf("Spool #%d", spoolID)
-			}
-			warnings = append(warnings, PrinterWarning{
+		spoolName := spool.Name
+		if spoolName == "" {
+			spoolName = fmt.Sprintf("Spool #%d", spoolID)
+		}
+		threshold := required * (1 + bufPct/100)
+		switch {
+		case spool.RemainingWeight < required:
+			w := PrinterWarning{
 				ToolheadIndex: toolIdx,
 				SpoolID:       spoolID,
 				Required:      required,
 				Remaining:     spool.RemainingWeight,
-				Message: fmt.Sprintf("T%d: needs %.0fg, ~%.0fg remaining (%s)",
-					toolIdx, required, spool.RemainingWeight, spoolName),
+				Severity:      "critical",
+				Message:       fmt.Sprintf("T%d: needs %.0fg, only %.0fg remaining (%s) — may not finish", toolIdx, required, spool.RemainingWeight, spoolName),
+			}
+			warnings = append(warnings, w)
+			cl.Append("EV", "filament_critical", w.Message, "")
+		case spool.RemainingWeight < threshold:
+			w := PrinterWarning{
+				ToolheadIndex: toolIdx,
+				SpoolID:       spoolID,
+				Required:      required,
+				Remaining:     spool.RemainingWeight,
+				Severity:      "warning",
+				Message:       fmt.Sprintf("T%d: needs ~%.0fg, %.0fg remaining (%s) — low filament", toolIdx, required, spool.RemainingWeight, spoolName),
+			}
+			warnings = append(warnings, w)
+			cl.Append("EV", "filament_warning", w.Message, "")
+		}
+	}
+
+	// --- Step 7: store warnings, cache requirements, fire Pushover on new severity ---
+	newSeverity := highestSeverity(warnings)
+
+	b.printerWarningsMu.Lock()
+	b.printerRequirements[printerID] = requiredByTool
+	b.lastNotifiedSeverity[printerID] = ""
+	if len(warnings) > 0 {
+		b.printerWarnings[printerID] = warnings
+	} else {
+		delete(b.printerWarnings, printerID)
+	}
+	b.printerWarningsMu.Unlock()
+
+	if newSeverity == "" {
+		msg := fmt.Sprintf("Sufficient filament on all toolheads for %s", printerName)
+		log.Printf("[FilamentCheck] %s", msg)
+		cl.Append("EV", "filament_check_ok", msg, "")
+		return
+	}
+
+	log.Printf("[FilamentCheck] %d warning(s) for %s (severity: %s)", len(warnings), printerName, newSeverity)
+
+	b.printerWarningsMu.Lock()
+	b.lastNotifiedSeverity[printerID] = newSeverity
+	b.printerWarningsMu.Unlock()
+	b.sendFilamentWarningNotification(printerName, newSeverity, false, warnings)
+}
+
+// recheckFilamentSufficiency re-evaluates filament needs mid-print, scaling the original
+// G-code requirements by the remaining progress fraction so warnings tighten as the print
+// progresses. Called as a goroutine on each monitor cycle during PRINTING state.
+// allSpools is passed in from the caller to avoid a redundant Spoolman API call.
+func (b *FilamentBridge) recheckFilamentSufficiency(printerID, printerName string, remainingFraction float64) {
+	b.printerWarningsMu.Lock()
+	orig := b.printerRequirements[printerID]
+	b.printerWarningsMu.Unlock()
+	if len(orig) == 0 {
+		return // no requirements cached yet (checkFilamentSufficiency hasn't run)
+	}
+
+	// Build scaled requirements
+	requiredByTool := make(map[int]float64, len(orig))
+	for tool, grams := range orig {
+		requiredByTool[tool] = grams * remainingFraction
+	}
+
+	// Spool assignments
+	assignments, _ := b.GetAllCurrentAssignments(printerID)
+	spoolByTool := make(map[int]int)
+	for _, a := range assignments {
+		spoolByTool[a.ToolheadIndex] = a.SpoolmanSpoolID
+	}
+	if len(spoolByTool) == 0 {
+		mappings, _ := b.GetToolheadMappings(printerName)
+		for toolID, m := range mappings {
+			if m.SpoolID > 0 {
+				spoolByTool[toolID] = m.SpoolID
+			}
+		}
+	}
+
+	allSpools, err := b.spoolman.GetAllSpools()
+	if err != nil {
+		log.Printf("[FilamentCheck] recheck: could not fetch spools from Spoolman: %v", err)
+		return
+	}
+	remainingBySpoolID := make(map[int]SpoolmanSpool, len(allSpools))
+	for _, s := range allSpools {
+		remainingBySpoolID[s.ID] = s
+	}
+
+	bufStr, _ := b.GetConfigValue(ConfigKeyFilamentWarnBufferPct)
+	bufPct, _ := strconv.ParseFloat(bufStr, 64)
+	if bufPct < 0 {
+		bufPct = 0
+	}
+
+	cl := b.getCommLog(printerID)
+	var warnings []PrinterWarning
+	for toolIdx, required := range requiredByTool {
+		spoolID, assigned := spoolByTool[toolIdx]
+		if !assigned {
+			continue // already warned at print start
+		}
+		spool, found := remainingBySpoolID[spoolID]
+		if !found {
+			continue
+		}
+		spoolName := spool.Name
+		if spoolName == "" {
+			spoolName = fmt.Sprintf("Spool #%d", spoolID)
+		}
+		threshold := required * (1 + bufPct/100)
+		switch {
+		case spool.RemainingWeight < required:
+			warnings = append(warnings, PrinterWarning{
+				ToolheadIndex: toolIdx, SpoolID: spoolID,
+				Required: required, Remaining: spool.RemainingWeight,
+				Severity: "critical",
+				Message:  fmt.Sprintf("T%d: ~%.0fg still needed, only %.0fg remaining (%s)", toolIdx, required, spool.RemainingWeight, spoolName),
+			})
+		case spool.RemainingWeight < threshold:
+			warnings = append(warnings, PrinterWarning{
+				ToolheadIndex: toolIdx, SpoolID: spoolID,
+				Required: required, Remaining: spool.RemainingWeight,
+				Severity: "warning",
+				Message:  fmt.Sprintf("T%d: ~%.0fg still needed, %.0fg remaining (%s) — low", toolIdx, required, spool.RemainingWeight, spoolName),
 			})
 		}
 	}
 
+	newSeverity := highestSeverity(warnings)
+
 	b.printerWarningsMu.Lock()
+	prevSeverity := b.lastNotifiedSeverity[printerID]
 	if len(warnings) > 0 {
 		b.printerWarnings[printerID] = warnings
-		log.Printf("⚠️  [FilamentCheck] %d filament warning(s) for %s: %v", len(warnings), printerName, warnings)
 	} else {
 		delete(b.printerWarnings, printerID)
-		log.Printf("✅ [FilamentCheck] Sufficient filament for all toolheads on %s", printerName)
+	}
+	shouldNotify := newSeverity != "" && newSeverity != prevSeverity &&
+		!(prevSeverity == "critical" && newSeverity == "warning") // only escalate, never de-escalate notifications
+	if shouldNotify {
+		b.lastNotifiedSeverity[printerID] = newSeverity
 	}
 	b.printerWarningsMu.Unlock()
+
+	if shouldNotify {
+		for _, w := range warnings {
+			cl.Append("EV", "filament_"+w.Severity, w.Message, "")
+		}
+		b.sendFilamentWarningNotification(printerName, newSeverity, false, warnings)
+	}
+}
+
+// checkVirtualFilamentSufficiency checks whether assigned spools have enough filament
+// for a virtual print. Used by ProcessVirtualFile and reusable for OctoPrint print-start
+// warnings in a future phase. allSpools must be fetched by the caller.
+func (b *FilamentBridge) checkVirtualFilamentSufficiency(printerID, printerName string, requiredByTool map[int]float64, allSpools []SpoolmanSpool) []PrinterWarning {
+	bufStr, _ := b.GetConfigValue(ConfigKeyFilamentWarnBufferPct)
+	bufPct, _ := strconv.ParseFloat(bufStr, 64)
+	if bufPct < 0 {
+		bufPct = 0
+	}
+
+	remainingBySpoolID := make(map[int]SpoolmanSpool, len(allSpools))
+	for _, s := range allSpools {
+		remainingBySpoolID[s.ID] = s
+	}
+
+	mappings, _ := b.GetToolheadMappings(printerName)
+	spoolByTool := make(map[int]int)
+	for toolID, m := range mappings {
+		if m.SpoolID > 0 {
+			spoolByTool[toolID] = m.SpoolID
+		}
+	}
+
+	cl := b.getCommLog(printerID)
+	var warnings []PrinterWarning
+	for toolIdx, required := range requiredByTool {
+		if required <= 0 {
+			continue
+		}
+		spoolID, assigned := spoolByTool[toolIdx]
+		if !assigned {
+			w := PrinterWarning{
+				ToolheadIndex: toolIdx, Required: required, Severity: "critical",
+				Message: fmt.Sprintf("T%d: needs %.0fg but no spool assigned", toolIdx, required),
+			}
+			warnings = append(warnings, w)
+			cl.Append("EV", "filament_critical", w.Message, "")
+			continue
+		}
+		spool, found := remainingBySpoolID[spoolID]
+		if !found {
+			continue
+		}
+		spoolName := spool.Name
+		if spoolName == "" {
+			spoolName = fmt.Sprintf("Spool #%d", spoolID)
+		}
+		threshold := required * (1 + bufPct/100)
+		switch {
+		case spool.RemainingWeight < required:
+			w := PrinterWarning{
+				ToolheadIndex: toolIdx, SpoolID: spoolID,
+				Required: required, Remaining: spool.RemainingWeight,
+				Severity: "critical",
+				Message:  fmt.Sprintf("T%d: needs %.0fg, only %.0fg remaining (%s) — may not finish", toolIdx, required, spool.RemainingWeight, spoolName),
+			}
+			warnings = append(warnings, w)
+			cl.Append("EV", "filament_critical", w.Message, "")
+		case spool.RemainingWeight < threshold:
+			w := PrinterWarning{
+				ToolheadIndex: toolIdx, SpoolID: spoolID,
+				Required: required, Remaining: spool.RemainingWeight,
+				Severity: "warning",
+				Message:  fmt.Sprintf("T%d: needs ~%.0fg, %.0fg remaining (%s) — low filament", toolIdx, required, spool.RemainingWeight, spoolName),
+			}
+			warnings = append(warnings, w)
+			cl.Append("EV", "filament_warning", w.Message, "")
+		}
+	}
+	return warnings
 }
 
 // PAUSED            → keep wasPrinting=true (print will resume)
@@ -3707,7 +4027,43 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			// Check whether any spool has enough filament for this print.
 			// Runs in a goroutine so it never delays the monitor loop.
 			go b.checkFilamentSufficiency(printerID, config.Name, currentJobFilename, client)
+		} else if !isNewPrint && printProgress > 0 && printProgress < 100 {
+			// Mid-print: scale remaining requirements by progress and recheck spools.
+			remainingFraction := (100.0 - printProgress) / 100.0
+			go b.recheckFilamentSufficiency(printerID, config.Name, remainingFraction)
 		}
+
+		// Auto-pause on critical filament shortage (PrusaLink only, default off).
+		pauseEnabled, _ := b.GetConfigValue(ConfigKeyFilamentPauseOnCritical)
+		if pauseEnabled == "true" {
+			b.printerWarningsMu.Lock()
+			currentSeverity := b.lastNotifiedSeverity[printerID]
+			b.printerWarningsMu.Unlock()
+			b.mutex.Lock()
+			alreadyPaused := b.hasPaused[printerID]
+			b.mutex.Unlock()
+			if currentSeverity == "critical" && !alreadyPaused {
+				b.mutex.Lock()
+				b.hasPaused[printerID] = true
+				b.mutex.Unlock()
+				b.printerWarningsMu.Lock()
+				pauseWarnings := make([]PrinterWarning, len(b.printerWarnings[printerID]))
+				copy(pauseWarnings, b.printerWarnings[printerID])
+				b.printerWarningsMu.Unlock()
+				pausePrinterName := config.Name
+				go func() {
+					if err := client.PausePrint(); err != nil {
+						log.Printf("[FilamentCheck] auto-pause failed for %s: %v", pausePrinterName, err)
+						return
+					}
+					log.Printf("[FilamentCheck] auto-paused %s — critical filament shortage", pausePrinterName)
+					cl := b.getCommLog(printerID)
+					cl.Append("EV", "filament_paused", fmt.Sprintf("Print paused: critical filament shortage on %s", pausePrinterName), "")
+					b.sendFilamentWarningNotification(pausePrinterName, "critical", true, pauseWarnings)
+				}()
+			}
+		}
+
 		if jobInfo.ID != 0 {
 			_ = b.UpdateSessionProgress(printerID, jobInfo.ID, printProgress, jobInfo.TimePrinting)
 
@@ -3806,6 +4162,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 				b.mutex.Unlock()
 				b.printerWarningsMu.Lock()
 				delete(b.printerWarnings, printerID)
+				delete(b.lastNotifiedSeverity, printerID)
+				delete(b.printerRequirements, printerID)
+				b.hasPaused[printerID] = false
 				b.printerWarningsMu.Unlock()
 				break
 			}
@@ -3838,6 +4197,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.mutex.Unlock()
 			b.printerWarningsMu.Lock()
 			delete(b.printerWarnings, printerID)
+			delete(b.lastNotifiedSeverity, printerID)
+			delete(b.printerRequirements, printerID)
+			b.hasPaused[printerID] = false
 			b.printerWarningsMu.Unlock()
 
 			if handleErr != nil {
@@ -3885,6 +4247,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 				b.mutex.Unlock()
 				b.printerWarningsMu.Lock()
 				delete(b.printerWarnings, printerID)
+				delete(b.lastNotifiedSeverity, printerID)
+				delete(b.printerRequirements, printerID)
+				b.hasPaused[printerID] = false
 				b.printerWarningsMu.Unlock()
 				break
 			}
@@ -3923,6 +4288,9 @@ func (b *FilamentBridge) monitorPrusaLink(printerID string, config PrinterConfig
 			b.mutex.Unlock()
 			b.printerWarningsMu.Lock()
 			delete(b.printerWarnings, printerID)
+			delete(b.lastNotifiedSeverity, printerID)
+			delete(b.printerRequirements, printerID)
+			b.hasPaused[printerID] = false
 			b.printerWarningsMu.Unlock()
 
 			if handleErr != nil {
@@ -5525,6 +5893,18 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 	printTimeSec, thumbnailB64 := ParseGcodeMetadata(content)
 	printTimeMin = float64(printTimeSec) / 60.0
 
+	// Check filament sufficiency before committing to Spoolman.
+	if allSpools, spoolErr := b.spoolman.GetAllSpools(); spoolErr == nil {
+		virtualWarnings := b.checkVirtualFilamentSufficiency(printerID, printerName, usage, allSpools)
+		if len(virtualWarnings) > 0 {
+			b.printerWarningsMu.Lock()
+			b.printerWarnings[printerID] = virtualWarnings
+			b.printerWarningsMu.Unlock()
+			severity := highestSeverity(virtualWarnings)
+			go b.sendFilamentWarningNotification(printerName, severity, false, virtualWarnings)
+		}
+	}
+
 	// Update Spoolman for every toolhead with filament usage.
 	if err := b.processFilamentUsage(printerName, usage, displayName); err != nil {
 		return nil, skipped, 0, fmt.Errorf("failed to update Spoolman: %w", err)
@@ -5532,12 +5912,21 @@ func (b *FilamentBridge) ProcessVirtualFile(printerID string, fileID int) (usage
 
 	// All toolheads in this virtual print share one session ID.
 	sessionID := newSessionID()
+	var firstPrintID int
 	for toolheadID, usedG := range usage {
 		spoolID, _ := b.GetToolheadMapping(printerName, toolheadID)
 		printID, _ := b.LogPrintUsageFull(printerName, toolheadID, spoolID, usedG, displayName,
 			printTimeMin, "completed", thumbnailB64, sessionID, "virtual")
 		if printID > 0 {
 			_ = b.AppendFilamentUsage(printID, toolheadID, 0, spoolID, virtualMM[toolheadID], usedG)
+			if firstPrintID == 0 {
+				firstPrintID = printID
+			}
+		}
+	}
+	if firstPrintID > 0 {
+		if err := b.savePrintFile(firstPrintID, "gcode", filepath.Base(displayName), "", content); err != nil {
+			log.Printf("Warning: could not save gcode file for virtual print %d: %v", firstPrintID, err)
 		}
 	}
 
@@ -5947,6 +6336,145 @@ func (b *FilamentBridge) GetPrintSessionDetail(sessionID string) (*PrintHistory,
 	return &base, nil
 }
 
+// gcodeAttachmentForSession returns the relative path (under gcodePath()) of a saved gcode
+// attachment for printID. Gcode attachments for multi-toolhead sessions are saved against
+// only one row in the session (see savePrintFile call sites), so when sessionID is set we
+// search every print_history row in that session rather than assuming it's printID itself.
+// Returns "" (no error) if no gcode attachment exists.
+func (b *FilamentBridge) gcodeAttachmentForSession(printID int, sessionID string) (string, error) {
+	var row *sql.Row
+	if sessionID != "" {
+		row = b.db.QueryRow(`
+			SELECT pa.file_path FROM print_attachments pa
+			JOIN print_history ph ON ph.id = pa.print_history_id
+			WHERE ph.session_id = ? AND pa.file_type = 'gcode'
+			ORDER BY pa.stored_at ASC LIMIT 1`, sessionID)
+	} else {
+		row = b.db.QueryRow(`
+			SELECT file_path FROM print_attachments
+			WHERE print_history_id = ? AND file_type = 'gcode'
+			ORDER BY stored_at ASC LIMIT 1`, printID)
+	}
+	var path string
+	if err := row.Scan(&path); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", err
+	}
+	return path, nil
+}
+
+// CalibrationCandidate is a past print eligible for extracting calibration values for a
+// filament — it used that filament and has a saved gcode attachment.
+type CalibrationCandidate struct {
+	PrintID      int       `json:"print_id"`
+	PrinterName  string    `json:"printer_name"`
+	JobName      string    `json:"job_name"`
+	PrintStarted time.Time `json:"print_started"`
+	Source       string    `json:"source"`
+}
+
+// GetCalibrationCandidates returns past prints that used filamentID and have a saved gcode
+// file, newest first. Checks both print_history.spool_id (PrusaLink/virtual — one row per
+// toolhead) and print_filament_usage.spool_id (OctoPrint per-tool breakdown — see
+// architecture note: print_history.spool_id on OctoPrint records only reflects T0) so a
+// filament used on a non-zero toolhead of an OctoPrint print is still found.
+func (b *FilamentBridge) GetCalibrationCandidates(filamentID int) ([]CalibrationCandidate, error) {
+	spools, err := b.spoolman.GetAllSpools()
+	if err != nil {
+		return nil, fmt.Errorf("fetch spools: %w", err)
+	}
+	spoolIDs := map[int]bool{}
+	for _, s := range spools {
+		if s.Filament != nil && s.Filament.ID == filamentID {
+			spoolIDs[s.ID] = true
+		}
+	}
+	if len(spoolIDs) == 0 {
+		return []CalibrationCandidate{}, nil
+	}
+
+	printIDs := map[int]bool{}
+
+	if fuRows, err := b.db.Query(`SELECT print_id, spool_id FROM print_filament_usage`); err == nil {
+		for fuRows.Next() {
+			var printID, spoolID int
+			if fuRows.Scan(&printID, &spoolID) == nil && spoolIDs[spoolID] {
+				printIDs[printID] = true
+			}
+		}
+		fuRows.Close()
+	}
+
+	if phRows, err := b.db.Query(`SELECT id, spool_id FROM print_history`); err == nil {
+		for phRows.Next() {
+			var id, spoolID int
+			if phRows.Scan(&id, &spoolID) == nil && spoolIDs[spoolID] {
+				printIDs[id] = true
+			}
+		}
+		phRows.Close()
+	}
+
+	out := []CalibrationCandidate{}
+	for printID := range printIDs {
+		var c CalibrationCandidate
+		var sessionID string
+		err := b.db.QueryRow(`
+			SELECT printer_name, COALESCE(job_name, ''), COALESCE(source, 'prusalink'),
+			       print_started, COALESCE(session_id, '')
+			FROM print_history WHERE id = ?`, printID,
+		).Scan(&c.PrinterName, &c.JobName, &c.Source, &c.PrintStarted, &sessionID)
+		if err != nil {
+			continue
+		}
+		relPath, _ := b.gcodeAttachmentForSession(printID, sessionID)
+		if relPath == "" {
+			continue
+		}
+		c.PrintID = printID
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PrintStarted.After(out[j].PrintStarted) })
+	return out, nil
+}
+
+// GetCalibrationSource reads the gcode attachment for printID and resolves which
+// per-extruder list index (toolIndex) belongs to filamentID in that print, so callers can
+// pass both to ParseCalibrationFromGcode. Prefers the per-tool breakdown in
+// print_filament_usage (accurate for OctoPrint multi-material prints); falls back to the
+// print_history row's own toolhead_id (PrusaLink/virtual, one row per toolhead).
+func (b *FilamentBridge) GetCalibrationSource(filamentID, printID int) (content []byte, toolIndex int, err error) {
+	entry, err := b.GetPrintHistoryEntry(printID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("print %d not found: %w", printID, err)
+	}
+
+	toolIndex = entry.ToolheadID
+	for _, fu := range entry.FilamentUsages {
+		spool, serr := b.spoolman.GetSpoolByID(fu.SpoolID)
+		if serr == nil && spool != nil && spool.Filament != nil && spool.Filament.ID == filamentID {
+			toolIndex = fu.ToolIndex
+			break
+		}
+	}
+
+	relPath, err := b.gcodeAttachmentForSession(printID, entry.SessionID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("attachment lookup: %w", err)
+	}
+	if relPath == "" {
+		return nil, 0, fmt.Errorf("no gcode attachment found for print %d", printID)
+	}
+
+	content, err = os.ReadFile(filepath.Join(b.gcodePath(), relPath))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read gcode file: %w", err)
+	}
+	return content, toolIndex, nil
+}
+
 // GetPrintSessions returns print jobs grouped by session_id, newest first.
 // Records with an empty session_id each form their own implicit session.
 func (b *FilamentBridge) GetPrintSessions(limit int) ([]PrintSession, error) {
@@ -6192,6 +6720,67 @@ func ParseGcodeMetadata(content []byte) (printTimeSec int, thumbnailBase64 strin
 	}
 
 	return
+}
+
+// calibrationGcodeKey describes how to extract one calibration value from a slicer
+// config-dump comment line.
+type calibrationGcodeKey struct {
+	calField    string // cal_* Spoolman extra field key
+	gcodeKey    string // slicer config-dump key, e.g. "bridge_flow"
+	perExtruder bool   // true if the value is a comma-separated per-extruder list
+	percent     bool   // true if the raw value carries a trailing '%' to strip
+}
+
+// calibrationGcodeKeys maps calibration fields to the OrcaSlicer config-dump key names
+// confirmed against a real sliced sample file. PrusaSlicer/SuperSlicer may use different
+// key names for some of these (e.g. "extrusion_multiplier" instead of
+// "filament_flow_ratio") — not yet verified against a sample from those slicers.
+var calibrationGcodeKeys = []calibrationGcodeKey{
+	{"cal_max_flow_rate", "filament_max_volumetric_speed", true, false},
+	{"cal_pressure_advance", "pressure_advance", true, false},
+	{"cal_flow_ratio", "filament_flow_ratio", true, false},
+	{"cal_bridge_flow_ratio", "bridge_flow", false, false},
+	{"cal_bridge_density", "bridge_density", false, true},
+	{"cal_retraction_length", "retraction_length", true, false},
+	{"cal_retraction_speed", "retraction_speed", true, false},
+}
+
+// ParseCalibrationFromGcode scans a slicer config-dump comment block (the flat
+// "; key = value" lines PrusaSlicer/SuperSlicer/OrcaSlicer append at the end of ASCII
+// gcode files) for known calibration keys and returns raw string values keyed by cal_*
+// field name. toolIndex selects which entry of a per-extruder comma list belongs to the
+// filament being calibrated; out-of-range indices fall back to index 0. Keys not present
+// in the file are omitted from the result rather than zero-filled.
+func ParseCalibrationFromGcode(content []byte, toolIndex int) map[string]string {
+	text := string(content)
+	out := make(map[string]string)
+
+	for _, k := range calibrationGcodeKeys {
+		re := regexp.MustCompile(`(?m)^;\s*` + regexp.QuoteMeta(k.gcodeKey) + `\s*=\s*(.+?)\s*$`)
+		m := re.FindStringSubmatch(text)
+		if m == nil {
+			continue
+		}
+		raw := strings.TrimSpace(m[1])
+
+		if k.perExtruder {
+			parts := strings.Split(raw, ",")
+			idx := toolIndex
+			if idx < 0 || idx >= len(parts) {
+				idx = 0
+			}
+			raw = strings.TrimSpace(parts[idx])
+		}
+		if k.percent {
+			raw = strings.TrimSuffix(raw, "%")
+		}
+		if raw == "" {
+			continue
+		}
+		out[k.calField] = raw
+	}
+
+	return out
 }
 
 // parseBgcodeThumbnail scans the first 500KB of a binary bgcode file for an embedded PNG
@@ -6661,6 +7250,112 @@ func (b *FilamentBridge) ReassignFilamentSegment(printID, segmentID, newSpoolID 
 	log.Printf("🔄 Filament segment %d (print %d T%d.%d) reassigned spool %d → %d (%.2fg → %.2fg)",
 		segmentID, printID, toolIndex, changeNumber, oldSpoolID, newSpoolID, gramsUsed, effectiveNewGrams)
 	return nil
+}
+
+// ReassignAllFilamentForPrint moves every filament record belonging to printID
+// onto newSpoolID, keeping the existing gram amounts. Two shapes are handled:
+//
+//   - Prints with print_filament_usage rows (OctoPrint, or segments appended by
+//     hand) reuse ReassignFilamentSegment for each segment, so Spoolman
+//     adjustment, the print_history.spool_id backfill and cost recalculation all
+//     follow the single-segment rules exactly.
+//   - Prints without segment rows (PrusaLink, virtual) carry their spool on
+//     print_history.spool_id alone, so that column is moved directly and
+//     print_history.filament_used is the weight shifted in Spoolman.
+//
+// Returns the number of reassignments applied (0 when the print was already on
+// newSpoolID).
+func (b *FilamentBridge) ReassignAllFilamentForPrint(printID, newSpoolID int) (int, error) {
+	if newSpoolID <= 0 {
+		return 0, fmt.Errorf("newSpoolID must be a real spool")
+	}
+
+	// Collect segment ids first — ReassignFilamentSegment takes b.mutex itself,
+	// so the loop below must not hold the lock.
+	rows, err := b.db.Query(
+		`SELECT id FROM print_filament_usage WHERE print_id = ? ORDER BY tool_index, change_number`,
+		printID)
+	if err != nil {
+		return 0, fmt.Errorf("querying filament segments for print %d: %w", printID, err)
+	}
+	var segmentIDs []int
+	for rows.Next() {
+		var id int
+		if rows.Scan(&id) == nil {
+			segmentIDs = append(segmentIDs, id)
+		}
+	}
+	rows.Close()
+
+	if len(segmentIDs) > 0 {
+		applied := 0
+		for _, segID := range segmentIDs {
+			// grams=0 keeps the existing weight.
+			if err := b.ReassignFilamentSegment(printID, segID, newSpoolID, 0); err != nil {
+				return applied, fmt.Errorf("segment %d: %w", segID, err)
+			}
+			applied++
+		}
+		return applied, nil
+	}
+
+	return b.reassignPrintHistorySpool(printID, newSpoolID)
+}
+
+// reassignPrintHistorySpool is the no-segment fallback used by
+// ReassignAllFilamentForPrint for PrusaLink and virtual print records.
+func (b *FilamentBridge) reassignPrintHistorySpool(printID, newSpoolID int) (int, error) {
+	b.mutex.Lock()
+
+	var oldSpoolID int
+	var grams, printTimeMin float64
+	var printerName string
+	err := b.db.QueryRow(
+		`SELECT COALESCE(spool_id,0), COALESCE(filament_used,0),
+		        COALESCE(print_time_minutes,0), printer_name
+		 FROM print_history WHERE id = ?`, printID,
+	).Scan(&oldSpoolID, &grams, &printTimeMin, &printerName)
+	if err != nil {
+		b.mutex.Unlock()
+		return 0, fmt.Errorf("print %d not found: %w", printID, err)
+	}
+	if oldSpoolID == newSpoolID {
+		b.mutex.Unlock()
+		return 0, nil
+	}
+
+	if _, err := b.db.Exec(
+		`UPDATE print_history SET spool_id = ? WHERE id = ?`, newSpoolID, printID,
+	); err != nil {
+		b.mutex.Unlock()
+		return 0, fmt.Errorf("updating print_history.spool_id for print %d: %w", printID, err)
+	}
+
+	if bd, cErr := b.CalculatePrintCostMultiSpoolForPrinter(
+		[]OctoPrintPayloadFilament{{ToolIndex: 0, ChangeNumber: 0, SpoolID: newSpoolID, FilamentUsedG: grams}},
+		printTimeMin, printerName,
+	); cErr == nil {
+		b.SavePrintCost(printID, bd)
+	}
+
+	b.mutex.Unlock()
+
+	// Spoolman calls happen after the mutex is released.
+	if grams > 0 {
+		if oldSpoolID > 0 {
+			if err := b.spoolman.SubtractSpoolUsage(oldSpoolID, grams); err != nil {
+				log.Printf("⚠️  ReassignAllFilamentForPrint: subtract from spool %d failed: %v", oldSpoolID, err)
+				// Non-fatal — proceed so the DB stays consistent.
+			}
+		}
+		if err := b.spoolman.UpdateSpoolUsage(newSpoolID, grams); err != nil {
+			log.Printf("⚠️  ReassignAllFilamentForPrint: add to spool %d failed: %v", newSpoolID, err)
+		}
+	}
+
+	log.Printf("🔄 Print %d (%s, no filament segments) reassigned spool %d → %d (%.2fg)",
+		printID, printerName, oldSpoolID, newSpoolID, grams)
+	return 1, nil
 }
 
 // GetPrintQualityTags returns all quality tags for a single print record.

@@ -14,14 +14,19 @@ const (
 	StateAttention     = "ATTENTION" // Filament runout / change required
 	StateOffline       = "offline"   // Cannot reach printer
 	StateNotConfigured = "not_configured"
-	StateVirtual       = "virtual"    // Virtual test printer — no hardware
-	StateOctoPrint     = "octoprint"  // OctoPrint push-only printer
+	StateVirtual       = "virtual"   // Virtual test printer — no hardware
+	StateOctoPrint     = "octoprint" // OctoPrint push-only printer
 )
 
 // Default configuration values
 const (
-	DefaultSpoolmanURL          = "http://localhost:7912"
-	DefaultSpoolmanExternalURL  = "http://localhost:7912"
+	DefaultSpoolmanURL = "http://localhost:7912"
+	// Empty by default. When unset, the browser-facing Spoolman link is derived from
+	// the request host, and failing that falls back to DefaultSpoolmanURL.
+	DefaultSpoolmanExternalURL = ""
+	// Empty by default. Set from the SPOOLMAN_PORT env var on a Docker install so the
+	// derived link points at the published Spoolman port.
+	DefaultSpoolmanPublicPort   = ""
 	DefaultWebPort              = "5000"
 	DefaultPollInterval         = 30
 	DefaultLocationSyncInterval = 5 // minutes
@@ -30,16 +35,17 @@ const (
 
 // Database configuration keys
 const (
-	ConfigKeyPrinterIPs                      = "printer_ips"
-	ConfigKeyAPIKey                          = "prusalink_api_key"
-	ConfigKeySpoolmanURL                     = "spoolman_url"
+	ConfigKeyPrinterIPs                     = "printer_ips"
+	ConfigKeyAPIKey                         = "prusalink_api_key"
+	ConfigKeySpoolmanURL                    = "spoolman_url"
 	ConfigKeySpoolmanExternalURL            = "spoolman_external_url"
-	ConfigKeyPollInterval                    = "poll_interval"
-	ConfigKeyLocationSyncInterval            = "location_sync_interval"
-	ConfigKeyWebPort                         = "web_port"
-	ConfigKeyPrusaLinkTimeout                = "prusalink_timeout"
-	ConfigKeyPrusaLinkFileDownloadTimeout    = "prusalink_file_download_timeout"
-	ConfigKeySpoolmanTimeout                 = "spoolman_timeout"
+	ConfigKeySpoolmanPublicPort             = "spoolman_public_port"
+	ConfigKeyPollInterval                   = "poll_interval"
+	ConfigKeyLocationSyncInterval           = "location_sync_interval"
+	ConfigKeyWebPort                        = "web_port"
+	ConfigKeyPrusaLinkTimeout               = "prusalink_timeout"
+	ConfigKeyPrusaLinkFileDownloadTimeout   = "prusalink_file_download_timeout"
+	ConfigKeySpoolmanTimeout                = "spoolman_timeout"
 	ConfigKeyAutoAssignPreviousSpoolEnabled = "auto_assign_previous_spool_enabled"
 	ConfigKeyTheMomentAPIKey                = "the_moment_api_key"
 	ConfigKeyOctoPrintDebug                 = "octoprint_debug"
@@ -47,7 +53,7 @@ const (
 	// NFC workflow location names stored in Spoolman.
 	// nfc_trash_location: where finished/empty spools go so the tag can be re-programmed.
 	// nfc_inventory_location: default storage when a spool is displaced from a toolhead.
-	ConfigKeyNFCTrashLocation    = "nfc_trash_location"
+	ConfigKeyNFCTrashLocation     = "nfc_trash_location"
 	ConfigKeyNFCInventoryLocation = "nfc_inventory_location"
 
 	// NFC tap-tap engine (Stage 5): seconds a first tap stays pending before a second
@@ -59,12 +65,19 @@ const (
 	ConfigKeySpoolmanLocationSyncEnabled = "spoolman_location_sync_enabled"
 
 	// Cost calculation config keys
-	ConfigKeyCostElectricityRate = "cost_electricity_rate" // $/kWh
-	ConfigKeyCostPrinterWattage  = "cost_printer_wattage"  // Watts
-	ConfigKeyCostMaintenanceRate = "cost_maintenance_rate" // $/hour
-	ConfigKeyCostDepreciationRate= "cost_depreciation_rate"// $/hour (printer depreciation)
-	ConfigKeyCostMarginPercent   = "cost_margin_percent"   // % markup over cost
-	ConfigKeyCostCurrency        = "cost_currency"         // e.g. "USD", "CAD"
+	ConfigKeyCostElectricityRate  = "cost_electricity_rate"  // $/kWh
+	ConfigKeyCostPrinterWattage   = "cost_printer_wattage"   // Watts
+	ConfigKeyCostMaintenanceRate  = "cost_maintenance_rate"  // $/hour
+	ConfigKeyCostDepreciationRate = "cost_depreciation_rate" // $/hour (printer depreciation)
+	ConfigKeyCostMarginPercent    = "cost_margin_percent"    // % markup over cost
+	ConfigKeyCostCurrency         = "cost_currency"          // e.g. "USD", "CAD"
+
+	// Filament warning and Pushover notification config keys
+	ConfigKeyPushoverEnabled         = "pushover_enabled"           // "true"/"false"
+	ConfigKeyPushoverAPIToken        = "pushover_api_token"         // Pushover application token
+	ConfigKeyPushoverUserKey         = "pushover_user_key"          // Pushover user key
+	ConfigKeyFilamentWarnBufferPct   = "filament_warn_buffer_pct"   // warn when remaining < required × (1 + pct/100)
+	ConfigKeyFilamentPauseOnCritical = "filament_pause_on_critical" // auto-pause PrusaLink on critical shortage; "true"/"false"
 )
 
 // HTTP timeouts

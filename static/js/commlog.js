@@ -6,6 +6,8 @@
     var _lastID = -1;
     var _timer = null;
     var _atBottom = true;
+    var _filterMode = 'events'; // 'all' | 'events' | 'errors'
+    var _allEntries = [];
 
     var DIR_LABEL = { TX: 'TX', RX: 'RX', EV: 'EV' };
     var DIR_CLASS = { TX: 'cl-tx', RX: 'cl-rx', EV: 'cl-ev', error: 'cl-error' };
@@ -13,14 +15,54 @@
     function getEntriesEl() { return document.getElementById('comm-log-entries'); }
     function getModal()     { return document.getElementById('comm-log-modal'); }
 
+    // ── Public: set filter mode ────────────────────────────────────────────────
+    function setFilter(mode) {
+        _filterMode = mode;
+        updateFilterButtons();
+        renderEntries(_allEntries);
+    }
+
+    function updateFilterButtons() {
+        var modes = ['all', 'events', 'errors'];
+        modes.forEach(function(m) {
+            var btn = document.getElementById('clf-' + m);
+            if (!btn) return;
+            btn.style.background = (_filterMode === m) ? 'rgba(124,92,252,0.25)' : '';
+            btn.style.borderColor = (_filterMode === m) ? 'var(--brand-bright)' : '';
+        });
+    }
+
+    // ── Internal: render entries with current filter ───────────────────────────
+    function renderEntries(entries) {
+        var filtered = entries.filter(function(e) {
+            if (_filterMode === 'events') return e.dir === 'EV';
+            if (_filterMode === 'errors') return e.type === 'error';
+            return true;
+        });
+        var el = getEntriesEl();
+        if (!el) return;
+        el.innerHTML = '';
+        _appendEntriesToDOM(filtered);
+    }
+
     // ── Public: open dialog ────────────────────────────────────────────────────
     window.openCommLog = function (printerID, printerName) {
         _printerID = printerID;
         _lastID = -1;
         _atBottom = true;
+        _allEntries = [];
 
         var title = document.getElementById('comm-log-title');
         if (title) title.textContent = printerName || printerID;
+
+        var filterBar = document.getElementById('comm-log-filter-bar');
+        if (filterBar) {
+            filterBar.innerHTML =
+                '<button class="btn btn-small" id="clf-all" onclick="CommLog.setFilter(\'all\')">All</button> ' +
+                '<button class="btn btn-small" id="clf-events" onclick="CommLog.setFilter(\'events\')">Events only</button> ' +
+                '<button class="btn btn-small" id="clf-errors" onclick="CommLog.setFilter(\'errors\')">Errors only</button>';
+            updateFilterButtons();
+        }
 
         var el = getEntriesEl();
         if (el) el.innerHTML = '';
@@ -32,9 +74,10 @@
         fetch('/api/printers/' + encodeURIComponent(printerID) + '/comm-log')
             .then(function (r) { return r.json(); })
             .then(function (data) {
-                _appendEntries(data.entries || []);
-                if (data.entries && data.entries.length > 0) {
-                    _lastID = data.entries[data.entries.length - 1].id;
+                _allEntries = data.entries || [];
+                renderEntries(_allEntries);
+                if (_allEntries.length > 0) {
+                    _lastID = _allEntries[_allEntries.length - 1].id;
                 }
             })
             .catch(function () {});
@@ -87,6 +130,7 @@
     window.commLogClear = function () {
         var el = getEntriesEl();
         if (el) el.innerHTML = '';
+        _allEntries = [];
         // Don't reset _lastID — we only want new events from here on
     };
 
@@ -98,14 +142,21 @@
             .then(function (data) {
                 var entries = data.entries || [];
                 if (!entries.length) return;
-                _appendEntries(entries);
+                _allEntries = _allEntries.concat(entries);
                 _lastID = entries[entries.length - 1].id;
+                // Append only the new entries that pass the current filter
+                var filtered = entries.filter(function(e) {
+                    if (_filterMode === 'events') return e.dir === 'EV';
+                    if (_filterMode === 'errors') return e.type === 'error';
+                    return true;
+                });
+                if (filtered.length) _appendEntriesToDOM(filtered);
             })
             .catch(function () {});
     }
 
-    // ── Internal: render and append rows ──────────────────────────────────────
-    function _appendEntries(entries) {
+    // ── Internal: render and append rows to DOM ───────────────────────────────
+    function _appendEntriesToDOM(entries) {
         if (!entries || !entries.length) return;
         var el = getEntriesEl();
         if (!el) return;
@@ -153,6 +204,12 @@
         if (!s) return '';
         return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
+
+    // ── Public namespace (for inline onclick handlers) ─────────────────────────
+    window.CommLog = {
+        setFilter: setFilter,
+        updateFilterButtons: updateFilterButtons,
+    };
 
     // Close on backdrop click
     document.addEventListener('DOMContentLoaded', function () {

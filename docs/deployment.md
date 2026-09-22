@@ -282,8 +282,29 @@ In Docker, host paths set in `.env` are bind-mounted into the container at the f
 | Variable | Read by | Default | Purpose |
 |---|---|---|---|
 | `SPOOLMAN_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | URL The Moment uses to reach Spoolman. Only applied when the database is first created; ignored on subsequent starts. In Docker compose this is set to `http://spoolman:8000` (Docker DNS). Change via Settings → Advanced after first run. |
-| `SPOOLMAN_EXTERNAL_URL` | `main.go` (first-run seed only) | `http://localhost:7912` | Browser-reachable Spoolman URL. Used for "Open Spoolman" links in the UI. In Docker compose this defaults to `http://spoolman:8000`. Falls back to `SPOOLMAN_URL` when empty. |
+| `SPOOLMAN_EXTERNAL_URL` | `main.go` (first-run seed only) | empty | Browser-reachable Spoolman URL, used for "Open Spoolman" links in the UI. Leave it empty unless Spoolman is behind a reverse proxy, uses https, or answers on a different hostname than The Moment. See the precedence below. |
+| `SPOOLMAN_PORT` | `main.go` (first-run seed only), `docker-compose.yml` | `7912` | The port Spoolman is published on. Used to build the browser link when `SPOOLMAN_EXTERNAL_URL` is empty. |
 | `BAMBU_DEBUG` | `bambu.go` | `0` | Set to `1` for verbose Bambu MQTT debug logging (requires restart). Hot-togglable without restart via Settings → Advanced → `bambu_debug = true`. |
+
+#### Which Spoolman URL is used where
+
+The Moment keeps two Spoolman addresses apart, because one value cannot serve both.
+
+- **Internal URL** (`spoolman_url`): used by The Moment itself for API calls. In
+  Docker this is `http://spoolman:8000`, a name only the Docker network resolves.
+- **Browser URL**: used for every "Open Spoolman" link in the UI. It is worked out
+  per request, in this order:
+  1. `spoolman_external_url`, when it is set.
+  2. The hostname you loaded The Moment on, plus `spoolman_public_port`. Open The
+     Moment at `http://192.168.1.50:5000` and the link becomes
+     `http://192.168.1.50:7912`. This is why a stock Docker install needs no setup,
+     and why the links work from a phone or a second machine.
+  3. The internal URL. Correct on bare metal, where it is already `localhost:7912`.
+
+All three env vars (`SPOOLMAN_URL`, `SPOOLMAN_EXTERNAL_URL`, `SPOOLMAN_PORT`) are
+first-run seeds only. Once a value is stored, Settings → Advanced is the source of
+truth and the env var is ignored, so restarting never overwrites what you set in the
+UI.
 
 **Moonraker.** `moonraker_log_only` is a database config key (Settings → Advanced), not an environment variable. It defaults to **on**, which is the recommended mode: Moonraker's own `[spoolman]` component writes usage to Spoolman and drives the Mainsail/Fluidd spool display, while The Moment tracks the same usage for history, cost and sufficiency without writing. Only the exact value `false` enables writes — any other value, a typo, or an unset key leaves them off. Do not set it to `false` until `[spoolman]` has been removed from `moonraker.conf`, or every print is deducted twice.
 

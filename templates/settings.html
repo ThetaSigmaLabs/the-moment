@@ -6,6 +6,7 @@
         <button class="settings-tab" onclick="switchSettingsTab('cost', this)">💰 Cost Settings</button>
         <button class="settings-tab" onclick="switchSettingsTab('openprinttag', this)">🏷️ Open Print Tag</button>
         <button class="settings-tab" onclick="switchSettingsTab('advanced', this)">⚙️ Advanced Settings</button>
+        <button class="settings-tab" onclick="switchSettingsTab('notifications', this)">🔔 Notifications</button>
         <button class="settings-tab" onclick="switchSettingsTab('about', this)">ℹ️ About</button>
     </div>
 
@@ -165,6 +166,158 @@
         </div>
     </div>
 
+    <!-- Notifications Tab -->
+    <div id="notifications-tab" class="settings-tab-content">
+      <div class="config-section">
+        <h3 style="margin-top:0;">Pushover Push Notifications</h3>
+        <p class="help-text">
+          Receive push notifications on your phone when a spool may run out mid-print.
+          Requires a <a href="https://pushover.net" target="_blank" rel="noopener" style="color:var(--brand-light);">Pushover</a>
+          account (one-time $5 iOS/Android app purchase). Filament estimates come from your slicer
+          and <strong>may not be accurate</strong> — treat all warnings as advisory, not definitive.
+        </p>
+
+        <div class="form-group" style="margin-top:20px;">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+            <input type="checkbox" id="pushover-enabled"> Enable Pushover notifications
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label for="pushover-api-token">API Token / Key</label>
+          <input type="password" id="pushover-api-token" placeholder="aXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" style="max-width:360px;">
+          <small>Application token from your Pushover dashboard at pushover.net</small>
+        </div>
+        <div class="form-group">
+          <label for="pushover-user-key">User Key</label>
+          <input type="password" id="pushover-user-key" placeholder="uXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" style="max-width:360px;">
+          <small>Your personal user key shown at the top of the Pushover dashboard</small>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3>Warning Thresholds</h3>
+        <p class="help-text">
+          <strong>Critical</strong> fires when the spool cannot finish the print at all.
+          <strong>Low</strong> fires when the spool will finish but has less than the buffer margin to spare.
+          Both levels use slicer estimates which are typically ±10–20% off actual filament consumption.
+        </p>
+        <div class="form-group">
+          <label for="filament-warn-buffer">Warning Buffer (%)</label>
+          <input type="number" id="filament-warn-buffer" min="0" max="100" step="5" placeholder="20" style="width:100px;">
+          <small>Warn when remaining filament is less than required × (1 + buffer%). Set 0 to disable the Low warning level.</small>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3>Auto-Pause on Critical (PrusaLink only)</h3>
+        <div class="help-text" style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:10px 14px;margin-bottom:16px;">
+          <strong>Caution:</strong> When enabled, The Moment will automatically pause a PrusaLink print
+          the moment it detects the spool cannot finish the job. Slicer estimates are not guaranteed to
+          be accurate — a false positive will pause a print that would have completed successfully.
+          This feature is PrusaLink only. OctoPrint and Virtual printers are not affected.
+        </div>
+        <div class="form-group">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;">
+            <input type="checkbox" id="filament-pause-on-critical">
+            Auto-pause print on critical filament shortage (PrusaLink only)
+          </label>
+        </div>
+      </div>
+
+      <div class="config-section" style="border-bottom:none;">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <button class="btn" onclick="saveNotificationSettings()">💾 Save</button>
+          <button class="btn btn-secondary" onclick="testPushoverNotification()">🔔 Send Test Notification</button>
+        </div>
+        <div id="notification-save-status" style="margin-top:10px;font-size:0.85em;color:var(--text-secondary);min-height:1.2em;"></div>
+      </div>
+
+      <script>
+      (function() {
+        function loadNotificationSettings() {
+          fetch('/api/config')
+            .then(function(r) { return r.json(); })
+            .then(function(cfg) {
+              document.getElementById('pushover-enabled').checked = cfg['pushover_enabled'] === 'true';
+              var tok = cfg['pushover_api_token'] || '';
+              var key = cfg['pushover_user_key'] || '';
+              // Show placeholder if masked
+              document.getElementById('pushover-api-token').value = (tok === '***' || tok === '') ? '' : tok;
+              document.getElementById('pushover-user-key').value = (key === '***' || key === '') ? '' : key;
+              document.getElementById('filament-warn-buffer').value = cfg['filament_warn_buffer_pct'] || '20';
+              document.getElementById('filament-pause-on-critical').checked = cfg['filament_pause_on_critical'] === 'true';
+            })
+            .catch(function(e) { console.error('loadNotificationSettings:', e); });
+        }
+
+        window.saveNotificationSettings = function() {
+          var tokenEl = document.getElementById('pushover-api-token');
+          var keyEl = document.getElementById('pushover-user-key');
+          var body = {
+            pushover_enabled: document.getElementById('pushover-enabled').checked ? 'true' : 'false',
+            filament_warn_buffer_pct: document.getElementById('filament-warn-buffer').value || '20',
+            filament_pause_on_critical: document.getElementById('filament-pause-on-critical').checked ? 'true' : 'false',
+          };
+          // Only include credentials if the user typed something (non-empty, not the masked placeholder)
+          if (tokenEl.value && tokenEl.value !== '***') body['pushover_api_token'] = tokenEl.value;
+          if (keyEl.value && keyEl.value !== '***') body['pushover_user_key'] = keyEl.value;
+
+          fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          }).then(function(r) {
+            var el = document.getElementById('notification-save-status');
+            el.textContent = r.ok ? 'Saved.' : 'Save failed.';
+            setTimeout(function() { el.textContent = ''; }, 3000);
+          });
+        };
+
+        window.testPushoverNotification = function() {
+          var token = document.getElementById('pushover-api-token').value;
+          var userKey = document.getElementById('pushover-user-key').value;
+          fetch('/api/notifications/pushover/test', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: token, user_key: userKey }),
+          }).then(function(r) {
+            return r.json().then(function(d) { return { ok: r.ok, data: d }; });
+          }).then(function(res) {
+            if (res.ok) {
+              if (typeof showToast === 'function') showToast('Test notification sent!', 'success');
+            } else {
+              if (typeof showToast === 'function') showToast('Failed: ' + (res.data.error || 'unknown error'), 'error');
+            }
+          }).catch(function(e) {
+            if (typeof showToast === 'function') showToast('Error: ' + e.message, 'error');
+          });
+        };
+
+        // Lazy-load when tab is opened — wire into global switchSettingsTab
+        var _origSwitch = window.switchSettingsTab;
+        if (typeof _origSwitch === 'function') {
+          window.switchSettingsTab = function(tab, el) {
+            _origSwitch(tab, el);
+            if (tab === 'notifications') loadNotificationSettings();
+          };
+        } else {
+          // switchSettingsTab not yet defined — poll until it is
+          var _poll = setInterval(function() {
+            if (typeof window.switchSettingsTab === 'function') {
+              clearInterval(_poll);
+              var orig = window.switchSettingsTab;
+              window.switchSettingsTab = function(tab, el) {
+                orig(tab, el);
+                if (tab === 'notifications') loadNotificationSettings();
+              };
+            }
+          }, 50);
+        }
+      })();
+      </script>
+    </div>
+
     <!-- About Tab -->
     <div id="about-tab" class="settings-tab-content">
 
@@ -212,6 +365,16 @@
                     <div style="font-size:1.3em;margin-bottom:8px;">📍</div>
                     <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Location Sync</div>
                     <div style="font-size:0.82em;color:#999;line-height:1.5;">Bidirectional sync between toolhead assignments and Spoolman spool locations. Spool moves in Spoolman reflect in The Moment within 5 minutes.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🔔</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Pushover Notifications</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Phone alerts when a spool is running low mid-print, so you can swap filament before a PrusaLink print stalls.</div>
+                </div>
+                <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;">
+                    <div style="font-size:1.3em;margin-bottom:8px;">🎛️</div>
+                    <div style="font-weight:600;color:#fff;margin-bottom:5px;font-size:0.92em;">Filament Calibration</div>
+                    <div style="font-size:0.82em;color:#999;line-height:1.5;">Track per-filament print settings, or pull them straight from a past print's saved G-code to help remember slicer values.</div>
                 </div>
             </div>
         </div>

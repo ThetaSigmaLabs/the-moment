@@ -28,7 +28,7 @@ import (
 	cbor "github.com/fxamacker/cbor/v2"
 )
 
-// TestCalibrationFieldsInRequiredList asserts that all 5 slicer-calibration
+// TestCalibrationFieldsInRequiredList asserts that all 7 slicer-calibration
 // custom fields are present in requiredSpoolmanFields with the correct entity
 // and field type.
 func TestCalibrationFieldsInRequiredList(t *testing.T) {
@@ -41,6 +41,8 @@ func TestCalibrationFieldsInRequiredList(t *testing.T) {
 		"cal_flow_ratio":        {"filament", "float"},
 		"cal_retraction_length": {"filament", "float"},
 		"cal_retraction_speed":  {"filament", "float"},
+		"cal_bridge_flow_ratio": {"filament", "float"},
+		"cal_bridge_density":    {"filament", "float"},
 	}
 
 	found := map[string]bool{}
@@ -209,6 +211,87 @@ func TestUpdateFilamentHandler_CalField(t *testing.T) {
 	}
 	if extra["cal_pressure_advance"] != "0.045" {
 		t.Errorf("extra[cal_pressure_advance] = %v, want \"0.045\"", extra["cal_pressure_advance"])
+	}
+}
+
+// TestUpdateFilamentHandler_BridgeCalFields verifies that the two external-bridge
+// cal_* fields round-trip through the extra map the same way as the other cal_* fields.
+func TestUpdateFilamentHandler_BridgeCalFields(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		value float64
+		want  string
+	}{
+		{"cal_bridge_flow_ratio", 0.95, "0.95"},
+		{"cal_bridge_density", 100, "100"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			var gotBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotBody, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"id":1}`))
+			}))
+			defer srv.Close()
+
+			client := NewSpoolmanClient(srv.URL, 5)
+			encoded, _ := json.Marshal(tc.value)
+			err := client.UpdateFilament(1, map[string]interface{}{
+				"extra": map[string]string{tc.field: string(encoded)},
+			})
+			if err != nil {
+				t.Fatalf("UpdateFilament for %s: %v", tc.field, err)
+			}
+			var body map[string]interface{}
+			if err := json.Unmarshal(gotBody, &body); err != nil {
+				t.Fatalf("body not JSON: %v", err)
+			}
+			extra, ok := body["extra"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("body[extra] is not an object: %T", body["extra"])
+			}
+			if extra[tc.field] != tc.want {
+				t.Errorf("extra[%s] = %v, want %q", tc.field, extra[tc.field], tc.want)
+			}
+		})
+	}
+}
+
+// TestMergeFilamentExtraField_BridgeDensity verifies MergeFilamentExtraField
+// preserves existing extras (including another cal_* field) when adding
+// cal_bridge_density — same GET-merge-PATCH contract as the other cal_* fields.
+func TestMergeFilamentExtraField_BridgeDensity(t *testing.T) {
+	var patchBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			fmt.Fprint(w, `{"id":1,"name":"Test","extra":{"cal_pressure_advance":"0.04"}}`)
+			return
+		}
+		patchBody, _ = io.ReadAll(r.Body)
+		w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	client := NewSpoolmanClient(srv.URL, 5)
+	encoded, _ := json.Marshal(100.0)
+	if err := client.MergeFilamentExtraField(1, "cal_bridge_density", string(encoded)); err != nil {
+		t.Fatalf("MergeFilamentExtraField cal_bridge_density: %v", err)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(patchBody, &body); err != nil {
+		t.Fatalf("PATCH body not JSON: %v", err)
+	}
+	extra, ok := body["extra"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("body[extra] is not an object: %T", body["extra"])
+	}
+	if extra["cal_bridge_density"] != "100" {
+		t.Errorf("extra[cal_bridge_density] = %v, want \"100\"", extra["cal_bridge_density"])
+	}
+	if extra["cal_pressure_advance"] != "0.04" {
+		t.Errorf("cal_pressure_advance clobbered: got %v, want \"0.04\"", extra["cal_pressure_advance"])
 	}
 }
 

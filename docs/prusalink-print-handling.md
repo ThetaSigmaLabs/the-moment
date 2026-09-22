@@ -92,6 +92,25 @@ Example: 5-day print, two runouts:
 
 ---
 
+## Correcting Several Prints at Once
+
+The per-segment Reassign flow above fixes one segment at a time. When a whole run of prints was logged against the wrong spool, use the bulk action instead.
+
+1. Open **Print History**
+2. Tick the checkbox on each print you want to correct
+3. Click **↔ Reassign (N)** in the toolbar
+4. Search for the spool you actually used and select it
+5. Confirm
+
+Every filament record in every selected print moves to that spool. Gram amounts are not changed; only the spool is. The Moment credits each original spool and debits the replacement in Spoolman, then recalculates cost for each print.
+
+Two limits are deliberate:
+
+- **All or nothing per print.** A selected print moves entirely to the one spool. If a print used two different spools across its segments, correct it with the per-segment Reassign flow instead.
+- **No clear-to-none.** The bulk picker requires a real spool, so a stray click cannot wipe the spool from every selected record.
+
+---
+
 ## What PrusaLink Does Not Expose
 
 Some information is simply not available from the PrusaLink API:

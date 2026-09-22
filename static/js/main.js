@@ -7,7 +7,8 @@
 const VALID_TABS = ['dashboard', 'history', 'spools', 'filament', 'printers', 'nfcs', 'settings'];
 
 // Tab switching functionality
-function switchTab(tabName) {
+// skipHash: leave the address bar alone (used by showAbout, which writes #about itself)
+function switchTab(tabName, skipHash) {
     if (!VALID_TABS.includes(tabName)) tabName = 'dashboard';
 
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
@@ -64,7 +65,7 @@ function switchTab(tabName) {
         window.nfcsOnSubTabShown(activeSubTab);
     }
 
-    if (location.hash !== '#' + tabName) {
+    if (!skipHash && location.hash !== '#' + tabName) {
         location.hash = tabName;
     }
 }
@@ -74,8 +75,25 @@ function toggleConfig() {
 }
 
 function showAbout() {
-    switchTab('settings');
+    switchTab('settings', true);
     switchSettingsTab('about', null);
+    // replaceState, not location.hash: no hashchange fires and no extra
+    // history entry is pushed for a click the user just made.
+    if (location.hash !== '#about') {
+        history.replaceState(null, '', '#about');
+    }
+}
+
+// Single resolver for the initial load and for hashchange.
+// 'about' is a Settings sub-tab, not a top-level tab, so it cannot go in
+// VALID_TABS - switchTab would treat the #about-tab pane as a .tab-content.
+function applyHashRoute() {
+    const h = location.hash.slice(1);
+    if (h === 'about') {
+        showAbout();
+        return;
+    }
+    switchTab(VALID_TABS.includes(h) ? h : 'dashboard');
 }
 
 // Settings sub-tab switching functionality
@@ -137,11 +155,20 @@ function loadConfiguration() {
                         <label><strong>Spoolman URL (internal):</strong></label>
                         <input type="text" id="spoolman_url" value="${config.spoolman_url || ''}" placeholder="http://spoolman:8000">
                         <small>URL The Moment uses to call the Spoolman API. Use a hostname reachable from this container (e.g. <code>http://spoolman:8000</code> in Docker, <code>http://localhost:7912</code> on bare metal).</small>
+                        <div style="margin-top: 6px; display: flex; gap: 10px; align-items: center;">
+                            <button class="btn btn-secondary" onclick="testSpoolmanURL('spoolman_url', 'spoolman-test-result')">🔌 Test URL</button>
+                            <span id="spoolman-test-result" style="font-size: 0.9em;"></span>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label><strong>Spoolman URL (external / browser):</strong></label>
-                        <input type="text" id="spoolman_external_url" value="${config.spoolman_external_url || ''}" placeholder="http://your-host:7912">
-                        <small>URL the user's browser should use for "Open Spoolman" links. Leave blank to fall back to the internal URL above.</small>
+                        <input type="text" id="spoolman_external_url" value="${config.spoolman_external_url || ''}" placeholder="https://spoolman.example.com">
+                        <small>URL your browser should use for "Open Spoolman" links. Leave blank and the link is built from the address you are viewing The Moment on, which is what you want for a standard Docker install. Set it only when Spoolman sits behind a reverse proxy, uses https, or answers on a different hostname.</small>
+                        <div style="margin-top: 6px; display: flex; gap: 10px; align-items: center;">
+                            <button class="btn btn-secondary" onclick="testSpoolmanURL('spoolman_external_url', 'spoolman-external-test-result')">🔌 Test URL</button>
+                            <span id="spoolman-external-test-result" style="font-size: 0.9em;"></span>
+                        </div>
+                        <small style="display: block; margin-top: 4px;">The test runs from the server, so a pass means the server can reach that URL. It does not prove your browser can.</small>
                     </div>
                     <div class="form-group">
                         <label><strong>Poll Interval (seconds):</strong></label>
@@ -149,9 +176,7 @@ function loadConfiguration() {
                         <small>How often to check printer status</small>
                     </div>
                     <div style="margin-top: 20px; text-align: center; display: flex; gap: 10px; justify-content: center; align-items: center;">
-                        <button class="btn btn-secondary" onclick="testSpoolmanURL()">🔌 Test URL</button>
                         <button class="btn" onclick="saveConfiguration()">💾 Save Configuration</button>
-                        <span id="spoolman-test-result" style="font-size: 0.9em;"></span>
                     </div>
                 </div>
             `;
@@ -188,12 +213,12 @@ function saveConfiguration() {
         });
 }
 
-function testSpoolmanURL() {
-    const resultEl = document.getElementById('spoolman-test-result');
-    const active = document.activeElement && document.activeElement.id;
-    const urlEl = (active === 'spoolman_external_url')
-        ? document.getElementById('spoolman_external_url')
-        : document.getElementById('spoolman_url');
+// testSpoolmanURL asks the server to fetch the given URL. The field and the result
+// element are named explicitly: clicking the button moves focus to the button, so
+// there is no reliable way to work out which field was meant.
+function testSpoolmanURL(inputId, resultId) {
+    const resultEl = document.getElementById(resultId);
+    const urlEl = document.getElementById(inputId);
     const url = urlEl.value.trim();
 
     if (!url) {
@@ -688,12 +713,8 @@ document.addEventListener('DOMContentLoaded', function () {
     initEditButtonColors();
 
     // Hash-based routing: back/forward and direct URL navigation
-    window.addEventListener('hashchange', () => {
-        const tab = location.hash.slice(1);
-        switchTab(VALID_TABS.includes(tab) ? tab : 'dashboard');
-    });
+    window.addEventListener('hashchange', applyHashRoute);
 
     // Honour hash on initial load; default to dashboard
-    const initialTab = location.hash.slice(1);
-    switchTab(VALID_TABS.includes(initialTab) ? initialTab : 'dashboard');
+    applyHashRoute();
 });

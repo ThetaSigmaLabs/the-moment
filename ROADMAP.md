@@ -4,6 +4,9 @@ Ideas under consideration — not commitments, not scheduled. Captured here so t
 
 ---
 
+## Next:
+
+- [ ] Update the cost on the dash board to be the filament cost only and not the print cost with all the kWh, depreciation and such
 ## Analytics & Reporting
 
 - [ ] Print count per G-code file — how many times a specific model has been printed
@@ -47,7 +50,7 @@ The Moment is the source of truth for filament calibration values. OrcaSlicer st
 
 ## Notifications & Automation
 
-- [ ] Push alerts on print complete or failure — via ntfy, Pushover, or generic webhook
+- [x] Push alerts on print complete or failure — via ntfy, Pushover, or generic webhook
 - [ ] Print failure logging — record failed prints with wasted filament and cost tallied separately
 - [ ] Print queue — log planned upcoming prints against available spool inventory
 
@@ -55,7 +58,7 @@ The Moment is the source of truth for filament calibration values. OrcaSlicer st
 
 - [ ] Bambu hardware validation — promote beta → fully supported once tested against a physical X1C, P1S, or A1
 - [ ] INDX 8-head — full multi-toolhead support when hardware ships (fall target per vendor)
-- [ ] Material compatibility matrix — record which filament materials each printer is rated for; warn on mismatch at assignment time
+- [c] Material compatibility matrix — record which filament materials each printer is rated for; warn on mismatch at assignment time
 
 ### Bambu Printer Support (Hardware Testing Required)
 
@@ -74,3 +77,4 @@ Re-enable when hardware testing is complete (see CLAUDE.md for re-enable steps).
 
 - [ ] Spool transfer audit log — record when a spool moved between printers or storage locations, with timestamps
 - [ ] Carbon/electricity footprint per spool — cumulative kWh consumed across all prints from a given spool
+- [x] Bulk reassign from History view 

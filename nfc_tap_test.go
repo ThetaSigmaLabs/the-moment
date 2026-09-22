@@ -73,7 +73,9 @@ func insertTag(t *testing.T, b *FilamentBridge, tagType string, label *string, e
 }
 
 func strPtr(s string) *string { return &s }
-func intPtr(i int) *int       { return &i }
+
+// intPtr lives in moonraker_tracker_test.go, which has no build tag and so is
+// compiled into the integration build too.
 
 // ─── First tap: stored ────────────────────────────────────────────────────────
 

@@ -171,6 +171,8 @@ func (ws *WebServer) setupRoutes() {
 		api.GET("/filaments", ws.filamentsHandler)
 		api.PATCH("/filaments/:id", ws.updateFilamentHandler)
 		api.POST("/filaments/:id/clone", ws.cloneFilamentHandler)
+		api.GET("/filaments/:id/calibration-candidates", ws.calibrationCandidatesHandler)
+		api.POST("/filaments/:id/calibration-from-print", ws.calibrationFromPrintHandler)
 		api.GET("/vendors", ws.vendorsHandler)
 		api.POST("/map_toolhead", ws.mapToolheadHandler)
 		api.GET("/available_spools", ws.availableSpoolsHandler)
@@ -242,6 +244,7 @@ func (ws *WebServer) setupRoutes() {
 		api.PATCH("/history/:id/note", ws.updateHistoryNoteHandler)
 		api.DELETE("/history/batch", ws.batchDeleteHistoryHandler)
 		api.POST("/history/batch-recalc", ws.batchRecalcCostHandler)
+		api.POST("/history/batch-reassign", ws.batchReassignFilamentHandler)
 		api.DELETE("/history/:id", ws.deleteHistoryEntryHandler)
 		api.GET("/history/:id/tags", ws.getHistoryTagsHandler)
 		api.POST("/history/:id/tags", ws.setHistoryTagsHandler)
@@ -255,6 +258,9 @@ func (ws *WebServer) setupRoutes() {
 		api.POST("/cost/calculate", ws.calculateCostHandler)
 		api.GET("/print-errors", ws.getPrintErrorsHandler)
 		api.POST("/print-errors/:id/acknowledge", ws.acknowledgePrintErrorHandler)
+
+		// Notifications
+		api.POST("/notifications/pushover/test", ws.testPushoverHandler)
 		api.GET("/pending-downloads", ws.getPendingDownloadsHandler)
 		api.POST("/pending-downloads/:id/retry", ws.retryPendingDownloadHandler)
 		api.GET("/nfc/assign", ws.nfcAssignHandler)
@@ -557,9 +563,75 @@ func (ws *WebServer) dashboardHandler(c *gin.Context) {
 		"Printers":          ws.bridge.config.Printers,
 		"SpoolmanConnected": spoolmanConnected,
 		"SpoolmanError":     spoolmanError,
-		"SpoolmanBaseURL":   ws.bridge.GetSpoolmanExternalURL(),
+		"SpoolmanBaseURL":   ws.spoolmanLinkURL(c),
 		"AppVersion":        AppVersion,
 	})
+}
+
+// requestScheme reports the scheme the browser used to reach us: "https" behind TLS
+// or a proxy that says so, "http" otherwise.
+func requestScheme(c *gin.Context) string {
+	if proto := c.GetHeader("X-Forwarded-Proto"); proto != "" {
+		// A chained proxy can send a comma-separated list; the first entry is the client's.
+		if i := strings.Index(proto, ","); i >= 0 {
+			proto = proto[:i]
+		}
+		proto = strings.TrimSpace(proto)
+		if proto == "http" || proto == "https" {
+			return proto
+		}
+	}
+	if c.Request != nil && c.Request.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// spoolmanLinkURL returns the Spoolman base URL to hand to the browser, in this order:
+//
+//  1. the configured external URL, when set. Covers a reverse proxy, https, or split DNS.
+//  2. the hostname the browser used for this request plus the published Spoolman port.
+//     This is what makes the bundled Docker install work with no configuration, from
+//     the host, another machine on the LAN, or a phone.
+//  3. the internal URL. Correct on bare metal, where it is already localhost:7912.
+//
+// Never returns the internal Docker service name to a browser unless that is all
+// there is to go on.
+func (ws *WebServer) spoolmanLinkURL(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return ws.bridge.GetSpoolmanExternalURL()
+	}
+	return ws.spoolmanLinkURLForHost(requestScheme(c), c.Request.Host)
+}
+
+// spoolmanLinkURLForHost is spoolmanLinkURL with the scheme and host passed in, for
+// the handlers that carry a host string rather than the request.
+func (ws *WebServer) spoolmanLinkURLForHost(scheme, host string) string {
+	if external := ws.bridge.GetSpoolmanConfiguredExternalURL(); external != "" {
+		return strings.TrimRight(external, "/")
+	}
+
+	port := ws.bridge.GetSpoolmanPublicPort()
+	if port != "" && host != "" {
+		hostname := host
+		// Drop the port The Moment was reached on; Spoolman is on a different one.
+		// SplitHostPort errors when there is no port, in which case the host stands.
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			hostname = h
+		}
+		// An IPv6 literal needs its brackets back before it can go in a URL.
+		if strings.Contains(hostname, ":") && !strings.HasPrefix(hostname, "[") {
+			hostname = "[" + hostname + "]"
+		}
+		if hostname != "" {
+			if scheme == "" {
+				scheme = "http"
+			}
+			return fmt.Sprintf("%s://%s:%s", scheme, hostname, port)
+		}
+	}
+
+	return strings.TrimRight(ws.bridge.GetSpoolmanExternalURL(), "/")
 }
 
 // hasConnectionErrors checks if there are connection errors
@@ -686,6 +758,50 @@ func (ws *WebServer) updateFilamentHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// calibrationCandidatesHandler lists past prints that used this filament and have a saved
+// gcode attachment, for the "populate from print" picker.
+func (ws *WebServer) calibrationCandidatesHandler(c *gin.Context) {
+	filamentID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid filament id"})
+		return
+	}
+	candidates, err := ws.bridge.GetCalibrationCandidates(filamentID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, candidates)
+}
+
+// calibrationFromPrintHandler parses a past print's saved gcode config-dump footer and
+// returns extracted cal_* values for the frontend to preview/pre-fill — it does not write
+// to Spoolman; the existing PATCH /api/filaments/:id save path handles persistence.
+// Body: {"print_id": 123}
+func (ws *WebServer) calibrationFromPrintHandler(c *gin.Context) {
+	filamentID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid filament id"})
+		return
+	}
+	var body struct {
+		PrintID int `json:"print_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	content, toolIndex, err := ws.bridge.GetCalibrationSource(filamentID, body.PrintID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	values := ParseCalibrationFromGcode(content, toolIndex)
+	c.JSON(http.StatusOK, gin.H{"values": values})
 }
 
 // cloneFilamentHandler creates a copy of an existing filament.
@@ -875,6 +991,12 @@ func (ws *WebServer) getConfigHandler(c *gin.Context) {
 	if config[ConfigKeyTheMomentAPIKey] != "" {
 		config[ConfigKeyTheMomentAPIKey] = maskedCredential
 	}
+	if config[ConfigKeyPushoverAPIToken] != "" {
+		config[ConfigKeyPushoverAPIToken] = maskedCredential
+	}
+	if config[ConfigKeyPushoverUserKey] != "" {
+		config[ConfigKeyPushoverUserKey] = maskedCredential
+	}
 	c.JSON(http.StatusOK, config)
 }
 
@@ -888,7 +1010,8 @@ func (ws *WebServer) updateConfigHandler(c *gin.Context) {
 
 	// Update each config value, skipping credential sentinels (unchanged masked values)
 	for key, value := range config {
-		if value == maskedCredential && key == ConfigKeyTheMomentAPIKey {
+		if value == maskedCredential && (key == ConfigKeyTheMomentAPIKey ||
+			key == ConfigKeyPushoverAPIToken || key == ConfigKeyPushoverUserKey) {
 			continue
 		}
 		if err := ws.bridge.SetConfigValue(key, value); err != nil {
@@ -910,6 +1033,24 @@ func (ws *WebServer) updateConfigHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "Configuration updated successfully"})
+}
+
+// testPushoverHandler sends a test Pushover notification using the provided credentials.
+func (ws *WebServer) testPushoverHandler(c *gin.Context) {
+	var req struct {
+		Token   string `json:"token"`
+		UserKey string `json:"user_key"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid JSON"})
+		return
+	}
+	client := NewPushoverClient(req.Token, req.UserKey)
+	if err := client.Send("The Moment — Test", "Pushover is configured correctly.", 0); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "notification sent"})
 }
 
 // getAutoAssignPreviousSpoolHandler returns current auto-assign previous spool settings
@@ -961,15 +1102,15 @@ func (ws *WebServer) getPrintersHandler(c *gin.Context) {
 			printerType = PrinterTypePrusaLink
 		}
 		printerData := map[string]interface{}{
-			"name":                    printerConfig.Name,
-			"model":                   printerConfig.Model,
-			"ip_address":              printerConfig.IPAddress,
-			"api_key":                 maskedKey,
-			"toolheads":               printerConfig.Toolheads,
-			"is_virtual":              printerConfig.IsVirtual,
-			"printer_type":            printerType,
-			"debug_log":               printerConfig.DebugLog,
-			"camera_snapshot_url":     printerConfig.CameraSnapshotURL,
+			"name":                     printerConfig.Name,
+			"model":                    printerConfig.Model,
+			"ip_address":               printerConfig.IPAddress,
+			"api_key":                  maskedKey,
+			"toolheads":                printerConfig.Toolheads,
+			"is_virtual":               printerConfig.IsVirtual,
+			"printer_type":             printerType,
+			"debug_log":                printerConfig.DebugLog,
+			"camera_snapshot_url":      printerConfig.CameraSnapshotURL,
 			"progress_snapshot_config": printerConfig.ProgressSnapshotConfig,
 		}
 
@@ -1147,10 +1288,10 @@ func (ws *WebServer) rawResponsesHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"printer_id":   printerID,
-		"captured_at":  cap.CapturedAt,
-		"status":       statusObj,
-		"job":          jobObj,
+		"printer_id":  printerID,
+		"captured_at": cap.CapturedAt,
+		"status":      statusObj,
+		"job":         jobObj,
 	})
 }
 
@@ -1416,9 +1557,12 @@ func (ws *WebServer) spoolmanLocationsHandler(c *gin.Context) {
 			names = append(names, l.Name)
 		}
 	}
+	// spoolman_url is kept for older API consumers; both keys carry the same value.
+	linkURL := ws.spoolmanLinkURL(c)
 	c.JSON(http.StatusOK, gin.H{
 		"locations":             names,
-		"spoolman_external_url": ws.bridge.GetSpoolmanExternalURL(),
+		"spoolman_url":          linkURL,
+		"spoolman_external_url": linkURL,
 	})
 }
 
@@ -1850,11 +1994,11 @@ func (ws *WebServer) downloadVirtualFileHandler(c *gin.Context) {
 // Spool IDs reference the target Spoolman instance — the user must ensure those
 // IDs exist before importing.
 type VirtualPrinterExport struct {
-	ExportVersion int                      `json:"export_version"` // schema version for forward compat
-	ExportedAt    string                   `json:"exported_at"`
-	Printer       VirtualPrinterExportMeta `json:"printer"`
-	ToolheadNames map[int]string           `json:"toolhead_names"`           // toolhead_id → display name
-	SpoolMappings map[int]int              `json:"spool_mappings"`           // toolhead_id → spool_id
+	ExportVersion int                        `json:"export_version"` // schema version for forward compat
+	ExportedAt    string                     `json:"exported_at"`
+	Printer       VirtualPrinterExportMeta   `json:"printer"`
+	ToolheadNames map[int]string             `json:"toolhead_names"` // toolhead_id → display name
+	SpoolMappings map[int]int                `json:"spool_mappings"` // toolhead_id → spool_id
 	Files         []VirtualPrinterFileExport `json:"files"`
 }
 
@@ -2068,12 +2212,12 @@ func (ws *WebServer) importVirtualPrinterHandler(c *gin.Context) {
 		cfg.Name, printerID, cfg.Toolheads, filesRestored, filesSkipped)
 
 	c.JSON(http.StatusOK, gin.H{
-		"message":        "Virtual printer imported successfully",
-		"printer_id":     printerID,
-		"printer_name":   cfg.Name,
-		"toolheads":      cfg.Toolheads,
-		"files_restored": filesRestored,
-		"files_skipped":  filesSkipped,
+		"message":             "Virtual printer imported successfully",
+		"printer_id":          printerID,
+		"printer_name":        cfg.Name,
+		"toolheads":           cfg.Toolheads,
+		"files_restored":      filesRestored,
+		"files_skipped":       filesSkipped,
 		"spool_mappings_note": "Spool IDs from the export have been restored. Verify they exist in your Spoolman instance.",
 	})
 }
@@ -2516,11 +2660,11 @@ func (ws *WebServer) resolvePrinterName(printerID string) string {
 // Body (multi-spool):  { filament: [{tool_index,spool_id,filament_used_grams,...}], print_time_min, printer_name }
 func (ws *WebServer) calculateCostHandler(c *gin.Context) {
 	var req struct {
-		FilamentGrams float64                      `json:"filament_grams"`
-		PrintTimeMin  float64                      `json:"print_time_min"`
-		SpoolID       int                          `json:"spool_id"`
-		Filament      []OctoPrintPayloadFilament   `json:"filament"`
-		PrinterName   string                       `json:"printer_name"`
+		FilamentGrams float64                    `json:"filament_grams"`
+		PrintTimeMin  float64                    `json:"print_time_min"`
+		SpoolID       int                        `json:"spool_id"`
+		Filament      []OctoPrintPayloadFilament `json:"filament"`
+		PrinterName   string                     `json:"printer_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -2604,6 +2748,53 @@ func (ws *WebServer) batchRecalcCostHandler(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"results": results, "updated": updated})
+}
+
+// batchReassignFilamentHandler reassigns every filament record on each of the
+// given print history ids to a single spool. Gram amounts are preserved; only
+// the spool changes. Spoolman weights are adjusted the same way a single-segment
+// reassign adjusts them.
+// POST /api/history/batch-reassign
+// Body: { ids: [int...], spool_id: int }
+func (ws *WebServer) batchReassignFilamentHandler(c *gin.Context) {
+	var body struct {
+		IDs     []int `json:"ids"`
+		SpoolID int   `json:"spool_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "ids required"})
+		return
+	}
+	// Bulk clear-to-none is deliberately not offered — it would wipe the spool
+	// from every selected record in one click.
+	if body.SpoolID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "spool_id required"})
+		return
+	}
+
+	type result struct {
+		ID      int    `json:"id"`
+		Changed int    `json:"changed"`
+		Error   string `json:"error,omitempty"`
+	}
+	results := make([]result, 0, len(body.IDs))
+	for _, id := range body.IDs {
+		changed, err := ws.bridge.ReassignAllFilamentForPrint(id, body.SpoolID)
+		if err != nil {
+			results = append(results, result{ID: id, Changed: changed, Error: err.Error()})
+			continue
+		}
+		results = append(results, result{ID: id, Changed: changed})
+	}
+
+	updated, totalChanged := 0, 0
+	for _, r := range results {
+		if r.Error == "" {
+			updated++
+		}
+		totalChanged += r.Changed
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results, "updated": updated, "changed": totalChanged})
 }
 
 // getPrintErrorsHandler returns all unacknowledged print errors
@@ -2945,11 +3136,12 @@ func (ws *WebServer) nfcUrlsHandler(c *gin.Context) {
 		return false
 	})
 
-	// Get Spoolman URL for the response
-	spoolmanURL := ws.bridge.GetSpoolmanExternalURL()
+	// Get Spoolman URL for the response. spoolman_url is kept for older API consumers.
+	spoolmanURL := ws.spoolmanLinkURL(c)
 
 	c.JSON(http.StatusOK, gin.H{
 		"urls":                  urls,
+		"spoolman_url":          spoolmanURL,
 		"spoolman_external_url": spoolmanURL,
 	})
 }
@@ -3012,11 +3204,12 @@ func (ws *WebServer) getLocationsHandler(c *gin.Context) {
 		})
 	}
 
-	// Get Spoolman URL for the message
-	spoolmanURL := ws.bridge.GetSpoolmanExternalURL()
+	// Get Spoolman URL for the message. spoolman_url is kept for older API consumers.
+	spoolmanURL := ws.spoolmanLinkURL(c)
 
 	c.JSON(http.StatusOK, gin.H{
 		"locations":             allLocations,
+		"spoolman_url":          spoolmanURL,
 		"spoolman_external_url": spoolmanURL,
 	})
 }

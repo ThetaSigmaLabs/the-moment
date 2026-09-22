@@ -34,11 +34,15 @@
                 <label for="printerModel">Printer Model</label>
                 <select id="printerModel" name="model">
                     <optgroup label="Prusa">
+                        <option value="CORE One">CORE One</option>
+                        <option value="CORE One L">CORE One L</option>
+                        <option value="XL">XL</option>
+                        <option value="MK4">MK4</option>
+                        <option value="MK3.5">MK3.5</option>
                         <option value="MK3S+">MK3S+</option>
                         <option value="MK3S">MK3S</option>
                         <option value="MINI+">MINI+</option>
                         <option value="MINI">MINI</option>
-                        <option value="XL">XL</option>
                     </optgroup>
                     <option value="Other" selected>Other</option>
                 </select>
@@ -113,11 +117,15 @@
                     <label for="editPrinterModel">Printer Model</label>
                     <select id="editPrinterModel" name="model">
                         <optgroup label="Prusa">
+                            <option value="CORE One">CORE One</option>
+                            <option value="CORE One L">CORE One L</option>
+                            <option value="XL">XL</option>
+                            <option value="MK4">MK4</option>
+                            <option value="MK3.5">MK3.5</option>
                             <option value="MK3S+">MK3S+</option>
                             <option value="MK3S">MK3S</option>
                             <option value="MINI+">MINI+</option>
                             <option value="MINI">MINI</option>
-                            <option value="XL">XL</option>
                         </optgroup>
                         <option value="Other">Other</option>
                     </select>
@@ -551,6 +559,37 @@
     </div>
 </div>
 
+<!-- Bulk Filament Reassignment Modal -->
+<div id="bulkReassignModal" class="modal">
+    <div class="modal-content" style="max-width:480px;padding:0;display:flex;flex-direction:column;">
+
+        <div class="modal-header" style="padding:14px 20px;margin:0;border-bottom:1px solid #2e2e2e;flex-shrink:0;">
+            <h3 style="margin:0;font-size:0.95em;color:#e0e0e0;font-weight:500;">Reassign Filament</h3>
+            <button class="close" onclick="closeBulkReassignModal()" style="margin:0;line-height:1;">&times;</button>
+        </div>
+
+        <div style="padding:18px 20px;">
+            <div id="bulkReassignSummary" style="font-size:0.83em;color:#aaa;margin-bottom:10px;"></div>
+            <input id="bulkReassignSpoolSearch" type="text" placeholder='Search spools&hellip; e.g. PETG or "Prusament Black"'
+                   style="width:100%;box-sizing:border-box;padding:7px;background:#1e1e1e;color:#d0d0d0;border:1px solid #444;border-radius:4px;margin-bottom:6px;font-family:inherit;font-size:0.95em;"
+                   oninput="filterBulkReassignSpools(this.value)">
+            <select id="bulkReassignSpoolSelect" size="8" onchange="_syncBulkReassignConfirm()"
+                    style="width:100%;padding:7px;background:#1e1e1e;color:#d0d0d0;border:1px solid #444;border-radius:4px;margin-bottom:10px;font-family:inherit;">
+                <option value="">Loading spools&hellip;</option>
+            </select>
+            <div style="font-size:0.78em;color:#777;margin-bottom:12px;">
+                Every filament record in the selected prints moves to this spool. Gram amounts are
+                unchanged, and Spoolman weights are adjusted.
+            </div>
+            <div style="display:flex;gap:8px;">
+                <button id="bulkReassignConfirmBtn" class="btn btn-small" onclick="confirmBulkReassign()" disabled>&check; Confirm</button>
+                <button class="btn btn-small btn-secondary" onclick="closeBulkReassignModal()">Cancel</button>
+            </div>
+        </div>
+
+    </div>
+</div>
+
 <!-- Active Print Modal -->
 <div id="activePrintModal" class="modal">
     <div class="modal-content" style="max-width:620px;padding:0;display:flex;flex-direction:column;max-height:88vh;">
@@ -614,7 +653,7 @@
             <!-- Snapshots tab -->
             <div id="apmTab-snapshots" style="display:none;padding:18px 20px;">
                 <div style="font-size:0.75em;color:#777;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:14px;">Progress Snapshots (Pending)</div>
-                <div id="apm-snapshot-list" style="font-size:0.85em;color:#777;">Loading…</div>
+                <div id="apm-snapshot-list" style="font-size:0.85em;color:var(--text-secondary);">Loading…</div>
             </div>
 
             <!-- Filament tab -->

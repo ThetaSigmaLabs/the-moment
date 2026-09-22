@@ -8,6 +8,8 @@ const CAL_FIELDS = [
     { key: 'cal_max_flow_rate',      label: 'Max Flow',      step: '0.1',  min: '0' },
     { key: 'cal_pressure_advance',   label: 'PA',            step: '0.001',min: '0' },
     { key: 'cal_flow_ratio',         label: 'Flow Ratio',    step: '0.001',min: '0' },
+    { key: 'cal_bridge_flow_ratio',  label: 'Ext. Bridge Flow',    step: '0.001', min: '0' },
+    { key: 'cal_bridge_density',     label: 'Ext. Bridge Density', step: '1',     min: '0' },
     { key: 'cal_retraction_length',  label: 'Ret. Length',   step: '0.1',  min: '0' },
     { key: 'cal_retraction_speed',   label: 'Ret. Speed',    step: '1',    min: '0' },
 ];
@@ -23,7 +25,7 @@ function loadFilaments() {
         })
         .catch(err => {
             document.getElementById('filament-tbody').innerHTML =
-                `<tr><td colspan="11" style="text-align:center;color:var(--error-color);padding:24px;">
+                `<tr><td colspan="13" style="text-align:center;color:var(--error-color);padding:24px;">
                     Failed to load filaments: ${err.message}
                 </td></tr>`;
         });
@@ -123,6 +125,10 @@ function renderFilamentTable(filaments) {
                 onclick="openEditFilamentModal(${f.id})"
                 title="Edit this filament"
                 style="font-size:0.75em; padding:3px 8px; margin-right:4px;">✎</button>
+        <button class="btn btn-small btn-secondary"
+                onclick="openCalibrationPicker(${f.id})"
+                title="Populate calibration from a past print's G-code"
+                style="font-size:0.75em; padding:3px 8px; margin-right:4px;">↺</button>
         <button class="btn btn-small btn-secondary"
                 onclick="cloneFilament(${f.id})"
                 title="Clone this filament"
@@ -373,6 +379,91 @@ function _extraFloat(extra, key) {
 function _setFE(id, value) {
     const el = document.getElementById(id);
     if (el) el.value = value;
+}
+
+// ── Populate calibration from print ────────────────────────────────────────────
+
+let _calPickerFilamentID = null;
+let _calPickerCandidates = [];
+
+function openCalibrationPicker(filamentID) {
+    _calPickerFilamentID = filamentID;
+    _calPickerCandidates = [];
+    const sel = document.getElementById('calPickerSelect');
+    const search = document.getElementById('calPickerSearch');
+    if (search) search.value = '';
+    sel.innerHTML = '<option value="">Loading…</option>';
+    document.getElementById('calibrationPickerModal').style.display = 'block';
+
+    fetch(`/api/filaments/${filamentID}/calibration-candidates`)
+        .then(r => r.json())
+        .then(data => {
+            _calPickerCandidates = data || [];
+            renderCalibrationCandidates(_calPickerCandidates);
+        })
+        .catch(() => { sel.innerHTML = '<option value="">Failed to load prints</option>'; });
+}
+
+function renderCalibrationCandidates(list) {
+    const sel = document.getElementById('calPickerSelect');
+    if (!list.length) {
+        sel.innerHTML = '<option value="">No past prints with a saved G-code file found</option>';
+        return;
+    }
+    sel.innerHTML = list.map(c => {
+        const date = c.print_started ? new Date(c.print_started).toLocaleString() : '';
+        const label = `${c.printer_name} — ${c.job_name || '(untitled)'} — ${date}`;
+        return `<option value="${c.print_id}">${escHtml(label)}</option>`;
+    }).join('');
+}
+
+function filterCalibrationCandidates(query) {
+    const q = query.toLowerCase().trim();
+    if (!q) { renderCalibrationCandidates(_calPickerCandidates); return; }
+    const filtered = _calPickerCandidates.filter(c =>
+        (c.printer_name ?? '').toLowerCase().includes(q) ||
+        (c.job_name ?? '').toLowerCase().includes(q));
+    renderCalibrationCandidates(filtered);
+}
+
+function closeCalibrationPicker() {
+    document.getElementById('calibrationPickerModal').style.display = 'none';
+}
+
+function confirmCalibrationPicker() {
+    const sel = document.getElementById('calPickerSelect');
+    const printID = parseInt(sel.value, 10);
+    const filamentID = _calPickerFilamentID;
+    if (!printID || !filamentID) return;
+
+    fetch(`/api/filaments/${filamentID}/calibration-from-print`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ print_id: printID }),
+    })
+    .then(r => r.json().then(j => ({ ok: r.ok, body: j })))
+    .then(({ ok, body }) => {
+        if (!ok) return Promise.reject(body.error || 'request failed');
+        closeCalibrationPicker();
+        applyCalibrationValues(filamentID, body.values || {});
+    })
+    .catch(err => showToast(`Populate failed: ${err}`, 'error'));
+}
+
+function applyCalibrationValues(filamentID, values) {
+    const keys = Object.keys(values);
+    if (!keys.length) {
+        showToast("No known calibration values found in that print's G-code", 'error');
+        return;
+    }
+    keys.forEach(field => {
+        const input = document.querySelector(
+            `.cal-input[data-filament-id="${filamentID}"][data-field="${field}"]`);
+        if (!input) return;
+        input.value = values[field];
+        handleCalBlur(input);
+    });
+    showToast(`Populated ${keys.length} calibration field(s)`, 'success');
 }
 
 // ── Clone ────────────────────────────────────────────────────────────────────

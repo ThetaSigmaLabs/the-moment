@@ -28,29 +28,35 @@ function loadHistory() {
         })
         .catch(function(err) {
             document.getElementById('historyBody').innerHTML =
-                '<tr><td colspan="11" style="text-align:center;padding:30px;color:#ef9a9a;">' +
+                '<tr><td colspan="2" style="text-align:center;padding:30px;color:#ef9a9a;">' +
                 'Failed to load history: ' + err.message + '</td></tr>';
         });
 }
 
 function filterHistory() {
     _currentPage = 1;
-    var search = (document.getElementById('historySearch').value || '').toLowerCase();
+    var search = (document.getElementById('historySearch').value || '').toLowerCase().trim();
     var status = document.getElementById('historyStatusFilter').value;
 
     _filteredSessions = _allSessions.filter(function(s) {
         if (status && s.status !== status) return false;
-        if (search) {
-            var hay = (s.job_name + ' ' + s.printer_name).toLowerCase();
-            if (!hay.includes(search)) {
-                // also check individual records for notes
-                var recMatch = (s.records || []).some(function(r) {
-                    return (r.job_name + ' ' + r.printer_name + ' ' + (r.notes || '')).toLowerCase().includes(search);
-                });
-                if (!recMatch) return false;
-            }
-        }
-        return true;
+        if (!search) return true;
+        var fields = [
+            s.job_name,
+            s.printer_name,
+            s.status,
+            s.source,
+            _fmtDate(s.print_finished),
+            s.total_cost > 0 ? s.total_cost.toFixed(2) + ' ' + (s.currency || '') : '',
+        ];
+        (s.records || []).forEach(function(r) {
+            if (r.notes) fields.push(r.notes);
+            (r.tags || []).forEach(function(t) {
+                if (t.tag) fields.push(t.tag.replace(/-/g, ' '));
+                if (t.custom_text) fields.push(t.custom_text);
+            });
+        });
+        return fields.join(' ').toLowerCase().includes(search);
     });
 
     sortHistory(_sortField, true);
@@ -77,6 +83,20 @@ function sortHistory(field, skipToggle) {
     });
 
     renderTable();
+    _updateSortPills();
+}
+
+function _updateSortPills() {
+    var labels = { print_finished: 'Date', printer_name: 'Printer', filament_used: 'Usage', total_cost: 'Cost' };
+    Object.keys(labels).forEach(function(f) {
+        var btn = document.getElementById('sortBtn_' + f);
+        if (!btn) return;
+        var isActive = (f === _sortField);
+        btn.style.borderColor = isActive ? '#7c5cfc' : '#333';
+        btn.style.color       = isActive ? '#c8b8ff' : '#666';
+        btn.style.background  = isActive ? 'rgba(124,92,252,0.1)' : 'none';
+        btn.textContent = labels[f] + (isActive ? (_sortAsc ? ' ↑' : ' ↓') : '');
+    });
 }
 
 function _sessionSortValue(s, field) {
@@ -169,10 +189,10 @@ function setPerPage(val) {
 // ─── Row builders ─────────────────────────────────────────────────────────────
 
 function buildSessionRow(s, i, key, multi) {
-    var date   = _fmtDate(s.print_finished);
-    var usage  = s.total_filament_grams > 0 ? s.total_filament_grams.toFixed(1) + ' g' : '—';
-    var time   = _timeFromSession(s);
-    var cost   = s.total_cost > 0 ? _fmtCost(s.total_cost, s.currency) : '—';
+    var date    = _fmtDate(s.print_finished);
+    var usage   = s.total_filament_grams > 0 ? s.total_filament_grams.toFixed(1) + ' g' : '';
+    var time    = _timeFromSession(s);
+    var cost    = s.total_cost > 0 ? _fmtCost(s.total_cost, s.currency) : '';
     var firstRec = s.records && s.records[0] ? s.records[0] : {};
     var isRecovered = !!firstRec.recovered;
     var hasPending  = !!firstRec.has_pending_download;
@@ -181,74 +201,102 @@ function buildSessionRow(s, i, key, multi) {
         : _statusBadge(s.status);
     var sourceBadge = _sourceBadge(s.source);
 
-    // Quality tags: use first record's tags
     var tags = (s.records && s.records[0]) ? (s.records[0].tags || []) : [];
-    var qualityCell = _renderTagBadges(tags);
+    var qualityHtml = _renderTagBadges(tags);
+    if (qualityHtml === '—') qualityHtml = '';
 
-    // Thumbnail: use first record's thumbnail if available
+    // Thumbnail
     var thumbSrc = '';
     if (s.records && s.records.length > 0) {
         for (var ri = 0; ri < s.records.length; ri++) {
             if (s.records[ri].thumbnail_base64) { thumbSrc = s.records[ri].thumbnail_base64; break; }
         }
     }
-    var thumbCell = thumbSrc
-        ? '<img src="' + _esc(thumbSrc) + '" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid rgba(124,92,252,0.45);box-shadow:0 0 6px rgba(124,92,252,0.25);background:#e0e0e0;display:block;margin:auto;">'
-        : '<span style="color:#444;font-size:1.2em;">·</span>';
+    var thumbHtml = thumbSrc
+        ? '<img src="' + _esc(thumbSrc) + '" style="width:52px;height:52px;object-fit:cover;border-radius:6px;flex-shrink:0;border:1px solid rgba(124,92,252,0.4);box-shadow:0 0 6px rgba(124,92,252,0.2);">'
+        : '<div style="width:52px;height:52px;flex-shrink:0;border-radius:6px;background:#181818;border:1px solid #2a2a2a;display:flex;align-items:center;justify-content:center;color:#333;font-size:1.6em;">·</div>';
 
-    // File cell: tool badge for multi-toolhead (no expand arrow — click opens unified modal)
-    var toolBadge = '';
-    if (multi) {
-        toolBadge = '<span style="margin-left:6px;background:#1a3a5c;color:#7ab8f5;padding:1px 6px;' +
-            'border-radius:8px;font-size:0.72em;white-space:nowrap;">' + s.tool_count + ' tools</span>';
-    }
-    var file = _shortName(s.job_name);
+    // Tool badge
+    var toolBadge = (multi && s.tool_count > 1)
+        ? '<span style="margin-left:6px;background:#1a3a5c;color:#7ab8f5;padding:1px 6px;border-radius:8px;font-size:0.72em;white-space:nowrap;">' + s.tool_count + ' tools</span>'
+        : '';
+
+    // Pending badge
     var pendingBadge = '';
     if (hasPending) {
         var dlId = firstRec.pending_download_id;
-        pendingBadge = ' <span style="background:#2a1800;color:#ffa040;padding:1px 6px;border-radius:8px;font-size:0.72em;white-space:nowrap;" title="G-code file download is pending. Click Retry to attempt again.">pending download</span>' +
-            ' <button onclick="event.stopPropagation();retryDownload(' + dlId + ', this)" ' +
-            'style="background:#3d2a00;color:#ffa040;border:1px solid #664400;border-radius:4px;padding:0 6px;font-size:0.72em;cursor:pointer;white-space:nowrap;" title="Retry download now">↻ Retry</button>';
+        pendingBadge = ' <span style="background:#2a1800;color:#ffa040;padding:1px 6px;border-radius:8px;font-size:0.72em;white-space:nowrap;" title="G-code file download is pending.">pending</span>' +
+            ' <button onclick="event.stopPropagation();retryDownload(' + dlId + ',this)" ' +
+            'style="background:#3d2a00;color:#ffa040;border:1px solid #664400;border-radius:4px;padding:0 5px;font-size:0.72em;cursor:pointer;white-space:nowrap;" title="Retry download now">↻</button>';
     }
-    var firstRecID = (s.records && s.records[0]) ? s.records[0].id : 0;
+
+    // Rename + Remove buttons
+    var firstRecID = firstRec.id || 0;
     var renameBtn = firstRecID
-        ? ' <button onclick="event.stopPropagation();_renameFromTable(' + firstRecID + ',this)" ' +
-          'title="Rename" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.78em;padding:0 3px;vertical-align:middle;">✏</button>'
+        ? '<button onclick="event.stopPropagation();_renameFromTable(' + firstRecID + ',this)" ' +
+          'title="Rename" style="background:none;border:none;color:#555;cursor:pointer;font-size:0.85em;padding:2px 4px;line-height:1;">✏</button>'
         : '';
-    var fileCell = _esc(file) + toolBadge + renameBtn + pendingBadge;
+    var removeBtn = '<button onclick="event.stopPropagation();_deleteFromCard(\'' + _esc(key) + '\')" ' +
+        'style="background:rgba(180,40,40,0.1);border:1px solid rgba(180,40,40,0.25);color:#aa4444;' +
+        'border-radius:4px;cursor:pointer;font-size:0.78em;padding:2px 9px;white-space:nowrap;">✕ Remove</button>';
 
-    // Note: aggregate — show first record's note if any
-    var note = '';
-    if (s.records && s.records[0] && s.records[0].notes) {
-        var n = s.records[0].notes;
-        note = _esc(n.substring(0, 40)) + (n.length > 40 ? '…' : '');
-    }
+    // Accent color by status
+    var accentColor = isRecovered ? '#ffa040' :
+        s.status === 'completed' ? '#6ee7a0' :
+        s.status === 'cancelled' ? '#ffb347' :
+        s.status === 'failed'    ? '#ff7070' : '#7c5cfc';
 
+    // Click handler opens modal
     var onclick = multi
         ? 'openSessionModal(\'' + _esc(s.session_id) + '\')'
         : (s.records && s.records[0] ? 'openHistoryModal(' + s.records[0].id + ')' : '');
 
-    var rowStyle = 'border-bottom:1px solid #2a2a2a;cursor:pointer;transition:background 0.15s;' +
-        (multi ? 'border-left:3px solid #1a3a5c;' : '');
-    var chkChecked = _selectedKeys[key] ? ' checked' : '';
+    // Title row: filename + badges + action buttons
+    var titleRow =
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:5px;">' +
+          '<span style="font-weight:600;font-size:0.92em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(s.job_name) + '">' +
+            _esc(_shortName(s.job_name)) + toolBadge + pendingBadge +
+          '</span>' +
+          '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0;">' +
+            renameBtn + removeBtn +
+          '</div>' +
+        '</div>';
 
-    return '<tr onclick="' + onclick + '" ' +
-        'style="' + rowStyle + '" ' +
-        'onmouseover="this.style.background=\'rgba(255,255,255,0.04)\'" ' +
-        'onmouseout="this.style.background=\'\'">' +
-        '<td onclick="event.stopPropagation();" style="padding:9px 8px;width:32px;text-align:center;">' +
-        '<input type="checkbox"' + chkChecked + ' style="cursor:pointer;width:15px;height:15px;" ' +
-        'onchange="toggleSessionSelect(\'' + _esc(key) + '\', this)"></td>' +
-        '<td style="padding:9px 12px;white-space:nowrap;color:#aaa;">' + date + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;">' + thumbCell + '</td>' +
-        '<td style="padding:9px 12px;white-space:nowrap;">' + _esc(s.printer_name) + sourceBadge + '</td>' +
-        '<td style="padding:9px 12px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + _esc(s.job_name) + '">' + fileCell + '</td>' +
-        '<td style="padding:9px 12px;text-align:right;white-space:nowrap;">' + usage + '</td>' +
-        '<td style="padding:9px 12px;text-align:right;white-space:nowrap;color:#aaa;">' + time + '</td>' +
-        '<td style="padding:9px 12px;text-align:right;white-space:nowrap;' + (s.total_cost > 0 ? 'color:#c8b8ff;' : 'color:#555;') + '">' + cost + '</td>' +
-        '<td style="padding:9px 12px;color:#888;font-size:0.85em;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + note + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;">' + statusBadge + '</td>' +
-        '<td style="padding:9px 12px;text-align:center;">' + qualityCell + '</td>' +
+    // Stats row: status · printer · usage · time · cost · note · quality  date→
+    var sep = '<span style="color:#333;margin:0 1px;">·</span>';
+    var parts = [statusBadge, _esc(s.printer_name) + ' ' + sourceBadge];
+    if (usage)                parts.push(usage);
+    if (time && time !== '—') parts.push(time);
+    if (cost)                 parts.push('<span style="color:#c8b8ff;">' + cost + '</span>');
+    if (firstRec.notes) {
+        var n = firstRec.notes;
+        parts.push('<span style="color:#555;font-style:italic;">' + _esc(n.substring(0, 35)) + (n.length > 35 ? '…' : '') + '</span>');
+    }
+    if (qualityHtml) parts.push(qualityHtml);
+
+    var statsRow =
+        '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px;font-size:0.80em;color:#777;">' +
+          parts.join(sep) +
+          '<span style="margin-left:auto;color:#555;white-space:nowrap;padding-left:8px;">' + date + '</span>' +
+        '</div>';
+
+    var chkChecked = _selectedKeys[key] ? ' checked' : '';
+    return '<tr style="background:transparent;">' +
+        '<td onclick="event.stopPropagation();" style="vertical-align:middle;padding:3px 8px;width:32px;text-align:center;">' +
+          '<input type="checkbox"' + chkChecked + ' style="cursor:pointer;width:15px;height:15px;" ' +
+          'onchange="toggleSessionSelect(\'' + _esc(key) + '\', this)"></td>' +
+        '<td style="padding:3px 4px 3px 0;">' +
+          '<div style="display:flex;align-items:center;gap:12px;' +
+                      'background:rgba(255,255,255,0.02);border-radius:8px;' +
+                      'border:1px solid #252525;border-left:3px solid ' + accentColor + ';' +
+                      'padding:10px 14px;cursor:pointer;transition:background 0.15s;" ' +
+               'onclick="' + onclick + '" ' +
+               'onmouseover="this.style.background=\'rgba(255,255,255,0.04)\'" ' +
+               'onmouseout="this.style.background=\'rgba(255,255,255,0.02)\'">' +
+            thumbHtml +
+            '<div style="flex:1;min-width:0;">' + titleRow + statsRow + '</div>' +
+          '</div>' +
+        '</td>' +
         '</tr>';
 }
 
@@ -823,6 +871,18 @@ function _renderStoredCost(d, currency) {
     return html;
 }
 
+function _deleteFromCard(key) {
+    var match = null;
+    _allSessions.forEach(function(s, i) {
+        if (_sessionKey(s, i) === key) match = s;
+    });
+    if (!match) return;
+    var ids = (match.records || []).map(function(r) { return r.id; });
+    if (!confirm('Delete this print history record?\nThis cannot be undone.')) return;
+    if (ids.length > 1) { _deleteSessionRecords(ids); }
+    else if (ids.length === 1) { _deleteSingleRecord(ids[0]); }
+}
+
 function deleteHistoryEntry() {
     if (!_activeEntry) return;
 
@@ -1058,6 +1118,16 @@ function _syncSelection() {
         }
     }
 
+    var reassignSelBtn = document.getElementById('historyReassignSelectedBtn');
+    if (reassignSelBtn) {
+        if (selectedCount > 0) {
+            reassignSelBtn.style.display = '';
+            reassignSelBtn.textContent = '\u2194 Reassign (' + selectedCount + ')';
+        } else {
+            reassignSelBtn.style.display = 'none';
+        }
+    }
+
     var btn = document.getElementById('historyDeleteSelectedBtn');
     if (btn) {
         if (selectedCount > 0) {
@@ -1161,7 +1231,7 @@ function _fmtDate(iso) {
     if (!iso) return '—';
     var d = new Date(iso);
     if (isNaN(d)) return iso;
-    return d.toLocaleDateString() + ' ' +
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' +
            d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
@@ -1328,6 +1398,124 @@ function confirmReassign() {
 function cancelReassign() {
     var picker = document.getElementById('reassignPicker');
     if (picker) picker.style.display = 'none';
+}
+
+// ─── Bulk filament reassignment ──────────────────────────────────────────────
+
+var _bulkReassignSpoolOptions = [];
+var _bulkReassignIDs          = [];
+
+// Same stored-options pattern as filterReassignSpools, minus the clear-to-none
+// option — bulk clearing every selected record is not offered.
+function filterBulkReassignSpools(query) {
+    var sel = document.getElementById('bulkReassignSpoolSelect');
+    if (!sel) return;
+    var tokens = _parseReassignTokens((query || '').trim());
+    sel.innerHTML = '<option value="">\u2014 select a spool \u2014</option>';
+    _bulkReassignSpoolOptions.forEach(function(o) {
+        var low = o.label.toLowerCase();
+        if (!tokens.length || tokens.every(function(t) { return low.indexOf(t) !== -1; })) {
+            var el = document.createElement('option');
+            el.value = o.id;
+            el.textContent = o.label;
+            sel.appendChild(el);
+        }
+    });
+    _syncBulkReassignConfirm();
+}
+
+function _syncBulkReassignConfirm() {
+    var sel = document.getElementById('bulkReassignSpoolSelect');
+    var btn = document.getElementById('bulkReassignConfirmBtn');
+    if (btn) btn.disabled = !(sel && parseInt(sel.value, 10) > 0);
+}
+
+function openBulkReassignPicker() {
+    var ids = [];
+    var sessionCount = 0;
+    _filteredSessions.forEach(function(s, i) {
+        if (!_selectedKeys[_sessionKey(s, i)]) return;
+        sessionCount++;
+        (s.records || []).forEach(function(r) { ids.push(r.id); });
+    });
+    if (ids.length === 0) return;
+    _bulkReassignIDs = ids;
+
+    var modal   = document.getElementById('bulkReassignModal');
+    var sel     = document.getElementById('bulkReassignSpoolSelect');
+    var summary = document.getElementById('bulkReassignSummary');
+    if (!modal || !sel) return;
+
+    if (summary) {
+        summary.textContent = sessionCount + ' session' + (sessionCount !== 1 ? 's' : '') +
+            ' (' + ids.length + ' record' + (ids.length !== 1 ? 's' : '') + ') selected.';
+    }
+    sel.innerHTML = '<option value="">Loading\u2026</option>';
+    var searchEl = document.getElementById('bulkReassignSpoolSearch');
+    if (searchEl) searchEl.value = '';
+    _syncBulkReassignConfirm();
+    modal.style.display = 'block';
+
+    fetch('/api/spools')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var spools = data.spools || data || [];
+            spools.forEach(function(s) { _spoolMap[s.id] = s; });
+            _bulkReassignSpoolOptions = spools.map(function(s) {
+                return { id: s.id, label: _formatSpoolLabel(s.id) };
+            });
+            filterBulkReassignSpools('');
+        })
+        .catch(function() {
+            sel.innerHTML = '<option value="">Failed to load spools</option>';
+            _syncBulkReassignConfirm();
+        });
+}
+
+function confirmBulkReassign() {
+    var sel    = document.getElementById('bulkReassignSpoolSelect');
+    var spoolID = parseInt(sel ? sel.value : '0', 10) || 0;
+    if (spoolID <= 0 || _bulkReassignIDs.length === 0) return;
+
+    var label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : ('spool ' + spoolID);
+    var msg = 'Reassign all filament in ' + _bulkReassignIDs.length + ' record' +
+        (_bulkReassignIDs.length !== 1 ? 's' : '') + ' to:\n' + label +
+        '\n\nGram amounts stay the same. Spoolman weights will be adjusted.';
+    if (!confirm(msg)) return;
+
+    var btn = document.getElementById('bulkReassignConfirmBtn');
+    if (btn) btn.disabled = true;
+
+    fetch('/api/history/batch-reassign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: _bulkReassignIDs, spool_id: spoolID })
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.error) { showToast('Reassign failed: ' + data.error); _syncBulkReassignConfirm(); return; }
+        closeBulkReassignModal();
+        _selectedKeys = {};
+        // Spool labels and costs change across many rows, so refetch rather than
+        // patching the table in place.
+        loadHistory();
+        var errCount = (data.results || []).filter(function(r) { return r.error; }).length;
+        if (errCount > 0) {
+            showToast('Reassigned ' + data.updated + ' record(s). ' + errCount + ' failed.');
+        } else {
+            showToast('Reassigned ' + data.updated + ' record(s).');
+        }
+    })
+    .catch(function(e) {
+        showToast('Request failed: ' + e);
+        _syncBulkReassignConfirm();
+    });
+}
+
+function closeBulkReassignModal() {
+    var modal = document.getElementById('bulkReassignModal');
+    if (modal) modal.style.display = 'none';
+    _bulkReassignIDs = [];
 }
 
 // ─── Quality Tags ─────────────────────────────────────────────────────────────
@@ -1669,6 +1857,8 @@ document.addEventListener('DOMContentLoaded', function() {
     window.addEventListener('click', function(e) {
         var m = document.getElementById('historyDetailModal');
         if (m && e.target === m) closeHistoryModal();
+        var bm = document.getElementById('bulkReassignModal');
+        if (bm && e.target === bm) closeBulkReassignModal();
     });
 });
 

@@ -972,6 +972,8 @@ var requiredSpoolmanFields = []struct {
 	{"cal_flow_ratio", "Cal Flow Ratio", "float", "0.0", "filament"},
 	{"cal_retraction_length", "Cal Retraction Length", "float", "0.0", "filament"},
 	{"cal_retraction_speed", "Cal Retraction Speed", "float", "0.0", "filament"},
+	{"cal_bridge_flow_ratio", "Cal Bridge Flow Ratio", "float", "0.0", "filament"},
+	{"cal_bridge_density", "Cal Bridge Density", "float", "100.0", "filament"},
 }
 
 // EnsureSpoolmanFields checks and creates all required NFC custom fields in Spoolman.

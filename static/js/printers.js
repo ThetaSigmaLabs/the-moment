@@ -722,30 +722,31 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ─── Real Printer Modals ──────────────────────────────────────────────────────
 
-// selectPrinterType sets a printer-type <select> to a value, adding the option
-// first if the markup does not list it.
+// setSelectValue sets a <select> to a value, adding the option first if the
+// markup does not list it.
 //
 // Assigning a value with no matching <option> leaves the select blank, and the
-// submit path then falls back to 'prusalink' — so merely opening and saving the
-// edit dialog would silently convert the printer to a different type. That is
-// data loss triggered by a read-only action.
+// submit path then falls back to a default — so merely opening and saving the
+// edit dialog would silently change the record. That is data loss triggered by
+// a read-only action.
 //
-// Rather than hardcode every type here, adapt to whatever the server sent. A
-// type the UI does not offer for *creation* is still a type it must not corrupt
+// Rather than hardcode every value here, adapt to whatever the server sent. A
+// value the UI does not offer for *creation* is still one it must not corrupt
 // when *editing* — and this keeps working unchanged when a new option is added
 // to the markup later.
-function selectPrinterType(selectEl, type) {
-    if (!selectEl || !type) { return; }
-    selectEl.value = type;
-    if (selectEl.value === type) { return; } // markup already had it
+//
+// Generalised from selectPrinterType (Simon-CR, PR #7), which covered the
+// printer-type select; the model select has the same failure and needs it too.
+function setSelectValue(selectEl, value, label) {
+    if (!selectEl || !value) { return; }
+    selectEl.value = value;
+    if (selectEl.value === value) { return; } // markup already had it
 
     var opt = document.createElement('option');
-    opt.value = type;
-    // Title-case as a readable stand-in; the real label ships with the option
-    // when the type becomes selectable for new printers.
-    opt.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+    opt.value = value;
+    opt.textContent = label || value;
     selectEl.appendChild(opt);
-    selectEl.value = type;
+    selectEl.value = value;
 }
 
 function onPrinterTypeChange(type, prefix) {
@@ -894,7 +895,7 @@ document.getElementById('editPrinterForm').addEventListener('submit', function(e
         ? { name: fd.get('name'), toolheads: parseInt(fd.get('toolheads')), is_virtual: true,
             ip_address: 'virtual', model: 'Virtual Test Printer', printer_type: 'prusalink',
             sort_order: sortOrder }
-        : { name: fd.get('name'), model: fd.get('model'),
+        : { name: fd.get('name'), model: fd.get('model') || 'Other',
             ip_address: fd.get('ip_address'), api_key: fd.get('api_key'),
             toolheads: parseInt(fd.get('toolheads')),
             printer_type: fd.get('printer_type') || 'prusalink',
@@ -943,7 +944,7 @@ function editPrinter(printerId) {
         _editPrinterCurrentId = printerId;
         document.getElementById('editPrinterId').value = printerId;
         document.getElementById('editPrinterName').value = p.name || '';
-        document.getElementById('editPrinterModel').value = p.model || '';
+        setSelectValue(document.getElementById('editPrinterModel'), p.model || 'Other');
         document.getElementById('editPrinterIP').value = p.ip_address || '';
         document.getElementById('editPrinterAPIKey').value = p.api_key || '';
         document.getElementById('editPrinterToolheads').value = p.toolheads || 1;
@@ -968,7 +969,7 @@ function editPrinter(printerId) {
         if (testResult) { testResult.style.display = 'none'; }
         var typeEl = document.getElementById('editPrinterType');
         var printerType = p.printer_type || 'prusalink';
-        if (typeEl) { selectPrinterType(typeEl, printerType); }
+        if (typeEl) { setSelectValue(typeEl, printerType); }
         onPrinterTypeChange(printerType, 'editPrinter');
         var tabBar = document.getElementById('editPrinterTabBar');
         if (tabBar) tabBar.style.display = '';

@@ -137,7 +137,7 @@ type nfcSpoolSummary struct {
 }
 
 type nfcLocationSummary struct {
-	Kind      string `json:"kind"`                // toolhead|inventory|archive|trash
+	Kind      string `json:"kind"` // toolhead|inventory|archive|trash
 	SpoolID   int    `json:"spool_id,omitempty"`
 	SpoolName string `json:"spool_name,omitempty"`
 	ColorHex  string `json:"color_hex,omitempty"`
@@ -145,14 +145,14 @@ type nfcLocationSummary struct {
 }
 
 type nfcTagRow struct {
-	TagID    string               `json:"tag_id"`
-	Label    *string              `json:"label"`
-	Status   string               `json:"status"`
-	BoundID  *int                 `json:"bound_entity_id"`
-	Filament *nfcFilamentSummary  `json:"filament,omitempty"`
-	Spool    *nfcSpoolSummary     `json:"spool,omitempty"`
-	Location *nfcLocationSummary  `json:"location,omitempty"`
-	TagURL   string               `json:"tag_url"`
+	TagID    string              `json:"tag_id"`
+	Label    *string             `json:"label"`
+	Status   string              `json:"status"`
+	BoundID  *int                `json:"bound_entity_id"`
+	Filament *nfcFilamentSummary `json:"filament,omitempty"`
+	Spool    *nfcSpoolSummary    `json:"spool,omitempty"`
+	Location *nfcLocationSummary `json:"location,omitempty"`
+	TagURL   string              `json:"tag_url"`
 }
 
 // nfcTagsListHandler returns all tags of a given type (default: filament) enriched with
@@ -574,7 +574,7 @@ func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 		return
 	}
 
-	spoolmanURL := ws.bridge.GetSpoolmanExternalURL()
+	spoolmanURL := ws.spoolmanLinkURL(c)
 
 	switch result.Action {
 	case TapUnknown:
@@ -582,7 +582,7 @@ func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 
 	case TapStored, TapReplaced:
 		tag, _ := ws.bridge.GetNFCTag(tagID)
-		data := ws.buildPendingPageData(tag, result, c.Request.Host)
+		data := ws.buildPendingPageData(tag, result, requestScheme(c), c.Request.Host)
 		c.HTML(http.StatusOK, "tag_pending.html", data)
 
 	case TapAssigned:
@@ -591,12 +591,12 @@ func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 			kind = "location_storage"
 		}
 		c.HTML(http.StatusOK, "tag_assigned.html", gin.H{
-			"Kind":          kind,
-			"PrinterName":   result.PrinterName,
-			"ToolheadIdx":   result.ToolheadIdx,
-			"SpoolID":       result.SpoolID,
-			"SpoolName":     result.SpoolName,
-			"SpoolmanURL":   spoolmanURL,
+			"Kind":        kind,
+			"PrinterName": result.PrinterName,
+			"ToolheadIdx": result.ToolheadIdx,
+			"SpoolID":     result.SpoolID,
+			"SpoolName":   result.SpoolName,
+			"SpoolmanURL": spoolmanURL,
 		})
 
 	case TapBound:
@@ -632,12 +632,12 @@ func (ws *WebServer) nfcTagResolveHandler(c *gin.Context) {
 }
 
 // buildPendingPageData enriches the tag with Spoolman display data for tag_pending.html.
-func (ws *WebServer) buildPendingPageData(tag *NFCTag, result TapResult, host string) gin.H {
+func (ws *WebServer) buildPendingPageData(tag *NFCTag, result TapResult, scheme, host string) gin.H {
 	data := gin.H{
 		"Action":      result.Action,
 		"TagType":     tag.TagType,
 		"TagURL":      nfcTagURL(host, tag.TagID),
-		"SpoolmanURL": ws.bridge.GetSpoolmanExternalURL(),
+		"SpoolmanURL": ws.spoolmanLinkURLForHost(scheme, host),
 	}
 	if tag.Label != nil {
 		data["Label"] = *tag.Label
@@ -713,7 +713,7 @@ func (ws *WebServer) nfcTagTapPostHandler(c *gin.Context) {
 		"FilamentID":   result.FilamentID,
 		"FilamentName": result.FilamentName,
 		"Message":      result.Message,
-		"SpoolmanURL":  ws.bridge.GetSpoolmanExternalURL(),
+		"SpoolmanURL":  ws.spoolmanLinkURL(c),
 	})
 }
 
