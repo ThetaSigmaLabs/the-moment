@@ -1,0 +1,37 @@
+{
+  "storage": [
+    {
+      "path": "/local",
+      "read_only": false,
+      "free_space": 26690723840,
+      "name": "PrusaLink gcodes"
+    },
+    {
+      "path": "/sdcard",
+      "read_only": true,
+      "name": "SD Card"
+    }
+  ],
+  "printer": {
+    "state": "IDLE",
+    "temp_nozzle": 27.5,
+    "temp_bed": 26.2,
+    "axis_z": 65.2,
+    "flow": 100,
+    "speed": 100,
+    "fan_hotend": 0,
+    "fan_print": 0,
+    "status_connect": {
+      "ok": true,
+      "message": "OK"
+    },
+    "status_printer": {
+      "ok": true,
+      "message": "OK"
+    },
+    "target_nozzle": 0.0,
+    "target_bed": 0.0,
+    "axis_x": 0.03,
+    "axis_y": 200.0
+  }
+}
