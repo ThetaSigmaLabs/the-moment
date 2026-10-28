@@ -85,6 +85,22 @@ func statusSchema() map[string]bool {
 		"/transfer/progress":          true,
 		"/transfer/time_transferring": true,
 		"/transfer/transferred":       true,
+
+		// Sent by PrusaLink 0.8.1 on the MK3S+, which also sends storage
+		// as an array with one entry per storage.
+		"/printer/status_printer":         true,
+		"/printer/status_printer/ok":      true,
+		"/printer/status_printer/message": true,
+		"/printer/status_connect":         true,
+		"/printer/status_connect/ok":      true,
+		"/printer/status_connect/message": true,
+		"/storage/free_space":             true,
+
+		// Documented in PrusaLink's OpenAPI spec (prusa3d/Prusa-Link-Web,
+		// spec/openapi.yaml) but not yet seen in a response.
+		"/transfer/data_transferred": true,
+		"/camera":                    true,
+		"/camera/id":                 true,
 	}
 }
 

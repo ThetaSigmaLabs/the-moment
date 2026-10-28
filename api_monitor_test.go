@@ -265,6 +265,35 @@ func TestAPIShapeMonitor_LoadStatusFixture_Stable(t *testing.T) {
 	}
 }
 
+// Real /api/v1/status body from an MK3S+ running PrusaLink 0.8.1 (idle).
+// It carries printer.status_connect, printer.status_printer and
+// storage.free_space, and sends storage as an array of every storage.
+func TestAPIShapeMonitor_LoadStatusFixtureMK3S_Stable(t *testing.T) {
+	data, err := os.ReadFile("testdata/prusalink_status_mk3s.json")
+	if err != nil {
+		t.Fatalf("reading fixture: %v", err)
+	}
+	m := NewAPIShapeMonitor()
+	added, _, changed := m.Check("status", data)
+	if changed || len(added) > 0 {
+		t.Errorf("MK3S+ status fixture should match schema, got added=%v", added)
+	}
+}
+
+// Fields PrusaLink's OpenAPI spec documents for /api/v1/status should not
+// alert, even before a printer has been seen sending them.
+func TestAPIShapeMonitor_StatusDocumentedFields_NoAlert(t *testing.T) {
+	m := NewAPIShapeMonitor()
+	body := []byte(`{"printer":{"state":"IDLE","status_printer":{"ok":true,"message":"OK"},"status_connect":{"ok":true,"message":"OK"}},` +
+		`"storage":{"path":"/local","name":"LOCAL","read_only":false,"free_space":4202335},` +
+		`"transfer":{"id":1,"time_transferring":30,"progress":65.8,"data_transferred":123084800},` +
+		`"camera":{"id":"cam1"}}`)
+	added, _, changed := m.Check("status", body)
+	if changed || len(added) > 0 {
+		t.Errorf("documented status fields should not alert, got added=%v", added)
+	}
+}
+
 func TestAPIShapeMonitor_LoadJobFixture_Stable(t *testing.T) {
 	data, err := os.ReadFile("testdata/prusalink_job.json")
 	if err != nil {
